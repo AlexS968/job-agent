@@ -23,13 +23,16 @@ public class VacancyPersistenceService {
         this.mapper = mapper;
     }
 
-    public boolean persist(VacancyDTO vacancy, long sourceItemId) {
+    public Result persist(VacancyDTO vacancy, long sourceItemId) {
         if (!TransactionSynchronizationManager.isActualTransactionActive()) {
             throw new IllegalStateException("Vacancy persistence requires an ingestion transaction");
         }
         long employerId = employers.findOrCreate(mapper.toEntity(vacancy.employer()));
         VacancyRepository.Result stored = vacancies.findOrCreate(mapper.toEntity(vacancy, employerId));
         links.link(stored.id(), sourceItemId);
-        return stored.created();
+        return new Result(stored.id(), stored.created());
+    }
+
+    public record Result(long vacancyId, boolean created) {
     }
 }
