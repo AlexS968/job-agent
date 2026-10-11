@@ -56,7 +56,7 @@ These rules apply to local planning and every subsequent Work/Codex task. Keep t
 - Run relevant tests and security checks after changes. Integration tests cover affected database, adapter and infrastructure boundaries.
 - Broaden checks for a concrete remaining risk or required gate. Documentation-only changes need consistency checks, not tests that mirror text or implementation.
 - Test migrations and cutover with isolated data. Switch master only after reconciliation of data, statuses and actions and a successful run.
-- The next quality increment adds JaCoCo (HTML/XML, including integration-test child JVMs) and Sonar with a verified Quality Gate. Do not claim these tools work before implementation.
+- JaCoCo and Sonar CI configuration were merged in PR #4. Local coverage works; do not claim remote Sonar analysis or its actual Quality Gate is verified without inspecting those results.
 - Measure application coverage across unit/integration tests. Justify and agree thresholds/exclusions; do not exclude business code or add meaningless tests to inflate coverage.
 - Sonar runs after JaCoCo XML generation. Store tokens in GitHub Secrets; untrusted PR analysis must not receive secrets. Local tests and JaCoCo work without Sonar access.
 - MapStruct is the agreed standard for DTO/domain mapping. Use shared Spring/constructor-injection configuration, ERROR for unmapped target properties and explicit exceptions; business rules stay in services. Test meaningful conversions, null behavior and enum contracts.

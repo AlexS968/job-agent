@@ -4,7 +4,7 @@ This file records verifiable, public-safe material for future LinkedIn posts, CV
 
 ## Current status (2026-10-11)
 
-Phase 0 complete; Phase 1 foundation merged in PR #2. No vacancy discovery, LLM, event processing, AWS deployment or migration is implemented yet. The dated Phase 0 entries below are historical planning evidence.
+Phase 0 complete; Phase 1 foundation merged in PR #2; quality configuration merged in PR #4. No live vacancy discovery, LLM, event processing, AWS deployment or legacy migration is implemented yet. Phase 2A work is unmerged. The dated Phase 0 entries below are historical planning evidence.
 
 Phase 0 design package saved in PHASE_0.md: requirements grounded in the existing workflow and Sheet structure; independent discovery via source adapters and a separate search gateway; scheduled Fargate/private Aurora design; assumption-based AWS cost model. Evidence is documentation and official-source research only. Region baseline us-east-1 reflects cost/reliability preference; it is not a proven globally cheapest region. No implementation/deployment claim is supported yet.
 
@@ -40,8 +40,16 @@ Do not include private documents, employer-confidential information, real mailbo
 - Delivered: Java 21/Spring Boot 4.1.1 batch foundation, Maven Wrapper, localhost PostgreSQL 17.11 Compose, Flyway V1 agent_runs and CI.
 - Evidence: reviewer clean verify passed, 2 integration tests, no failures/errors/skips; GitHub run https://github.com/AlexS968/job-agent/actions/runs/38147433818 succeeded. Tests exercise first/repeat startup and unavailable DB with nonzero exit and no password in output.
 - Review improvement: child-process output redirected to temporary file to prevent pipe blockage; PostgreSQL updated; publication workflow clarified.
-- Limits: no job discovery, LLM, event-driven implementation, AWS, Sheet cutover or automated Career Board sync. JaCoCo/Sonar and architecture extensions remain planned.
+- Limits at Phase 1 merge: no job discovery, LLM, event-driven implementation, AWS, Sheet cutover or automated Career Board sync. JaCoCo/Sonar were added later in PR #4.
 - CV draft: Built and verified a Spring Boot batch foundation with PostgreSQL migrations, Testcontainers integration tests and CI.
 - LinkedIn angle: testing real database startup and failure paths before adding AI features.
 - Interview story: separate JVM testing, connection closure and safe failure diagnostics; explain changes from review.
 - Existing Career Board and Narrative updated manually and verified after this merge; no parallel progress tracker created.
+
+## Verified milestone — quality configuration, 2026-10-11
+
+- PR: https://github.com/AlexS968/job-agent/pull/4; merged 2026-10-11T15:54:04Z; merge commit `3559cada66df54430696a37959ac4d6ab0a5e89a`.
+- Delivered: JaCoCo HTML/XML coverage including batch child JVMs, pinned SonarScanner configuration, and CI preparation for trusted main-push analysis with a bounded Quality Gate wait.
+- Evidence: local clean verify in the implementation work reported 2 PostgreSQL integration tests and 11/12 `JobAgentApplication` lines covered. The PR's GitHub `build` check completed successfully: https://github.com/AlexS968/job-agent/actions/runs/38153139380/job/114510549098. GitHub also displayed a successful `SonarCloud Code Analysis` check on PR #4.
+- Limits: Sonar's imported coverage and actual Quality Gate details were not independently inspected; the main-push scanner is after merge and does not provide a pre-merge gate. No claim of verified required GitHub checks or automatic Career Board/Narrative synchronization.
+- Public-safe CV draft: Added measurable coverage and prepared gated static analysis for a Java batch application while keeping secrets out of pull-request builds.

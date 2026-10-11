@@ -1,0 +1,24 @@
+{
+  "sourceNamespace": "synthetic-board",
+  "sourceItemId": "snapshot-001",
+  "originalUrl": "https://jobs.example.org/roles/role-001",
+  "fetchedAt": "2026-10-11T12:00:00Z",
+  "rawPayload": {
+    "id": "role-001",
+    "title": "Backend Engineer",
+    "location": "Remote"
+  },
+  "inputVersion": "synthetic-v1",
+  "normalizationVersion": "rules-v1",
+  "vacancy": {
+    "sourceNamespace": "synthetic-board",
+    "listingId": "role-001",
+    "title": "Backend Engineer",
+    "location": "Remote",
+    "employer": {
+      "sourceNamespace": "synthetic-board",
+      "employerId": "employer-001",
+      "name": "Example Works"
+    }
+  }
+}

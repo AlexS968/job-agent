@@ -6,7 +6,7 @@ The planned agent discovers vacancies and employers, normalizes and deduplicates
 
 ## Current status
 
-Phase 0 is complete. Phase 1 is merged to main (PR #2, 2026-10-11); local clean verify and GitHub CI passed. This batch application checks PostgreSQL and Flyway migrations, then exits. Vacancy discovery, cloud deployment and Gmail/Sheet migration are not implemented. Cloud costs are estimates, not measured bills.
+Phase 0 is complete. Phase 1 is merged to main (PR #2, 2026-10-11); quality configuration is merged in PR #4. Phase 2A synthetic ingestion is prepared locally for review. Normal batch startup checks PostgreSQL and Flyway migrations, then exits. Live vacancy discovery, cloud deployment and Gmail/Sheet migration are not implemented. Cloud costs are estimates, not measured bills.
 
 ## Local run
 
@@ -32,11 +32,27 @@ docker compose down -v        # delete local development data when no longer nee
 
 `verify` requires a working Docker daemon and fails if PostgreSQL cannot start. The tests use synthetic credentials and a disposable PostgreSQL 17.11 container. No H2 fallback is configured. Compose uses the same pinned PostgreSQL 17.11 image, whose fixes are listed in the [official release notes](https://www.postgresql.org/docs/17/release-17-11.html).
 
+## Synthetic ingestion (Phase 2A, local review branch)
+
+With the same `DB_URL`, `DB_USER` and `DB_PASSWORD` environment as above, run the bundled, wholly synthetic fixture explicitly:
+
+```sh
+./mvnw -B package -DskipTests
+java -jar target/job-agent-0.1.0-SNAPSHOT.jar --mode=synthetic
+java -jar target/job-agent-0.1.0-SNAPSHOT.jar --mode=synthetic  # successful no-op replay
+```
+
+Normal startup never imports the fixture. The input contains a source namespace/item ID, a separate stable listing namespace/ID, an HTTPS source URL, fetch time, raw JSON, input and normalization versions, and normalized employer/vacancy fields. `source_items.raw_payload` is JSONB. Employer identity is `(source_namespace, external_id)`; vacancy identity is `(source_namespace, listing_id)`; source input identity is `(source_namespace, source_item_id)`. A name alone never identifies an employer. No cross-source fuzzy matching is performed; two sources can share a listing identity only if they deliberately use the same stable namespace and ID.
+
+An identical source input is a successful no-op. Any changed field under an existing source-input identity, including payload or fetch time, is rejected rather than silently updated. A distinct source input may link to an existing vacancy when employer and normalized vacancy data agree. Conflicting normalized data for an existing employer/listing identity is rejected. The digest uses serialized JSON field order, so semantically equivalent JSON with reordered fields may also be rejected; versioned updates require a later explicit policy.
+
+The ingestion service rejects an ambient transaction before creating a run. Each accepted attempt first creates an `agent_runs` row outside the ingestion transaction. One service-owned database transaction then writes source, employer, vacancy and provenance link and marks that run `SUCCEEDED`; vacancy persistence joins this transaction and never commits independently. On failure, the transaction rolls back those writes; a separate short write marks the run `FAILED` with a safe error code. If failure tracking also fails, the original ingestion exception is retained with the tracking error suppressed; the run may remain `RUNNING`. If the database is unavailable before run creation, no run can be recorded. A process crash before the failure write can likewise leave `RUNNING`; recovery belongs to the next increment. No external event or action is emitted. See [Phase 2 task](docs/PHASE_2_TASK.md) for the outbox/dispatcher boundary.
+
 ## Coverage and SonarQube Cloud preparation
 
 `./mvnw -B clean verify` writes JaCoCo HTML to `target/site/jacoco/index.html`, XML to `target/site/jacoco/jacoco.xml` and execution data to `target/jacoco.exec`. JaCoCo 0.8.15 instruments the Surefire and Failsafe JVMs plus each batch JVM launched by `BatchStartupIT`; their execution data is appended to the same file. Existing JVM arguments supplied through Maven's `argLine` property are retained. `clean` removes previous data. The Maven Sonar property `sonar.coverage.jacoco.xmlReportPaths` points to the XML path. No application classes are excluded, and no local coverage percentage blocks the build. The initial measurement is 11/12 application lines (91.7%) and 1/2 branches (50%); this small foundation is not a sound basis for a project-wide threshold.
 
-The CI workflow always builds and verifies PRs without Sonar credentials. On a push to `main`, it attempts Sonar analysis **after** `clean verify` only when all required settings exist; otherwise it reports **Sonar analysis NOT CONFIGURED**. When configured, the scanner waits up to 300 seconds for the actual Quality Gate and fails the analysis step if the gate fails or the wait times out. This main-only analysis runs after merge and **does not provide a pre-merge Sonar gate**. It never exposes `SONAR_TOKEN` to PR code and does not use `pull_request_target`. This is prepared configuration, not a verified remote analysis, Quality Gate or required GitHub check.
+The CI workflow always builds and verifies PRs without Sonar credentials. On a push to `main`, it attempts Sonar analysis **after** `clean verify` only when all required settings exist; otherwise it reports **Sonar analysis NOT CONFIGURED**. When configured, the scanner waits up to 300 seconds for the actual Quality Gate and fails the analysis step if the gate fails or the wait times out. This main-only analysis runs after merge and **does not provide a pre-merge Sonar gate**. It never exposes `SONAR_TOKEN` to PR code and does not use `pull_request_target`. PR #4 merged this configuration, but remote imported coverage, the actual Quality Gate and required GitHub-check settings remain unverified.
 
 To connect SonarQube Cloud, the repository owner must:
 
@@ -45,7 +61,7 @@ To connect SonarQube Cloud, the repository owner must:
 3. Create an analysis token with access to that project. Store it **only** as the GitHub Actions repository secret `SONAR_TOKEN` under **Settings → Secrets and variables → Actions → Secrets**. Do not paste the token into chat, files or command arguments.
 4. After publication, inspect the next trusted `main` push workflow, Sonar project analysis, imported JaCoCo coverage and actual Quality Gate result. Configure any required GitHub check in branch protection only after that result is verified. CI-based PR analysis is deliberately not enabled here because PR code runs in the build; evaluate a safe trust model before adding token access. The [Free plan limits PR analysis to PRs targeting `main`](https://docs.sonarsource.com/sonarqube-cloud/administering-sonarcloud/managing-subscription/subscription-plans); the OSS plan offers public-project PR analysis subject to eligibility.
 
-Proposed remote checks: start with Sonar's built-in **Sonar way** gate for new code—reliability, security and maintainability ratings A; review all new security hotspots; at least 80% new-code coverage; at most 3% duplicated new lines. These are [Sonar's published defaults](https://docs.sonarsource.com/sonarqube-cloud/standards/managing-quality-gates/introduction-to-quality-gates), not locally enforced thresholds. They focus on changes while Phase 2 adds substantial logic. Coverage and duplication conditions are ignored for fewer than 20 new lines by default, and PR gates evaluate new-code conditions only. Review the first real results before deciding whether to keep this gate; custom gates require Team/Enterprise (or an eligible OSS plan). No gate or account setting has been configured by this repository change.
+Proposed remote checks: start with Sonar's built-in **Sonar way** gate for new code—reliability, security and maintainability ratings A; review all new security hotspots; at least 80% new-code coverage; at most 3% duplicated new lines. These are [Sonar's published defaults](https://docs.sonarsource.com/sonarqube-cloud/standards/managing-quality-gates/introduction-to-quality-gates), not locally enforced thresholds. They focus on changes while Phase 2 adds substantial logic. Coverage and duplication conditions are ignored for fewer than 20 new lines by default, and PR gates evaluate new-code conditions only. Review the first real results before deciding whether to keep this gate; custom gates require Team/Enterprise (or an eligible OSS plan). This repository does not set the remote gate or account settings.
 
 ## Start here
 
@@ -53,6 +69,7 @@ Proposed remote checks: start with Sonar's built-in **Sonar way** gate for new c
 - [MASTER_PLAN.md](MASTER_PLAN.md): authoritative roadmap and phase order.
 - [PHASE_0.md](PHASE_0.md): requirements, source choices, proposed AWS architecture and dated cost assumptions.
 - [Phase 1 task](docs/PHASE_1_TASK.md): scope and acceptance criteria for the implementation chat.
+- [Phase 2 task](docs/PHASE_2_TASK.md): synthetic persistence now and durable outbox/dispatcher next.
 - [CAREER_EVIDENCE.md](CAREER_EVIDENCE.md): verified public-safe evidence; not a replacement for the existing AI Career Board.
 - [FIRST_INCREMENT.md](FIRST_INCREMENT.md) and [PROJECT_PLAN.md](PROJECT_PLAN.md): historical supporting plans; the master plan takes precedence.
 
@@ -66,4 +83,4 @@ The existing Google Sheet remains the sole master of the old pipeline until veri
 
 ## Next milestone
 
-Next: verify Sonar analysis and its Quality Gate after account setup and publication, then Phase 2 vacancy ingestion, durable domain state and event processing.
+Next: review Phase 2A synthetic persistence and independently verify remote Sonar coverage/Quality Gate. Phase 2B adds durable outbox delivery and recovery.
