@@ -46,8 +46,13 @@ class BatchStartupIT {
 
     private static Result run(String url, String username, String password) throws IOException, InterruptedException {
         Path outputFile = Files.createTempFile("job-agent-batch-", ".log");
+        String jacocoAgent = System.getProperty("jacoco.agent.argLine");
+        if (jacocoAgent == null || !jacocoAgent.startsWith("-javaagent:")) {
+            Files.deleteIfExists(outputFile);
+            throw new IllegalStateException("JaCoCo agent configuration is missing for the batch JVM");
+        }
         ProcessBuilder builder = new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin", "java").toString(),
-                "-jar", JAR.toString());
+                jacocoAgent, "-jar", JAR.toString());
         builder.redirectErrorStream(true);
         builder.redirectOutput(outputFile.toFile());
         Map<String, String> env = builder.environment();
