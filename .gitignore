@@ -1,0 +1,16 @@
+# Local secrets and personal inputs
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials*.json
+private/
+personal-data/
+# Build and editor output
+target/
+.idea/
+*.iml
+.vscode/
+.DS_Store
+*.log
