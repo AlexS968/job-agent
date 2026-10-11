@@ -1,6 +1,6 @@
 # Job Agent: Complete delivery plan
 
-Status: 2026-10-11. Phase 1 is complete: PR #2 merged on 2026-10-11, merge commit `15ddb4576812e12895d2f1ed9ae24aa303f15bbc`; local build and CI passed. Next task: `docs/QUALITY_TASK.md`. This is the authoritative development entry point. `PROJECT_PLAN.md` and `FIRST_INCREMENT.md` contain supporting detail; this plan takes precedence in a conflict.
+Status: 2026-10-11. Phase 1 is complete: PR #2 merged on 2026-10-11. JaCoCo and Sonar CI preparation merged in PR #4; remote Sonar analysis and the actual Quality Gate remain unverified. Phase 2A synthetic persistence is in local implementation; Phase 2B outbox/dispatcher follows. This is the authoritative development entry point. `PROJECT_PLAN.md` and `FIRST_INCREMENT.md` contain supporting detail; this plan takes precedence in a conflict.
 
 Phase 0 completed on 2026-10-07 when the user accepted the preliminary AWS estimate. `PHASE_0.md` records requirements from the existing workflow, source documentation checks, the proposed Fargate/Aurora design and us-east-1 estimate with explicit assumptions. There is no EU-only region requirement: cost and reliability take priority over data location. The estimate excludes later LLM/search-provider choices and does not authorize paid deployment.
 
@@ -94,7 +94,7 @@ Use separate subsequent PRs for feedback, Gmail OAuth, import/reconciliation, cu
 
 ## 9. Next development steps and chat responsibilities
 
-Phase 0 is complete; repeat research only for a concrete reason. Phase 1 delivered the runnable foundation. The next task is `docs/QUALITY_TASK.md`. Phase 2 then introduces persistence, synthetic ingestion, idempotency, rollback and events. The broader first technical increment described in Phase 0 spans Phases 1–2 and need not be one PR.
+Phase 0 is complete; repeat research only for a concrete reason. Phase 1 delivered the runnable foundation. Quality configuration is merged in PR #4. Phase 2A introduces synthetic persistence, identity handling and rollback; Phase 2B adds durable outbox delivery. The broader first technical increment described in Phase 0 spans Phases 1–2 and need not be one PR.
 
 The original Work chat plans work, prepares implementation prompts, reviews results, may commit locally after successful review and prepares PR titles/descriptions. The implementation chat makes all source-code, configuration, documentation and translation changes, runs local checks and hands off uncommitted work with a concise file/check/limitation report. The user pushes, creates PRs, merges and deletes remote branches.
 
@@ -110,14 +110,14 @@ The public repository exists. Its initial commit included root `AGENTS.md` and p
 
 Do not create a separate Work session solely for AGENTS. GitHub is the technical state source; the existing AI Career Board remains the shared career-program tracker. All repository content is English; user conversations may be Russian.
 
-## 11. Next increment: Automated quality checks
+## 11. Quality checks and current boundary
 
-After Phase 1 merge and before Phase 2 business logic, implement JaCoCo/Sonar as a separate task/PR. Neither tool is configured yet.
+PR #4 merged JaCoCo HTML/XML coverage, child-JVM instrumentation and main-push Sonar CI preparation. Local coverage was verified. The public PR showed successful CI and SonarCloud checks, but the imported coverage and actual Quality Gate have not been independently verified. The main-only scanner runs after merge and does not provide a pre-merge Sonar gate.
 
-- JaCoCo: HTML/XML application coverage from unit/integration tests. Current integration tests use ProcessBuilder child JVMs: explicitly pass the agent and combine their data; Failsafe prepare-agent alone will not measure the child application's execution.
-- Sonar: choose hosting (SonarQube Cloud is a candidate for the public project; verify needed analysis capabilities/cost), connect a project and import JaCoCo XML after verify.
+- JaCoCo: HTML/XML application coverage from unit/integration tests, including instrumented ProcessBuilder child JVMs.
+- Sonar: prepared SonarQube Cloud scanner imports JaCoCo XML after verify when repository configuration is present; verify actual remote analysis and gate independently.
 - Quality Gate: bugs, vulnerabilities, maintainability, duplication and new-code coverage; security hotspots require review. Agree actual service capabilities and thresholds during setup; no arbitrary percentage is already approved.
-- CI: tests/JaCoCo work independently of Sonar access. Show actual analysis/gate status in PRs before merge; separately verify required GitHub-check settings.
+- CI: tests/JaCoCo work independently of Sonar access. Main-push analysis is after merge; a pre-merge Sonar gate and required GitHub-check settings remain unverified.
 - Secrets: user configures Sonar credentials through GitHub Secrets; never publish tokens or expose them to untrusted PRs. AI does not push or create PRs.
 - Acceptance: clean verify produces a nonempty report covering JobAgentApplication; Sonar displays imported coverage and actual gate results. Record commands, evidence, limitations and justified exclusions.
 

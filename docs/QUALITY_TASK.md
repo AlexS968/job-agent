@@ -1,6 +1,6 @@
-# Next task: JaCoCo and Sonar
+# JaCoCo and Sonar quality increment
 
-Status: task after completed Phase 1; tools are not yet configured.
+Status: configuration merged in PR #4 on 2026-10-11. Local JaCoCo and CI checks were verified; remote Sonar analysis, imported coverage and its actual Quality Gate have not been independently verified. This document preserves the original task contract.
 
 ## Deliverable
 

@@ -31,7 +31,7 @@ class BatchStartupIT {
                  var statement = connection.createStatement();
                  var rows = statement.executeQuery("SELECT COUNT(*) FROM flyway_schema_history WHERE success")) {
                 assertTrue(rows.next());
-                assertEquals(1, rows.getInt(1));
+                assertEquals(2, rows.getInt(1));
             }
         }
     }
@@ -44,15 +44,73 @@ class BatchStartupIT {
         assertFalse(result.output().contains(PASSWORD), result.output());
     }
 
-    private static Result run(String url, String username, String password) throws IOException, InterruptedException {
+    @Test
+    void explicitSyntheticModePersistsAndReplays() throws Exception {
+        try (PostgreSQLContainer postgres = new PostgreSQLContainer("postgres:17.11-alpine")
+                .withDatabaseName("job_agent_test").withUsername("test_user").withPassword(PASSWORD)) {
+            postgres.start();
+            Result first = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD, "--mode=synthetic");
+            assertEquals(0, first.exitCode(), first.output());
+            assertTrue(first.output().contains("source_created=true, vacancy_created=true"), first.output());
+            Result second = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD, "--mode=synthetic");
+            assertEquals(0, second.exitCode(), second.output());
+            assertTrue(second.output().contains("source_created=false, vacancy_created=false"), second.output());
+            try (var connection = java.sql.DriverManager.getConnection(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD);
+                 var statement = connection.createStatement();
+                 var rows = statement.executeQuery("SELECT (SELECT COUNT(*) FROM source_items), "
+                         + "(SELECT COUNT(*) FROM vacancies), (SELECT COUNT(*) FROM agent_runs WHERE status = 'SUCCEEDED')")) {
+                assertTrue(rows.next());
+                assertEquals(1, rows.getInt(1));
+                assertEquals(1, rows.getInt(2));
+                assertEquals(2, rows.getInt(3));
+            }
+        }
+    }
+
+    @Test
+    void syntheticProcessingFailureExitsNonzeroWithoutPartialRowsOrSecrets() throws Exception {
+        try (PostgreSQLContainer postgres = new PostgreSQLContainer("postgres:17.11-alpine")
+                .withDatabaseName("job_agent_test").withUsername("test_user").withPassword(PASSWORD)) {
+            postgres.start();
+            assertEquals(0, run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD).exitCode());
+            try (var connection = java.sql.DriverManager.getConnection(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD);
+                 var statement = connection.createStatement()) {
+                statement.execute("CREATE FUNCTION reject_vacancy() RETURNS trigger LANGUAGE plpgsql AS $$ "
+                        + "BEGIN RAISE EXCEPTION 'synthetic test failure'; END $$");
+                statement.execute("CREATE TRIGGER reject_vacancy BEFORE INSERT ON vacancies "
+                        + "FOR EACH ROW EXECUTE FUNCTION reject_vacancy()");
+            }
+            Result failed = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD, "--mode=synthetic");
+            assertNotEquals(0, failed.exitCode());
+            assertTrue(failed.output().contains("Job Agent startup failed"), failed.output());
+            assertFalse(failed.output().contains(PASSWORD), failed.output());
+            try (var connection = java.sql.DriverManager.getConnection(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD);
+                 var statement = connection.createStatement();
+                 var rows = statement.executeQuery("SELECT (SELECT COUNT(*) FROM source_items), "
+                         + "(SELECT COUNT(*) FROM vacancies), (SELECT status FROM agent_runs LIMIT 1)")) {
+                assertTrue(rows.next());
+                assertEquals(0, rows.getInt(1));
+                assertEquals(0, rows.getInt(2));
+                assertEquals("FAILED", rows.getString(3));
+            }
+        }
+    }
+
+    private static Result run(String url, String username, String password, String... arguments)
+            throws IOException, InterruptedException {
         Path outputFile = Files.createTempFile("job-agent-batch-", ".log");
         String jacocoAgent = System.getProperty("jacoco.agent.argLine");
         if (jacocoAgent == null || !jacocoAgent.startsWith("-javaagent:")) {
             Files.deleteIfExists(outputFile);
             throw new IllegalStateException("JaCoCo agent configuration is missing for the batch JVM");
         }
-        ProcessBuilder builder = new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin", "java").toString(),
-                jacocoAgent, "-jar", JAR.toString());
+        var command = new java.util.ArrayList<String>();
+        command.add(Path.of(System.getProperty("java.home"), "bin", "java").toString());
+        command.add(jacocoAgent);
+        command.add("-jar");
+        command.add(JAR.toString());
+        command.addAll(java.util.List.of(arguments));
+        ProcessBuilder builder = new ProcessBuilder(command);
         builder.redirectErrorStream(true);
         builder.redirectOutput(outputFile.toFile());
         Map<String, String> env = builder.environment();
