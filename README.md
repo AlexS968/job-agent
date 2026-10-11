@@ -6,7 +6,31 @@ The planned agent discovers vacancies and employers, normalizes and deduplicates
 
 ## Current status
 
-Phase 0 (requirements and architecture) is complete. This repository currently contains project instructions and planning documents. Application code, CI, cloud deployment and Gmail/Sheet migration have not been implemented. Cloud costs are estimates, not measured bills.
+Phase 0 is complete. Phase 1 foundation is implemented on a review branch; it is not yet merged. This batch application checks PostgreSQL and Flyway migrations, then exits. Vacancy discovery, cloud deployment and Gmail/Sheet migration are not implemented. Cloud costs are estimates, not measured bills.
+
+## Local run
+
+Requires Java 21, Docker Engine with Compose v2, and a shell. Maven Wrapper downloads Maven 3.9.11 on first use. Spring Boot 4.1.1 is pinned; its [official system requirements](https://docs.spring.io/spring-boot/system-requirements.html) include Java 21.
+
+```sh
+cp .env.example .env
+# Edit .env and choose a local-only password. If port 5432 is occupied, set DB_PORT to a free port.
+set -a; . ./.env; set +a
+export DB_URL="jdbc:postgresql://localhost:${DB_PORT}/job_agent"
+docker compose up -d --wait
+./mvnw -B package -DskipTests
+java -jar target/job-agent-0.1.0-SNAPSHOT.jar
+```
+
+The batch process prints `Database ready; agent_runs rows: 0` and exits. Flyway creates the table on the first start and validates it on later starts. The connection pool closes on exit. `DB_URL` defaults to `jdbc:postgresql://localhost:5432/job_agent`; set it when changing `DB_NAME` or `DB_PORT`. `DB_USER` and `DB_PASSWORD` come from the environment. Do not commit `.env`.
+
+```sh
+./mvnw -B verify              # includes isolated PostgreSQL integration tests via Docker
+docker compose down           # preserve the named database volume
+docker compose down -v        # delete local development data when no longer needed
+```
+
+`verify` requires a working Docker daemon and fails if PostgreSQL cannot start. The tests use synthetic credentials and a disposable PostgreSQL container. No H2 fallback is configured.
 
 ## Start here
 
@@ -25,4 +49,4 @@ The existing Google Sheet remains the sole master of the old pipeline until veri
 
 ## Next milestone
 
-Phase 1: a locally runnable Maven/Spring Boot foundation, Docker Compose PostgreSQL, Flyway migrations, safe configuration, relevant integration checks and GitHub Actions CI. Run commands will be added and verified in that implementation PR.
+Phase 2 will add vacancy ingestion and durable domain behavior after review of this foundation PR.
