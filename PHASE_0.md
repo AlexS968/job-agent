@@ -1,88 +1,90 @@
-# Фаза 0 — контракт разработки Job Agent
+# Phase 0: Job Agent development contract
 
-Статус: фаза 0 завершена 2026-10-07. Пользователь подтвердил, что предварительная AWS-оценка подходит. Это завершение проектирования; код, deployment и миграция ещё не выполнены. LLM и поисковый API выбираются и оцениваются перед подключением.
+Status: Phase 0 completed on 2026-10-07. The user accepted the preliminary AWS estimate. This records completed design, not application deployment or migration. LLM/search providers and their cost are selected before connection. Phase 1 was subsequently merged in PR #2 on 2026-10-11; see MASTER_PLAN.md for current state.
 
-Дата: 2026-10-07. Результат: подготовленная архитектура и требования для начала разработки. Код и AWS-ресурсы ещё не созданы. Выбор региона — рабочий baseline us-east-1 (N. Virginia); глобальное сравнение всех регионов не выполнено, поэтому он не объявляется самым дешёвым. Приоритет пользователя: стоимость и надёжность, расположение данных не важно.
+This is the dated design baseline. At Phase 0 completion, code and AWS resources did not exist. The working region is us-east-1 (N. Virginia); it was not proven globally cheapest. User priorities are cost/reliability; data location is unrestricted.
 
-## Региональное решение: Virginia и Frankfurt
+## Regional comparison: Virginia and Frankfurt
 
-2026-10-07 тарифы Aurora Standard / ServerlessV2 / OnDemand прочитаны из открытого AWS Pricing Calculator на одинаковых параметрах. Прежняя проблема доступа к региональному калькулятору разрешена; старое сообщение о невозможности сравнения больше не актуально.
+On 2026-10-07, Aurora Standard / ServerlessV2 / OnDemand rates were read from AWS Pricing Calculator with equivalent parameters. The earlier regional-calculator access issue was resolved; the earlier inability-to-compare message is obsolete.
 
-| Тариф | Virginia (us-east-1) | Frankfurt (eu-central-1) |
+| Rate / assumption | Virginia (us-east-1) | Frankfurt (eu-central-1) |
 | --- | --- | --- |
 | Aurora V2, USD/ACU-hour | 0.12 | 0.14 |
 | Storage, USD/GB-month | 0.10 | 0.119 |
-| I/O, USD за миллион операций | 0.20 | 0.22 |
+| I/O, USD per million operations | 0.20 | 0.22 |
 | Compute: 13 × 25/60 × 0.5 ACU | 0.325 | 0.379 |
-| Storage при 10 GB | 1.00 | 1.19 |
+| Storage at 10 GB | 1.00 | 1.19 |
 
-Для этой нагрузки разница compute + storage около 0.24 USD/месяц. Virginia дешевле по проверенным тарифам БД; полного сравнения всех компонентов и всех регионов не выполнено. Fargate оценён по официальному примеру Virginia; его текущий Frankfurt unit rate здесь не проверен. Выбираем Virginia как рабочий регион для реализации с имеющейся оценкой. Разница в надёжности регионов не доказана; оба поддерживают необходимые сервисы. [Aurora regions](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/Concepts.Aurora_Fea_Regions_DB-eng.Feature.ServerlessV2.html), [Fargate regions](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/AWS_Fargate-Regions.html).
+Compute plus storage differs by approximately USD 0.24/month for this workload. Virginia is cheaper on the verified database rates; no full comparison of every component/region was performed. Fargate was estimated from the official Virginia example; the Frankfurt Fargate unit rate was not verified. Virginia is the implementation baseline with the available estimate. No reliability advantage between regions was proven; both support the required services. [Aurora regions](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/Concepts.Aurora_Fea_Regions_DB-eng.Feature.ServerlessV2.html), [Fargate regions](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/AWS_Fargate-Regions.html).
 
-Исходные 54.08 USD на пользовательском экране относились к версии `Serverless` (не V2): 1 ACU × 0.07 × 730 часов = 51.10 плюс включённый Database Insights 2.28 и storage/I/O около 0.70. V2 Frankfurt при 1 ACU весь месяц: 102.20 USD compute. Калькулятор этой формы фиксирует 730 часов; его Total Monthly нельзя трактовать как расчёт 13 коротких batch-запусков. При auto-pause compute считается по фактическим ACU-hours; storage продолжает оплачиваться. Auto-pause необходимо подтвердить после deployment; рост длительности/ACU и maintenance увеличивают оценку.
+The original USD 54.08 calculator screen used `Serverless`, not V2: 1 ACU × 0.07 × 730 hours = 51.10, plus enabled Database Insights 2.28 and approximately 0.70 storage/I/O. Frankfurt V2 at 1 ACU for the full month gives USD 102.20 compute. This calculator form fixes 730 hours; its monthly total is not an estimate for 13 short batch runs. Auto-pause charges compute according to actual ACU-hours, while storage remains billed. Verify auto-pause after deployment; longer runtime, higher ACU and maintenance increase cost.
 
-Требования и технический проект фазы 0 готовы для начала кода; предварительная оценка сохранена. Платное развёртывание требует полного deployment estimate с выбранными LLM/search provider и budget alert. Документация не является разрешением создать платные ресурсы.
+Phase 0 requirements/design support starting development. Paid deployment requires a full estimate with selected LLM/search providers and a budget alert. This document does not authorize creation of paid resources.
 
-## Продукт и первая полезная версия
+## Product and first useful version
 
-Агент самостоятельно ищет новые вакансии и работодателей, сохраняет результаты, нормализует и дедуплицирует вакансии, оценивает соответствие явным критериям и формирует shortlist со ссылками и аргументами. Gmail/LinkedIn — дополнительный источник. Перенос старого pipeline не заменяет самостоятельный поиск.
+The agent independently discovers vacancies and employers, persists, normalizes and deduplicates results, evaluates explicit criteria and produces an explained shortlist with source links. Gmail/LinkedIn are additional inputs; legacy migration does not replace independent search.
 
-Первый MVP: самостоятельный поиск вне Gmail → PostgreSQL → оценка по критериям → reviewable shortlist. Следующий шаг — пользовательская обратная связь. Отклики, CV generation, semantic matching и аналитика идут по этапам MASTER_PLAN_RU.md. CV попросить только после готовности приватного S3.
+First useful MVP: non-Gmail discovery → PostgreSQL → criteria-based evaluation → reviewable shortlist. Feedback follows. Applications, CV generation, semantic matching, analytics and later intelligence follow MASTER_PLAN.md. Request CVs only after private S3 is ready.
 
-## Требования, восстановленные из существующего процесса
+## Requirements recovered from the existing workflow
 
-Прочитаны текущий Master и история Job Search Pipeline. Основное направление: Java/Spring backend, product/in-house и international product/SaaS; Germany hiring надо подтверждать, а не выводить из слова remote. Consulting/client-project и посреднические предложения исключать по проверенным фактам. Не выдумывать зарплату, доступность страны, employment model и обязательные навыки. Неизвестные условия сохранять как unknown. Не отклонять Java-first роль только из-за отдельных дополнительных инструментов.
+The existing Master and Job Search Pipeline history were inspected. Initial direction: Java/Spring backend roles, product/in-house and international product/SaaS employers. Verify Germany hiring explicitly rather than inferring it from remote wording. Exclude consulting/client-project/intermediary offers based on verified facts. Do not invent salary, country eligibility, employment model or mandatory skills; retain unknown conditions. Do not reject Java-first roles solely because of additional tools.
 
-Персональные ограничения, история заявок и индивидуальные решения импортируются в приватную конфигурацию/БД и не публикуются в Git. Настоящие CV на этом шаге не нужны. Для публичных тестов используем вымышленные профили.
+Personal constraints, application history and individual decisions belong in private configuration/database, not public Git. Actual CVs are unnecessary for this step; use fictional profiles in public tests.
 
-Master содержит пять вкладок: DE Arbeitgeber, International Remote, Aktionsliste DE, Aktionsliste INT, Gap Analysis DE. Это employer-centric данные с информацией о роли, remote, compensation, employment, status, priority, provenance и next action. Их нельзя импортировать как будто каждая строка — отдельная уникальная вакансия. Action lists становятся представлениями состояния, а не независимыми копиями master. Часовой пояс источника отличается от пользовательского: при импорте сохранять исходные значения дат и явно нормализовать их, не менять существующий Sheet.
+The current Master has five tabs: domestic employers, international remote, domestic actions, international actions and domestic gap analysis. These are employer-centric records with role, remote, compensation, employment, status, priority, provenance and next action. Do not treat every row as a separate unique vacancy. Action lists become state views rather than independent master copies. Preserve original source dates/timezones and normalize explicitly; do not alter the existing Sheet. Exact legacy tab identifiers are resolved from private source metadata during migration.
 
-## Источники самостоятельного поиска
+## Independent discovery sources
 
-1. Greenhouse Job Board API: чтение опубликованных вакансий работодателя и полного описания через публичные GET endpoints. [Документация](https://docs.greenhouse.io/job-board.html).
-2. Lever Postings API: вакансии, location, workplace type, description и optional salary. [Документация](https://github.com/lever/postings-api).
-3. DiscoveryAdapter: широкий поиск новых работодателей и карьерных страниц по критериям, а не только обход фиксированного списка. В интерфейсе SearchGateway запрос, бюджет запросов и список URL; провайдер поиска выбирается до подключения платного API. Найденные URL проходят проверку официального работодателя и поддерживаемого board/API. Greenhouse/Lever сами по себе не являются глобальными поисковиками.
+1. Greenhouse Job Board API: public GET endpoints for published employer vacancies/full descriptions. [Documentation](https://docs.greenhouse.io/job-board.html).
+2. Lever Postings API: vacancies, location, workplace type, description and optional salary. [Documentation](https://github.com/lever/postings-api).
+3. DiscoveryAdapter: broad discovery of new employers/career pages from criteria, not only a fixed employer list. SearchGateway accepts a query, request budget and returns URLs. Select the search provider before connecting a paid API. Verify discovered URLs as official employer pages/supported boards. Greenhouse/Lever are not global search engines themselves.
 
-Первый адаптер — Greenhouse, второй — Lever. Публичная доступность API не отменяет проверку условий использования, rate limits и retry/backoff при реализации. Реальные live endpoint smoke tests выполняются в PR адаптера; сейчас проверена документация, адаптеры ещё не написаны.
+First source adapter: Greenhouse; second: Lever. Public availability still requires terms/rate-limit checks and retry/backoff implementation. Live endpoint smoke tests belong to adapter PRs. Phase 0 verified documentation, not working adapters.
 
-## Предлагаемая AWS-схема
+## Proposed AWS baseline
 
-EventBridge Scheduler → ECS Fargate RunTask → контейнер Java 21/Spring Boot → private Aurora PostgreSQL Serverless v2. Один writer, Aurora Standard, минимум 0 ACU и auto-pause 5 минут, начальный maximum 2 ACU. Версия движка должна поддерживать auto-pause и будущий pgvector. Docker PostgreSQL локально, Flyway и обычный JDBC в обоих окружениях.
+EventBridge Scheduler → ECS Fargate RunTask → Java 21/Spring Boot container → private Aurora PostgreSQL Serverless v2. One writer, Aurora Standard, minimum 0 ACU, 5-minute auto-pause and proposed initial maximum 2 ACU. Select an engine version supporting auto-pause and later pgvector. Use local Docker PostgreSQL, Flyway and ordinary JDBC in both environments.
 
-Fargate task в public subnet с временным public IPv4, без inbound правил; исходящие HTTPS к источникам/LLM и private JDBC к БД. Aurora — без public endpoint, порт доступен только от task security group. NAT Gateway, постоянный load balancer, RDS Proxy и постоянно работающий ECS service не нужны для batch MVP. Образ в ECR. [Fargate networking](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/networking-outbound.html).
+Fargate tasks use a public subnet and temporary public IPv4 without inbound rules, outbound HTTPS to sources/LLM and private JDBC to the database. Aurora has no public endpoint; its port is accessible only from the task security group. Batch MVP does not need a NAT Gateway, persistent load balancer, RDS Proxy or always-running ECS service. Store the image in ECR. [Fargate networking](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/networking-outbound.html).
 
-Fargate выбран для обычного Spring Boot контейнера и длительного прохода discovery, чтобы не привязывать полный run к лимиту Lambda 15 минут. Lambda остаётся возможной для коротких последующих API/служебных операций. Data API на старте не нужен: сохраняем стандартный JDBC/Flyway. Обычный RDS — альтернативный вариант при постоянной нагрузке; EC2 PostgreSQL дешевизной не компенсирует самостоятельное обслуживание БД для первого MVP.
+Fargate was proposed for a standard Spring Boot container and longer discovery runs, avoiding Lambda's 15-minute run limit. Lambda may serve short later APIs/operations. Data API is unnecessary initially: retain JDBC/Flyway. Conventional RDS remains an alternative for sustained load; self-managed EC2 PostgreSQL adds operational burden for the first MVP.
 
-S3 private, block public access, encryption, versioning и lifecycle. Ключи: documents/, cv-generated/, reports/, exports/; без имён людей в object keys. Secrets Manager для DB и OAuth; Parameter Store Standard SecureString можно использовать для статических provider credentials после выбора ключа KMS. IAM task role ограничена конкретными объектами и секретами. CloudWatch structured logs без тел писем/секретов, retention 14 дней, alarm на failed run. Scheduler timezone Europe/Berlin, Пн/Ср/Пт; точный час выбираем до включения.
+Private S3: block public access, encryption, versioning and lifecycle. Proposed prefixes: documents/, cv-generated/, reports/, exports/; no personal names in keys. Use Secrets Manager for DB/OAuth. Parameter Store Standard SecureString can hold static provider credentials after KMS-key selection. Scope task IAM to specific objects/secrets. CloudWatch structured logs exclude email bodies/secrets, proposed retention 14 days and failed-run alarm. Scheduler timezone Europe/Berlin, Monday/Wednesday/Friday; agree the hour before enabling.
 
-Надёжность MVP: управляемое хранилище, транзакции, unique source IDs, resumable runs, ограниченные повторы, отчёт об ошибках и backup/restore drill. Один writer — без мгновенного failover на второй compute instance; для этого batch-продукта допустимо восстановление/повтор запуска. До cutover доказать восстановление БД из backup. Предлагаемые цели: backup retention 7 дней, восстановление в пределах 4 часов; это цели для проверки, не уже достигнутые гарантии.
+MVP reliability: managed storage, transactions, unique source IDs, resumable runs, bounded retries, visible errors and backup/restore drill. One writer has no instant failover to a second compute instance; recovery/rerun is acceptable for this batch product. Prove database restore before cutover. Proposed targets: seven-day backup retention and restoration within four hours; these are unverified targets, not achieved guarantees.
 
-## Предварительный расчёт
+## Preliminary cost estimate
 
-Расчёт для us-east-1, USD до налогов, без Free Tier/credits. Допущения: 13 запусков по 20 минут, 1 vCPU/2 GiB Fargate; БД в среднем 0.5 ACU во время run и ещё 5 минут до pause; 10 GiB DB storage как консервативная база; 3 Secrets Manager secrets. Это оценка, не обещание счёта. Реальная нагрузка и дополнительное обслуживание БД могут увеличить расходы.
+Region: us-east-1, USD before taxes, without Free Tier/credits. Assumptions: 13 runs of 20 minutes, 1 vCPU/2 GiB Fargate; average 0.5 ACU during each run plus five minutes until pause; conservative 10 GiB storage; three Secrets Manager secrets. This is an estimate, not a promised bill. Actual load/database maintenance may increase cost.
 
-| Компонент | Расчёт | USD/месяц |
+| Component | Calculation | USD/month |
 | --- | --- | --- |
-| Fargate x86 | 4.333 часа × (0.0404784 CPU + 2 × 0.004446 memory) | 0.21 |
-| Aurora compute | 13 × 25/60 часов × 0.5 ACU × 0.12 | 0.33 |
-| Aurora storage | 10 GiB × 0.10, оценка по опубликованному примеру Standard | 1.00 |
-| 3 secrets | 3 × 0.40 | 1.20 |
-| Дополнительные расходы | Резерв на S3/ECR, I/O, логи, IPv4, backups и requests; не тариф | 1–3 |
-| Итого AWS | До LLM, поискового API, налогов и обменного курса | около 3.7–5.7 |
+| Fargate x86 | 4.333 hours × (0.0404784 CPU + 2 × 0.004446 memory) | 0.21 |
+| Aurora compute | 13 × 25/60 hours × 0.5 ACU × 0.12 | 0.33 |
+| Aurora storage | 10 GiB × 0.10, based on the published Standard example | 1.00 |
+| Three secrets | 3 × 0.40 | 1.20 |
+| Additional costs | Reserve for S3/ECR, I/O, logs, IPv4, backups/requests; not a unit tariff | 1–3 |
+| AWS total | Excludes LLM, search API, taxes and exchange rates | approximately 3.7–5.7 |
 
-Источники тарифных примеров: [Aurora](https://aws.amazon.com/rds/aurora/pricing/), [Fargate](https://aws.amazon.com/fargate/pricing/), [Secrets Manager](https://aws.amazon.com/secrets-manager/pricing/). Для другой длительности и ACU расчёт пересчитывается. При 1 ACU вместо 0.5 соответствующая строка удвоится. Не оставлять соединения открытыми после batch: pause зависит от отсутствия соединений. [Правила auto-pause](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-serverless-v2-auto-pause.html).
+Rate examples: [Aurora](https://aws.amazon.com/rds/aurora/pricing/), [Fargate](https://aws.amazon.com/fargate/pricing/), [Secrets Manager](https://aws.amazon.com/secrets-manager/pricing/). Recalculate for different duration/ACU. At 1 ACU instead of 0.5, the corresponding compute row doubles. Close connections after the batch because pause depends on connection inactivity. [Auto-pause rules](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-serverless-v2-auto-pause.html).
 
-Предлагаемый сигнал AWS Budget — 10 USD/месяц: это alert, не жёсткий spending cap и не согласованный пользователем предел. LLM и поиск считаются отдельно после выбора провайдеров и лимитов запросов. Первое платное развёртывание требует согласованной полной оценки; региональные и service-specific rates проверяются в конфигурации перед deployment.
+Proposed AWS Budget alert: USD 10/month. It is a notification, not a hard cap or a user-approved spending limit. Estimate LLM/search separately after provider/request-budget selection. Agree the complete estimate before first paid deployment; verify regional/service rates in the deployment configuration.
 
-## Схема и первый код
+Subsequent decision, 2026-10-11: the user selected SQS for cloud event transport. It was not part of the original table above. Include queue operations, polling/retries and worker costs in the deployment estimate; do not treat the old estimate as the complete event-driven architecture budget.
 
-Первый technical increment: agent_runs, source_items, employers, vacancies, vacancy_sources; processed_messages и external_actions вводим до Gmail. Следом evaluation_criteria, vacancy_evaluations, review_feedback. У source unique(source, source_id); у action unique idempotency_key. Source payload JSONB, URL, fetched_at, extraction_version. Domain write и pending action — одна transaction. LLM/HTTP вне DB transaction. Gmail finalize только после commit, retry action не повторяет domain ingestion.
+## Schema and first code increments
 
-Первый implementation PR: Maven/Java 21/Spring Boot, Docker Compose PostgreSQL, Flyway, run/source/vacancy persistence, CI и synthetic fixture. RunService управляет прогоном; SourceAdapter возвращает payload; VacancyNormalizationService формирует контракт; VacancyRepository сохраняет; EvaluationGateway появляется в следующем инкременте. Контроллер не обязателен для batch запуска. Shortlist/review API вводим с пользовательским обзором, защищаем перед доступом к персональным данным.
+The broader technical foundation introduces agent_runs, source_items, employers, vacancies and vacancy_sources; processed_messages/external_actions precede Gmail integration. Then add evaluation_criteria, vacancy_evaluations and review_feedback. Source identity uses unique(source, source_id); external actions have unique idempotency_key. Preserve JSONB payload, URL, fetched_at and extraction_version. Domain writes and pending actions share a transaction; HTTP/LLM remain outside it. Gmail finalization follows commit; action retry does not replay domain ingestion.
 
-Готовность первого PR: clean start, migrations, один synthetic run; повтор входа не создаёт дубли; rollback не оставляет частичного состояния. Второй PR — первый live source; третий — второй source/dedup; затем широкий discovery, LLM/shortlist и cloud deployment. Нет claims о найденных вакансиях, реализованном агенте или AWS deployment до соответствующих проверок.
+The original proposed first increment included Maven/Java 21/Spring Boot, Docker PostgreSQL, Flyway, run/source/vacancy persistence, CI and a synthetic fixture. RunService manages processing; SourceAdapter returns payload; VacancyNormalizationService defines the normalized contract; VacancyRepository persists it. EvaluationGateway follows. Controllers are optional for batch runs; review APIs require protection before personal data access.
 
-## Миграция и карьерные доказательства
+Current delivery clarification: Phase 1 delivered only the runnable foundation, agent_runs migration and startup tests. Synthetic ingestion, idempotency and rollback belong to Phase 2, following the JaCoCo/Sonar increment. The broader acceptance criteria still apply to that completed foundation sequence: clean startup/migrations, synthetic run, no repeated-input duplicates and rollback without partial domain state. Later PRs add live sources, discovery, evaluation and cloud deployment. Do not claim these features before implementation/testing.
 
-До cutover текущий Sheet — единственный master старого pipeline. Новые тестовые данные не управляют Gmail и не создают вторую действующую копию старого состояния. Перед cutover: snapshot, import с provenance, сверка работодателей/вакансий/status/actions, final delta при остановленном старом writer, cloud rehearsal, только затем switch. Сохраняем rollback export и не откатываем внешние действия слепым восстановлением snapshot.
+## Migration and career evidence
 
-Фаза 0 дала документированные требования и проектное решение; программа ещё не реализована. После merged PR проверять закрытый шаг, evidence и материал для CV/LinkedIn/interview; фиксировать в Career Board, Narrative и CAREER_EVIDENCE.md. Регион и бюджетные цифры здесь не означают создание платных ресурсов.
+Until cutover, the current Sheet is the sole old-pipeline master. New test data must not control Gmail or become a second live old-state copy. Cutover requires snapshot, provenance-aware import, employer/vacancy/status/action reconciliation, a final delta with the old writer stopped, cloud rehearsal and only then master switch. Keep rollback export and do not blindly restore snapshots to reverse external effects.
+
+Phase 0 delivered documented requirements/design, not deployed resources. After merged PRs, verify completed scope, evidence and safe CV/LinkedIn/interview material; record it in the existing Career Board, Narrative and CAREER_EVIDENCE.md. Region/budget figures do not authorize paid resource creation.

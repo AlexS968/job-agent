@@ -1,6 +1,6 @@
 # First technical increment — persistence and safe processing
 
-> Historical supporting document. Phase 0 is complete. The current scope and phase order are defined by MASTER_PLAN_RU.md and PHASE_0.md. Phase 1 delivers the runnable foundation; ingestion, idempotency and outbox belong to subsequent tasks. Earlier open region/platform decisions below are superseded by the Phase 0 baseline.
+> Historical supporting document. Phase 0 is complete. The current scope and phase order are defined by MASTER_PLAN.md and PHASE_0.md. Phase 1 delivers the runnable foundation; ingestion, idempotency and outbox belong to subsequent tasks. Earlier open region/platform decisions below are superseded by the Phase 0 baseline.
 
 Status: proposed, 2026-10-07. No implementation has started.
 

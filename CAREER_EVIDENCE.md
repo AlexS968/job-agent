@@ -2,9 +2,9 @@
 
 This file records verifiable, public-safe material for future LinkedIn posts, CV bullets, and interview stories. Planned work is not an achievement. The AI Career Board remains the source of truth for overall program status.
 
-## Current status (2026-10-07)
+## Current status (2026-10-11)
 
-Planning only. No Job Agent implementation, AWS deployment, migration, or merged PR has been completed in this repository.
+Phase 0 complete; Phase 1 foundation merged in PR #2. No vacancy discovery, LLM, event processing, AWS deployment or migration is implemented yet. The dated Phase 0 entries below are historical planning evidence.
 
 Phase 0 design package saved in PHASE_0.md: requirements grounded in the existing workflow and Sheet structure; independent discovery via source adapters and a separate search gateway; scheduled Fargate/private Aurora design; assumption-based AWS cost model. Evidence is documentation and official-source research only. Region baseline us-east-1 reflects cost/reliability preference; it is not a proven globally cheapest region. No implementation/deployment claim is supported yet.
 
@@ -33,3 +33,15 @@ Regional comparison updated: live AWS Calculator verified Aurora V2 Standard OnD
 Do not include private documents, employer-confidential information, real mailbox content, secrets, or claims about uncompleted stages.
 
 2026-10-07: Phase 0 design accepted after the user confirmed the preliminary AWS infrastructure estimate fits. Phase 0 complete; implementation has not started. LLM/search costs remain decisions before their integration. Evidence: PHASE_0.md and explicit user acceptance in this chat. No merged PR exists yet.
+
+## Verified milestone — Phase 1, 2026-10-11
+
+- PR: https://github.com/AlexS968/job-agent/pull/2; merged 2026-10-11T14:37:13Z; merge commit 15ddb4576812e12895d2f1ed9ae24aa303f15bbc.
+- Delivered: Java 21/Spring Boot 4.1.1 batch foundation, Maven Wrapper, localhost PostgreSQL 17.11 Compose, Flyway V1 agent_runs and CI.
+- Evidence: reviewer clean verify passed, 2 integration tests, no failures/errors/skips; GitHub run https://github.com/AlexS968/job-agent/actions/runs/38147433818 succeeded. Tests exercise first/repeat startup and unavailable DB with nonzero exit and no password in output.
+- Review improvement: child-process output redirected to temporary file to prevent pipe blockage; PostgreSQL updated; publication workflow clarified.
+- Limits: no job discovery, LLM, event-driven implementation, AWS, Sheet cutover or automated Career Board sync. JaCoCo/Sonar and architecture extensions remain planned.
+- CV draft: Built and verified a Spring Boot batch foundation with PostgreSQL migrations, Testcontainers integration tests and CI.
+- LinkedIn angle: testing real database startup and failure paths before adding AI features.
+- Interview story: separate JVM testing, connection closure and safe failure diagnostics; explain changes from review.
+- Existing Career Board and Narrative updated manually and verified after this merge; no parallel progress tracker created.
