@@ -1,6 +1,6 @@
 # Phase 2 delivery boundary
 
-Status: Phase 2A is prepared locally for review; it is not merged. Phase 2B is planned, not implemented.
+Status: Phase 2A merged in PR #5. Phase 2B is implemented locally for review; it is not merged.
 
 ## Phase 2A — transactional synthetic ingestion
 
@@ -12,4 +12,6 @@ Acceptance checks: empty PostgreSQL migration, first import, replay, two inputs 
 
 ## Phase 2B — durable outbox and dispatcher
 
-After Phase 2A review and merge, add the transactional outbox and local dispatcher described in [ADR 0001](adr/0001-event-driven-processing.md). Define event envelopes, claim/lease recovery, at-least-once delivery, consumer deduplication, bounded retry and failed-state replay. Test rollback, redelivery, competing workers and crashes between handling and acknowledgement. Keep SQS integration and its cost/security design for the AWS phase. Phase 2A does not emit events or perform external actions.
+The local increment adds Flyway V3, one `VacancyDiscovered` v1 event when a vacancy is first created, a short PostgreSQL claim/lease transaction, an explicit bounded dispatcher, durable consumer receipts and a synthetic observation result. Vacancy, outbox event and ingestion success commit together. Handler result and receipt commit atomically; delivery acknowledgement commits afterward. Expired claims below the three-attempt cycle limit are recoverable; an expired final claim becomes visibly `FAILED` before any further claim can run a handler. A stale token cannot acknowledge or defer exhausted or replayed work. Controlled replay retains event identity, cumulative attempts and consumer receipts. A previously committed consumer effect is recognized on redelivery and not repeated. Invocation counts and the separate backlog snapshot distinguish attempted work from future retries, active/expired claims and terminal failures; the snapshot may change concurrently. This is at-least-once local delivery with idempotent database effects. It does not perform external actions or claim exactly-once delivery.
+
+Acceptance checks include V2-to-V3 upgrade with retained data, rollback, replay/no duplicate event, committed visibility, competing claims, lease recovery, stale-token fencing, consumer deduplication, crash between consumer commit and acknowledgement, unsupported contracts, bounded retries and explicit batch modes. SQS integration, ingestion-run recovery, live sources and evaluation remain for later increments.

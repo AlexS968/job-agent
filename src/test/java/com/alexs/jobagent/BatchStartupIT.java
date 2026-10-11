@@ -31,7 +31,7 @@ class BatchStartupIT {
                  var statement = connection.createStatement();
                  var rows = statement.executeQuery("SELECT COUNT(*) FROM flyway_schema_history WHERE success")) {
                 assertTrue(rows.next());
-                assertEquals(2, rows.getInt(1));
+                assertEquals(3, rows.getInt(1));
             }
         }
     }
@@ -93,6 +93,83 @@ class BatchStartupIT {
                 assertEquals(0, rows.getInt(2));
                 assertEquals("FAILED", rows.getString(3));
             }
+        }
+    }
+
+    @Test
+    void explicitDispatchCompletesPendingEventAndNormalStartupDoesNotDispatch() throws Exception {
+        try (PostgreSQLContainer postgres = new PostgreSQLContainer("postgres:17.11-alpine")
+                .withDatabaseName("job_agent_dispatch_test").withUsername("test_user").withPassword(PASSWORD)) {
+            postgres.start();
+            assertEquals(0, run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD, "--mode=synthetic").exitCode());
+            assertEquals(0, run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD).exitCode());
+            try (var connection = java.sql.DriverManager.getConnection(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD);
+                 var statement = connection.createStatement();
+                 var rows = statement.executeQuery("SELECT state FROM outbox_events")) {
+                assertTrue(rows.next());
+                assertEquals("PENDING", rows.getString(1));
+            }
+            Result dispatched = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD, "--mode=dispatch");
+            assertEquals(0, dispatched.exitCode(), dispatched.output());
+            assertTrue(dispatched.output().contains("completed=1, deferred=0, failed=0"), dispatched.output());
+            assertTrue(dispatched.output().contains("Backlog snapshot: ready=0, future_retries=0"), dispatched.output());
+            Result repeated = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD, "--mode=dispatch");
+            assertEquals(0, repeated.exitCode(), repeated.output());
+            assertTrue(repeated.output().contains("completed=0, deferred=0, failed=0"), repeated.output());
+        }
+    }
+
+    @Test
+    void invalidReplayModeExitsNonzeroWithoutSecrets() throws Exception {
+        try (PostgreSQLContainer postgres = new PostgreSQLContainer("postgres:17.11-alpine")
+                .withDatabaseName("job_agent_replay_test").withUsername("test_user").withPassword(PASSWORD)) {
+            postgres.start();
+            Result result = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
+                    "--mode=replay-failed", "--event-id=00000000-0000-0000-0000-000000000001");
+            assertNotEquals(0, result.exitCode());
+            assertFalse(result.output().contains(PASSWORD));
+        }
+    }
+
+    @Test
+    void exhaustedDispatchReturnsNonzeroAndDeferredRetriesRemainPending() throws Exception {
+        try (PostgreSQLContainer postgres = new PostgreSQLContainer("postgres:17.11-alpine")
+                .withDatabaseName("job_agent_failed_dispatch_test").withUsername("test_user").withPassword(PASSWORD)) {
+            postgres.start();
+            assertEquals(0, run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD, "--mode=synthetic").exitCode());
+            try (var connection = java.sql.DriverManager.getConnection(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD);
+                 var statement = connection.createStatement()) {
+                statement.executeUpdate("UPDATE outbox_events SET event_type = 'Unsupported'");
+            }
+            for (int attempt = 1; attempt <= 3; attempt++) {
+                Result result = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD, "--mode=dispatch");
+                assertEquals(attempt == 3 ? 1 : 0, result.exitCode(), result.output());
+                assertTrue(result.output().contains(attempt == 3 ? "failed=1" : "deferred=1"), result.output());
+                assertTrue(result.output().contains(attempt == 3 ? "terminal_failures=1" : "future_retries=1"),
+                        result.output());
+                assertFalse(result.output().contains(PASSWORD));
+                if (attempt < 3) {
+                    try (var connection = java.sql.DriverManager.getConnection(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD);
+                         var statement = connection.createStatement()) {
+                        statement.executeUpdate("UPDATE outbox_events SET next_attempt_at = CURRENT_TIMESTAMP - INTERVAL '1 second'");
+                    }
+                }
+            }
+            String eventId;
+            try (var connection = java.sql.DriverManager.getConnection(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD);
+                 var statement = connection.createStatement();
+                 var rows = statement.executeQuery("SELECT event_id FROM outbox_events")) {
+                assertTrue(rows.next());
+                eventId = rows.getString(1);
+            }
+            Result replayed = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
+                    "--mode=replay-failed", "--event-id=" + eventId);
+            assertEquals(0, replayed.exitCode(), replayed.output());
+            try (var connection = java.sql.DriverManager.getConnection(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD);
+                 var statement = connection.createStatement()) {
+                statement.executeUpdate("UPDATE outbox_events SET event_type = 'VacancyDiscovered'");
+            }
+            assertEquals(0, run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD, "--mode=dispatch").exitCode());
         }
     }
 

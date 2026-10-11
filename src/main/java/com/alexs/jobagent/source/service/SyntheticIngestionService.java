@@ -1,6 +1,7 @@
 package com.alexs.jobagent.source.service;
 
 import com.alexs.jobagent.run.service.AgentRunService;
+import com.alexs.jobagent.outbox.service.OutboxService;
 import com.alexs.jobagent.source.dto.IngestionResultDTO;
 import com.alexs.jobagent.source.dto.SyntheticInputDTO;
 import com.alexs.jobagent.source.entity.SourceItemEntity;
@@ -27,15 +28,17 @@ public class SyntheticIngestionService {
     private final AgentRunService runs;
     private final SourceItemRepository sources;
     private final VacancyPersistenceService vacancyPersistence;
+    private final OutboxService outbox;
     private final JsonMapper json;
     private final TransactionTemplate transaction;
 
     public SyntheticIngestionService(AgentRunService runs, SourceItemRepository sources,
-                                     VacancyPersistenceService vacancyPersistence,
+                                     VacancyPersistenceService vacancyPersistence, OutboxService outbox,
                                      JsonMapper json, PlatformTransactionManager manager) {
         this.runs = runs;
         this.sources = sources;
         this.vacancyPersistence = vacancyPersistence;
+        this.outbox = outbox;
         this.json = json;
         this.transaction = new TransactionTemplate(manager);
     }
@@ -76,14 +79,17 @@ public class SyntheticIngestionService {
             runs.succeed(runId, false);
             return new IngestionResultDTO(runId, false, false);
         }
-        boolean vacancyCreated;
+        VacancyPersistenceService.Result stored;
         try {
-            vacancyCreated = vacancyPersistence.persist(vacancy, sourceId);
+            stored = vacancyPersistence.persist(vacancy, sourceId);
         } catch (VacancyConflictException conflict) {
             throw new IngestionConflictException(conflict.getMessage());
         }
+        if (stored.created()) {
+            outbox.vacancyDiscovered(stored.vacancyId(), runId);
+        }
         runs.succeed(runId, true);
-        return new IngestionResultDTO(runId, true, vacancyCreated);
+        return new IngestionResultDTO(runId, true, stored.created());
     }
 
     private String digest(SyntheticInputDTO input) {

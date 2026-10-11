@@ -6,7 +6,7 @@ The planned agent discovers vacancies and employers, normalizes and deduplicates
 
 ## Current status
 
-Phase 0 is complete. Phase 1 is merged to main (PR #2, 2026-10-11); quality configuration is merged in PR #4. Phase 2A synthetic ingestion is prepared locally for review. Normal batch startup checks PostgreSQL and Flyway migrations, then exits. Live vacancy discovery, cloud deployment and Gmail/Sheet migration are not implemented. Cloud costs are estimates, not measured bills.
+Phase 0 is complete. Phase 1 is merged to main (PR #2, 2026-10-11); quality configuration is merged in PR #4; Phase 2A synthetic ingestion is merged in PR #5. Phase 2B local outbox delivery is prepared in this uncommitted branch for review. Normal batch startup checks PostgreSQL and Flyway migrations, then exits. Live vacancy discovery, cloud deployment and Gmail/Sheet migration are not implemented. Cloud costs are estimates, not measured bills.
 
 ## Local run
 
@@ -32,7 +32,7 @@ docker compose down -v        # delete local development data when no longer nee
 
 `verify` requires a working Docker daemon and fails if PostgreSQL cannot start. The tests use synthetic credentials and a disposable PostgreSQL 17.11 container. No H2 fallback is configured. Compose uses the same pinned PostgreSQL 17.11 image, whose fixes are listed in the [official release notes](https://www.postgresql.org/docs/17/release-17-11.html).
 
-## Synthetic ingestion (Phase 2A, local review branch)
+## Synthetic ingestion (Phase 2A)
 
 With the same `DB_URL`, `DB_USER` and `DB_PASSWORD` environment as above, run the bundled, wholly synthetic fixture explicitly:
 
@@ -46,7 +46,22 @@ Normal startup never imports the fixture. The input contains a source namespace/
 
 An identical source input is a successful no-op. Any changed field under an existing source-input identity, including payload or fetch time, is rejected rather than silently updated. A distinct source input may link to an existing vacancy when employer and normalized vacancy data agree. Conflicting normalized data for an existing employer/listing identity is rejected. The digest uses serialized JSON field order, so semantically equivalent JSON with reordered fields may also be rejected; versioned updates require a later explicit policy.
 
-The ingestion service rejects an ambient transaction before creating a run. Each accepted attempt first creates an `agent_runs` row outside the ingestion transaction. One service-owned database transaction then writes source, employer, vacancy and provenance link and marks that run `SUCCEEDED`; vacancy persistence joins this transaction and never commits independently. On failure, the transaction rolls back those writes; a separate short write marks the run `FAILED` with a safe error code. If failure tracking also fails, the original ingestion exception is retained with the tracking error suppressed; the run may remain `RUNNING`. If the database is unavailable before run creation, no run can be recorded. A process crash before the failure write can likewise leave `RUNNING`; recovery belongs to the next increment. No external event or action is emitted. See [Phase 2 task](docs/PHASE_2_TASK.md) for the outbox/dispatcher boundary.
+The ingestion service rejects an ambient transaction before creating a run. Each accepted attempt first creates an `agent_runs` row outside the ingestion transaction. One service-owned database transaction then writes source, employer, vacancy and provenance link, adds a `VacancyDiscovered` outbox event only for a newly created vacancy, and marks the run `SUCCEEDED`. Vacancy persistence and event creation join this transaction and never commit independently. On failure, the transaction rolls back those writes; a separate short write marks the run `FAILED` with a safe error code. If failure tracking also fails, the original ingestion exception is retained with the tracking error suppressed; the run may remain `RUNNING`. If the database is unavailable before run creation, no run can be recorded. A process crash before the failure write can likewise leave `RUNNING`; conservative run recovery remains unimplemented.
+
+## Local outbox dispatch (Phase 2B, uncommitted review branch)
+
+With the same database environment, explicitly run:
+
+```sh
+java -jar target/job-agent-0.1.0-SNAPSHOT.jar --mode=dispatch
+java -jar target/job-agent-0.1.0-SNAPSHOT.jar --mode=replay-failed --event-id=<UUID>
+```
+
+`--mode=dispatch` claims at most 20 eligible events and prints per-invocation `completed`, `deferred` and `failed` counts, followed by a separate backlog snapshot: ready work, future retries, active claims, expired claims and terminal failures. The snapshot includes work not attempted by this invocation and may change while other workers run. Exit code 0 means the invocation had no newly terminal failures; deferred events remain pending for later runs. A newly exhausted event or invalid mode/replay request exits nonzero with safe diagnostics. An already terminal `FAILED` event remains visible in the backlog but does not repeatedly fail every later invocation. Normal startup neither ingests nor dispatches. The replay command accepts only a `FAILED` event and retains its event ID and consumer history.
+
+`VacancyDiscovered` v1 means a stable vacancy was first inserted. Its envelope stores a UUID `event_id`, type/version, vacancy `aggregate_id`, UTC occurrence time, ingestion `run_id` and only `vacancy_id` in JSONB payload. Identical source replay and a distinct source input linked to the same existing vacancy produce no additional event. The local `synthetic-vacancy-observer-v1` consumer writes one durable `synthetic_vacancy_observations` row and a `(consumer_id, event_id)` receipt in one transaction. It does not evaluate vacancies or call external systems. Unsupported event types/versions fail safely.
+
+PostgreSQL `FOR UPDATE SKIP LOCKED` claims committed eligible rows in a short transaction, using a unique token and two-minute lease. The row lock is released before the handler runs. A single retry policy allows three claims per cycle, including claims lost to a worker crash before handling. Each claim increments total and current-cycle attempts. An expired lease below the limit can be reclaimed; an expired third claim becomes visibly `FAILED` with `LEASE_EXHAUSTED` in the claim transaction and cannot produce a fourth handler attempt. Each dispatcher iteration recovers at most one exhausted claim and may claim one eligible event, within the 20-iteration invocation limit. Only the current, unexpired token can acknowledge or defer; old tokens cannot change an exhausted or replayed event. Handler failures schedule capped 1/2/4-second backoff and become `FAILED` after the third attempt. A handler commits its receipt and observation separately from delivery acknowledgement. If the final acknowledgement is lost after consumer commit, the event becomes `FAILED`; controlled replay retains its event ID and consumer receipt, then acknowledges redelivery without repeating the database observation. Replay resets only cycle attempts, preserving total attempts. This is at-least-once delivery with idempotent database effects, not exactly-once delivery or proof about external effects. Event-lease recovery is implemented; abandoned ingestion-run recovery is not, because Phase 2A run rows lack a safe ownership/lease signal.
 
 ## Coverage and SonarQube Cloud preparation
 
@@ -69,11 +84,11 @@ Proposed remote checks: start with Sonar's built-in **Sonar way** gate for new c
 - [MASTER_PLAN.md](MASTER_PLAN.md): authoritative roadmap and phase order.
 - [PHASE_0.md](PHASE_0.md): requirements, source choices, proposed AWS architecture and dated cost assumptions.
 - [Phase 1 task](docs/PHASE_1_TASK.md): scope and acceptance criteria for the implementation chat.
-- [Phase 2 task](docs/PHASE_2_TASK.md): synthetic persistence now and durable outbox/dispatcher next.
+- [Phase 2 task](docs/PHASE_2_TASK.md): merged synthetic persistence and locally prepared outbox/dispatcher.
 - [CAREER_EVIDENCE.md](CAREER_EVIDENCE.md): verified public-safe evidence; not a replacement for the existing AI Career Board.
 - [FIRST_INCREMENT.md](FIRST_INCREMENT.md) and [PROJECT_PLAN.md](PROJECT_PLAN.md): historical supporting plans; the master plan takes precedence.
 
-- [Event-driven processing ADR](docs/adr/0001-event-driven-processing.md): planned event contracts, durable outbox and delivery boundaries.
+- [Event-driven processing ADR](docs/adr/0001-event-driven-processing.md): local outbox contract and remaining cloud boundaries.
 
 ## Development workflow
 
@@ -83,4 +98,4 @@ The existing Google Sheet remains the sole master of the old pipeline until veri
 
 ## Next milestone
 
-Next: review Phase 2A synthetic persistence and independently verify remote Sonar coverage/Quality Gate. Phase 2B adds durable outbox delivery and recovery.
+Next: review and publish Phase 2B, then independently verify its remote CI and Sonar results. Live discovery, evaluation and cloud transport follow later phases.

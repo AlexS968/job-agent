@@ -4,7 +4,7 @@ This file records verifiable, public-safe material for future LinkedIn posts, CV
 
 ## Current status (2026-10-11)
 
-Phase 0 complete; Phase 1 foundation merged in PR #2; quality configuration merged in PR #4. No live vacancy discovery, LLM, event processing, AWS deployment or legacy migration is implemented yet. Phase 2A work is unmerged. The dated Phase 0 entries below are historical planning evidence.
+Phase 0 complete; Phase 1 foundation merged in PR #2; quality configuration merged in PR #4; Phase 2A synthetic ingestion merged in PR #5. Phase 2B local event processing is uncommitted and not a published achievement. No live vacancy discovery, LLM, AWS deployment or legacy migration is implemented. The dated Phase 0 entries below are historical planning evidence.
 
 Phase 0 design package saved in PHASE_0.md: requirements grounded in the existing workflow and Sheet structure; independent discovery via source adapters and a separate search gateway; scheduled Fargate/private Aurora design; assumption-based AWS cost model. Evidence is documentation and official-source research only. Region baseline us-east-1 reflects cost/reliability preference; it is not a proven globally cheapest region. No implementation/deployment claim is supported yet.
 
@@ -53,3 +53,14 @@ Do not include private documents, employer-confidential information, real mailbo
 - Evidence: local clean verify in the implementation work reported 2 PostgreSQL integration tests and 11/12 `JobAgentApplication` lines covered. The PR's GitHub `build` check completed successfully: https://github.com/AlexS968/job-agent/actions/runs/38153139380/job/114510549098. GitHub also displayed a successful `SonarCloud Code Analysis` check on PR #4.
 - Limits: Sonar's imported coverage and actual Quality Gate details were not independently inspected; the main-push scanner is after merge and does not provide a pre-merge gate. No claim of verified required GitHub checks or automatic Career Board/Narrative synchronization.
 - Public-safe CV draft: Added measurable coverage and prepared gated static analysis for a Java batch application while keeping secrets out of pull-request builds.
+
+## Verified milestone — Phase 2A synthetic ingestion, 2026-10-11
+
+- PR: https://github.com/AlexS968/job-agent/pull/5; merged 2026-10-11T16:24:24Z; merge commit `0371b06a53fd316d5749d4dd6374996d36310db6`.
+- Delivered: explicit synthetic batch ingestion into PostgreSQL with source provenance, stable employer/listing identities, raw JSONB, MapStruct conversion, idempotent replay and rollback. Run status is tracked separately from the ingestion transaction; calls inside an ambient transaction are rejected before run creation.
+- Checked CI evidence: GitHub `build` check completed successfully at https://github.com/AlexS968/job-agent/actions/runs/38155160096/job/114516516502. GitHub reported a successful `SonarCloud Code Analysis` check for PR #5 at https://sonarcloud.io/dashboard?id=AlexS968_job-agent&pullRequest=5. The actual imported coverage and Quality Gate details were not independently inspected.
+- Limits: synthetic input only; no live discovery, local event delivery in the merged PR, cloud transport, evaluation, AWS deployment or old-pipeline cutover. PR checks do not verify the unpublished Phase 2B work. Career Board/Narrative synchronization for this milestone is not claimed.
+- CV draft: Implemented transaction-safe synthetic vacancy ingestion with PostgreSQL identity constraints, provenance and Testcontainers replay/rollback checks.
+- LinkedIn angle: showing how explicit source identities and transaction ownership prevent duplicate or partial vacancy records before connecting live sources.
+- Interview story: explain the choice to reject ambient transactions, commit domain writes and success together, retain failure evidence separately, and use database constraints for concurrent replay.
+- Handoff for the original chat: review this evidence against PR #5, then update the existing AI Career Board and Narrative through their established workflow; verify that synchronization rather than assuming it occurred.

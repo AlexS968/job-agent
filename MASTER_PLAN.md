@@ -1,6 +1,6 @@
 # Job Agent: Complete delivery plan
 
-Status: 2026-10-11. Phase 1 is complete: PR #2 merged on 2026-10-11. JaCoCo and Sonar CI preparation merged in PR #4; remote Sonar analysis and the actual Quality Gate remain unverified. Phase 2A synthetic persistence is in local implementation; Phase 2B outbox/dispatcher follows. This is the authoritative development entry point. `PROJECT_PLAN.md` and `FIRST_INCREMENT.md` contain supporting detail; this plan takes precedence in a conflict.
+Status: 2026-10-11. Phase 1 is complete: PR #2 merged on 2026-10-11. JaCoCo and Sonar CI preparation merged in PR #4; remote Sonar imported coverage and the actual Quality Gate remain unverified. Phase 2A synthetic persistence merged in PR #5. Phase 2B local outbox/dispatcher is prepared in an uncommitted branch for review. This is the authoritative development entry point. `PROJECT_PLAN.md` and `FIRST_INCREMENT.md` contain supporting detail; this plan takes precedence in a conflict.
 
 Phase 0 completed on 2026-10-07 when the user accepted the preliminary AWS estimate. `PHASE_0.md` records requirements from the existing workflow, source documentation checks, the proposed Fargate/Aurora design and us-east-1 estimate with explicit assumptions. There is no EU-only region requirement: cost and reliability take priority over data location. The estimate excludes later LLM/search-provider choices and does not authorize paid deployment.
 
@@ -51,7 +51,7 @@ Domain modules/packages:
 
 When user review is introduced, minimal APIs retrieve the shortlist, show a vacancy with evaluation/source URL, save feedback and show run history. Later APIs create/approve/reject application drafts and record outcomes. Scheduled batch execution does not require HTTP controllers. A protected report can precede a UI; agree delivery and access controls before personal data is connected.
 
-Event processing follows [ADR 0001](docs/adr/0001-event-driven-processing.md). Phase 2 introduces a durable outbox and synthetic-handler delivery/retry tests; Phases 3–4 connect real vacancy/evaluation events. The user selected SQS as the cloud transport; design queues, workers and complete cost before AWS deployment. This remains planned event-driven implementation.
+Event processing follows [ADR 0001](docs/adr/0001-event-driven-processing.md). Phase 2B locally implements a durable outbox and synthetic-handler delivery/retry tests; Phases 3–4 connect real discovery/evaluation work. The user selected SQS as the cloud transport; queue design, workers and complete cost remain for AWS deployment. Do not treat the local increment as deployed cloud processing.
 
 Layers and naming follow [ADR 0002](docs/adr/0002-layers-and-naming.md): Controller → Service → Repository/Mapper, `Entity`/`DTO` suffixes and separate `exception`, `exceptionhandler` and `config` packages. Start with domain packages and internal layers in one Maven project. Separate Maven modules require a concrete justification. Introduce automatic forbidden-dependency checks as layers appear.
 
@@ -94,7 +94,7 @@ Use separate subsequent PRs for feedback, Gmail OAuth, import/reconciliation, cu
 
 ## 9. Next development steps and chat responsibilities
 
-Phase 0 is complete; repeat research only for a concrete reason. Phase 1 delivered the runnable foundation. Quality configuration is merged in PR #4. Phase 2A introduces synthetic persistence, identity handling and rollback; Phase 2B adds durable outbox delivery. The broader first technical increment described in Phase 0 spans Phases 1–2 and need not be one PR.
+Phase 0 is complete; repeat research only for a concrete reason. Phase 1 delivered the runnable foundation. Quality configuration is merged in PR #4. Phase 2A merged synthetic persistence, identity handling and rollback in PR #5. Phase 2B locally adds durable outbox delivery for review. The broader first technical increment described in Phase 0 spans Phases 1–2 and need not be one PR.
 
 The original Work chat plans work, prepares implementation prompts, reviews results, may commit locally after successful review and prepares PR titles/descriptions. The implementation chat makes all source-code, configuration, documentation and translation changes, runs local checks and hands off uncommitted work with a concise file/check/limitation report. The user pushes, creates PRs, merges and deletes remote branches.
 
