@@ -1,36 +1,36 @@
-# ADR 0001 — событийное взаимодействие модулей
+# ADR 0001: Event-driven module processing
 
-Дата: 2026-10-11.
-Статус: событийная архитектура — согласованное направление; описанный механизм предлагается для следующих инкрементов. Код событий, outbox и обработчики пока не реализованы. Облачный транспорт SQS подтверждён пользователем; его конфигурация, исполнители и полный бюджет ещё требуют проектирования.
+Date: 2026-10-11.
+Status: event-driven architecture is an agreed direction; the mechanism below is proposed for subsequent increments. Events, outbox and handlers are not implemented. The user confirmed SQS as the cloud transport; configuration, workers and complete cost still need design.
 
-## Контекст
+## Context
 
-Job Agent должен разделять поиск, сохранение, оценку и построение shortlist. Ошибка следующего этапа не должна терять уже сохранённую вакансию. Проект начинается как модульное приложение Java/Spring Boot с PostgreSQL и batch-запусками; приоритеты — стоимость, надёжность и проверяемое портфолио.
+Job Agent must separate discovery, persistence, evaluation and shortlist creation. A later-stage failure must not lose a saved vacancy. Start with a modular Java/Spring Boot application, PostgreSQL and batch runs; prioritize low cost, reliability and verifiable portfolio evidence.
 
-## Предлагаемое решение
+## Proposed implementation
 
-1. Оставить модульное приложение. Модули взаимодействуют через явные доменные события и интерфейсы обработчиков; выделять отдельные сервисы при подтверждённой необходимости.
-2. В одной транзакции PostgreSQL сохранять доменное изменение и durable событие в transactional outbox. Rollback отменяет обе записи. Простая отправка Spring-события в памяти после commit не обеспечивает восстановление после падения процесса.
-3. Dispatcher читает только committed записи и передаёт их обработчикам. Для локального инкремента обработчики работают в приложении; оставшиеся записи подбираются при следующем запуске. Сеть и LLM не вызываются внутри транзакции записи домена.
-4. Предусмотреть повторную доставку (at least once), стабильный event_id и идемпотентных потребителей. Не обещать exactly once для внешних действий. Успешный handler и запись его результата требуют определённых транзакционных границ; идентификатор потребителя входит в ключ дедупликации.
-5. Для ошибки сохранять число попыток, безопасную диагностику и next_attempt_at; после ограниченного числа попыток переносить событие в явно видимое FAILED-состояние с контролируемым повтором. Предусмотреть claim/lease, чтобы падение worker не оставляло событие навсегда захваченным.
-6. Предлагаемый envelope: event_id, event_type, schema_version, aggregate_id, occurred_at (UTC), correlation_id/run_id и минимальный payload. В payload предпочтительны идентификаторы; личные документы и секреты не копируются.
-7. Предлагаемая цепочка: VacancyDiscovered → VacancyEvaluationRequested → VacancyEvaluated → ShortlistUpdated. Команды на выполнение работы и события произошедших фактов различаются в контрактах. Конкретные имена/схемы уточняются в PR соответствующего этапа. Порядок для одной вакансии и устаревшие версии оценки обрабатываются явно.
-8. EventBridge Scheduler в фазе 0 запускает batch; сам по себе scheduler не доказывает событийное взаимодействие бизнес-модулей. Для облачного транспорта выбран Amazon SQS; тип очереди, стоимость исполнителей, retry/DLQ и защита доступа уточняются отдельным ADR перед подключением. Kafka/RabbitMQ сейчас не выбраны.
+1. Keep a modular application. Modules communicate through explicit domain events and handler interfaces; extract separate services only for a demonstrated need.
+2. Save a domain change and durable event in a PostgreSQL transactional outbox within one transaction. Rollback removes both writes. An in-memory Spring event sent after commit does not provide crash recovery.
+3. A dispatcher reads committed records and passes them to handlers. Initial local handlers run inside the application; pending records are recovered on a later run. Network/LLM calls stay outside domain-write transactions.
+4. Support at-least-once delivery, stable event_id and idempotent consumers. Do not promise exactly-once external effects. Define transaction boundaries for handler results and acknowledgement; consumer identity belongs in the deduplication key.
+5. Persist attempts, safe diagnostics and next_attempt_at. After bounded retries, expose FAILED state with controlled replay. Use claim/lease handling so a worker crash does not leave an event permanently claimed.
+6. Proposed envelope: event_id, event_type, schema_version, aggregate_id, occurred_at (UTC), correlation_id/run_id and minimal payload. Prefer identifiers; do not copy private documents or secrets into events.
+7. Proposed flow: VacancyDiscovered → VacancyEvaluationRequested → VacancyEvaluated → ShortlistUpdated. Distinguish work-request commands from events describing facts. Final names/schemas are refined in the relevant PR. Handle ordering per vacancy and stale evaluation versions explicitly.
+8. Phase 0 EventBridge Scheduler starts a batch run; scheduling alone does not demonstrate business event processing. Amazon SQS is the selected cloud transport. Queue type, worker costs, retry/DLQ and access controls need a separate decision before deployment. Kafka/RabbitMQ are not selected.
 
-Это не event sourcing: текущие таблицы PostgreSQL остаются источником состояния; журнал событий не используется для восстановления всего домена.
+This is not event sourcing: PostgreSQL tables remain the source of current state; the event log does not rebuild the entire domain.
 
-## Проверяемая поставка
+## Verifiable delivery
 
-- Фаза 2: синтетическое доменное изменение + outbox в одной транзакции; тест rollback, повторной доставки, дедупликации, восстановления после падения между обработкой и подтверждением, конкурирующих worker и исчерпания retry.
-- Фазы 3–4: реальные события вакансий/оценок и обработчики, correlation_id в диагностике, наблюдаемые переходы и повтор обработки без потери исходного входа.
-- Фаза 5: при необходимости облачный транспорт с отдельным решением и стоимостью; проверить полный путь и восстановление.
-- Внешние действия из старого плана остаются отдельными командами с собственными гарантиями и одобрением пользователя там, где оно требуется. Не создавать вторую дублирующую очередь для одного действия.
+- Phase 2: synthetic domain change and outbox in one transaction; tests for rollback, redelivery, deduplication, crash between processing and acknowledgement, competing workers and exhausted retries.
+- Phases 3–4: actual vacancy/evaluation events and handlers, correlated diagnostics, observable transitions and replay without losing original inputs.
+- Phase 5: cloud transport configuration and complete worker/transport estimate; verify the full path and recovery.
+- External actions from the existing plan remain separate commands with their own guarantees and user approval where required. Do not create two queues for the same action.
 
-## Последствия и доказательства
+## Consequences and evidence
 
-Outbox добавляет schema, dispatcher и обработку повторов, а также eventual consistency между этапами. Пользовательский обзор должен отличать ожидающую оценку, ошибку и готовый результат.
+Outbox introduces schema, a dispatcher, retry handling and eventual consistency between stages. User review must distinguish pending evaluation, failure and ready results.
 
-Для портфолио заявлять реализацию event-driven processing только после merged кода и тестов соответствующего инкремента. Сейчас подтверждён только архитектурный план.
+Claim event-driven implementation for the portfolio only after the relevant code and tests are merged. Current evidence supports architecture planning only.
 
-Основа паттерна: [AWS transactional outbox guidance](https://docs.aws.amazon.com/prescriptive-guidance/latest/cloud-design-patterns/transactional-outbox.html).
+Pattern reference: [AWS transactional outbox guidance](https://docs.aws.amazon.com/prescriptive-guidance/latest/cloud-design-patterns/transactional-outbox.html).

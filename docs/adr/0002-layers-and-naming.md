@@ -1,26 +1,26 @@
-# ADR 0002 — слои, пакеты и именование
+# ADR 0002: Layers, packages and naming
 
-Дата: 2026-10-11.
-Статус: принято пользователем для последующей реализации. Структура ещё не полностью реализована; отдельные Maven-модули не утверждены.
+Date: 2026-10-11.
+Status: accepted by the user for subsequent implementation. The full structure is not implemented; separate Maven modules have not been approved.
 
-## Границы слоёв
+## Layer boundaries
 
-- Controller обращается только к Service для выполнения бизнес-операций. Не внедряет Repository или Mapper, не выполняет SQL, не возвращает Entity наружу. DTO и валидация входа являются контрактом контроллера и не нарушают это правило.
-- Service реализует бизнес-операции и транзакционные границы; использует Repository и Mapper, а также согласованные интерфейсы адаптеров/событий. Не зависит от Controller.
-- Repository отвечает за доступ к данным; не зависит от Controller, Service или Mapper.
-- Mapper (MapStruct) преобразует модели; не вызывает Service или Repository и не содержит бизнес-операций. Использование вспомогательных мапперов допустимо.
-- Batch runner и обработчик события вызывают Service как входные адаптеры. Веб-контроллеры вводятся при появлении HTTP API.
+- Controller calls only Service for business operations. It does not inject Repository/Mapper, execute SQL or return Entity objects. DTOs and input validation are Controller contracts and do not violate this rule.
+- Service owns business operations and transaction boundaries; it uses Repository, Mapper and agreed adapter/event interfaces. It does not depend on Controller.
+- Repository owns data access and does not depend on Controller, Service or Mapper.
+- Mapper (MapStruct) converts models, does not call Service/Repository and contains no business operations. Helper mappers are allowed.
+- Batch runners and event handlers call Service as inbound adapters. Add web controllers when HTTP APIs are introduced.
 
-## Именование
+## Naming
 
-- Все классы persistence entity заканчиваются на `Entity`: `VacancyEntity`, `EmployerEntity`, `AgentRunEntity`.
-- Все DTO заканчиваются на `DTO` (три заглавные буквы): `VacancyDTO`, `CreateVacancyDTO`. Правило действует и для DTO, объявленных как record.
-- Доменные события имеют имена фактов (`VacancyDiscovered`); событие не является автоматически DTO или persistence entity. Именование определяется назначением модели.
-- Другие классы используют понятные суффиксы по назначению: `VacancyController`, `VacancyService`, `VacancyRepository`, `VacancyMapper`, `VacancyNotFoundException`, `GlobalExceptionHandler`, `MappingConfig`.
+- All persistence entity classes end in `Entity`: `VacancyEntity`, `EmployerEntity`, `AgentRunEntity`.
+- All DTOs end in `DTO` (three uppercase letters): `VacancyDTO`, `CreateVacancyDTO`. This also applies to DTO records.
+- Domain events name facts (`VacancyDiscovered`); an event is not automatically a DTO or persistence entity. Names follow model purpose.
+- Other classes use clear role suffixes: `VacancyController`, `VacancyService`, `VacancyRepository`, `VacancyMapper`, `VacancyNotFoundException`, `GlobalExceptionHandler`, `MappingConfig`.
 
-## Пакеты
+## Packages
 
-Внутри доменного модуля применяем слои по мере появления реального кода:
+Introduce layers within domain modules when actual code needs them:
 
 ```text
 com.alexs.jobagent
@@ -41,12 +41,12 @@ com.alexs.jobagent
   config
 ```
 
-Исключения находятся в отдельном `exception` пакете соответствующего модуля; общие исключения при необходимости — в корневом `exception`. Обработчики исключений — в отдельном `exceptionhandler`, Spring-конфигурационные классы — в `config` (общем или модульном). Общий HTTP handler создаётся вместе с HTTP API. Batch-ошибки сохраняют ненулевой exit code и безопасную диагностику.
+Exceptions live in a module's separate `exception` package; shared exceptions may use a root `exception` package. Handlers live in `exceptionhandler`; Spring configuration classes live in shared/module `config` packages. Introduce the shared HTTP handler with the HTTP API. Batch failures retain a nonzero exit code and safe diagnostics.
 
-`application.properties`/`application.yaml` и Flyway SQL остаются в стандартных путях resources: правило `config` относится к Java-классам конфигурации.
+`application.properties`/`application.yaml` and Flyway SQL stay in standard resources paths: the `config` rule applies to Java configuration classes.
 
-## Модульность и проверки
+## Modularity and checks
 
-На старте один Maven-проект, доменные границы выражены пакетами из MASTER_PLAN_RU.md. Отдельные Maven-модули вводим при конкретной необходимости и оформляем отдельным решением. Между доменными модулями использовать публичные сервисные интерфейсы и контракты событий; не обращаться напрямую к чужим внутренним репозиториям.
+Start with one Maven project and domain packages defined in `MASTER_PLAN.md`. Introduce separate Maven modules for a concrete need and record that decision. Cross-module calls use public service interfaces/event contracts, not another module's internal repositories.
 
-При появлении слоёв добавить необходимые архитектурные проверки запрещённых зависимостей (кандидат — ArchUnit; подключение ещё не выполнено). Не создавать пустые классы/пакеты для заполнения схемы. Не переименовывать стабильные доменные события как DTO только ради общего суффикса.
+As layers appear, add necessary architecture checks for forbidden dependencies (ArchUnit is a candidate, not yet configured). Do not create empty classes/packages to fill the diagram. Do not rename stable domain events as DTOs solely to impose a suffix.

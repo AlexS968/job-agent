@@ -1,6 +1,6 @@
 # Job Agent and shared Agent Platform — working plan
 
-> Historical supporting document. Phase 0 is complete. The current scope and phase order are defined by MASTER_PLAN_RU.md and PHASE_0.md. Phase 1 delivers the runnable foundation; ingestion, idempotency and outbox belong to subsequent tasks. Earlier open region/platform decisions below are superseded by the Phase 0 baseline.
+> Historical supporting document. Phase 0 is complete. The current scope and phase order are defined by MASTER_PLAN.md and PHASE_0.md. Phase 1 delivers the runnable foundation; ingestion, idempotency and outbox belong to subsequent tasks. Earlier open region/platform decisions below are superseded by the Phase 0 baseline.
 
 Updated: 2026-10-07. This document records agreed direction, not completed implementation.
 
@@ -18,7 +18,7 @@ Updated: 2026-10-07. This document records agreed direction, not completed imple
 
 **Step 5 — expand the product.** Deepen the feedback loop, then add pgvector/embeddings, analytics, strategy and career intelligence, application assistance with explicit human approval, outcome tracking, and only then optional ML if evidence warrants it. House Agent can use the shared platform after the first agent's reliability and cost are measured, while retaining separate domain code and schedule.
 
-**CV/document handoff reminder.** Ask the user for CVs, Arbeitszeugnisse, certificates, and other private career documents only after the secured AWS document storage and access controls are provisioned, tested, and ready for upload. Do not request these files during planning or keep them in Git. When that milestone is reached, request only the specific documents needed for the next feature and agree retention and deletion rules before upload.
+**CV/document handoff reminder.** Ask the user for CVs, employment references, certificates, and other private career documents only after the secured AWS document storage and access controls are provisioned, tested, and ready for upload. Do not request these files during planning or keep them in Git. When that milestone is reached, request only the specific documents needed for the next feature and agree retention and deletion rules before upload.
 
 **Immediate next deliverable.** A short architecture decision package: workload assumptions, AWS service comparison, region-specific cost estimate, initial data model, migration inventory, and a first PR scope. No AWS deployment or live-pipeline change is part of that deliverable.
 

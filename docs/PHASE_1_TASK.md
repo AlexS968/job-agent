@@ -1,39 +1,39 @@
-# Фаза 1 — основа приложения
+# Phase 1: Application foundation
 
-Статус: фаза завершена, PR #2 merged 2026-10-11; локальные проверки и CI успешны. Implementation-чат передаёт незакоммиченные изменения исходному чату.
+Status: completed; PR #2 merged 2026-10-11, local checks and CI passed. The implementation chat hands off uncommitted changes to the original chat.
 
-## Контекст
+## Context
 
-Репозиторий: https://github.com/AlexS968/job-agent. Прочитай AGENTS.md, MASTER_PLAN_RU.md и PHASE_0.md. Фаза 0 завершена. Implementation-чат реализует код и выполняет локальные проверки в ветке codex/phase-1-foundation от актуального main; исходный чат выполняет планирование и ревью, может сделать локальный commit и готовит название/описание PR; пользователь делает push и создаёт PR.
+Repository: https://github.com/AlexS968/job-agent. Read AGENTS.md, MASTER_PLAN.md and PHASE_0.md. Phase 0 is complete. The implementation chat codes and runs local checks on codex/phase-1-foundation from current main. The original chat plans, reviews, may commit locally and prepares PR text; the user pushes and creates the PR.
 
-## Результат
+## Deliverable
 
-Локально запускаемое Java 21/Spring Boot приложение с PostgreSQL, миграциями и CI. Это техническая основа самостоятельного Job Agent, а не готовый поисковый агент.
+A locally runnable Java 21/Spring Boot application with PostgreSQL, migrations and CI. This is the autonomous agent's technical foundation, not a completed job-search agent.
 
-## Сделать
+## Implementation scope
 
-1. Maven-проект с Maven Wrapper; выбрать и зафиксировать поддерживаемую стабильную версию Spring Boot, совместимую с Java 21. Проверить официальные источники для выбора версии.
-2. Минимальную структуру модульного приложения по плану; не создавать пустые контроллеры, сервисы и репозитории ради структуры. Для batch запуска веб-сервер не обязателен.
-3. Docker Compose с PostgreSQL, healthcheck и сохранением данных в отдельном volume. Опубликовать порт БД только на localhost; настройки передавать через environment, локальные секреты исключить из Git. Пример конфигурации содержит только явно вымышленные значения.
-4. Flyway и первую минимальную миграцию для основы (например, agent_runs). Не реализовывать ingestion, outbox или полный домен в этой задаче. Объяснить выбранную границу схемы в отчёте для ревью и последующем PR.
-5. Проверяемую команду запуска: подключение к БД, успешное применение/валидация миграций, корректное завершение batch процесса и закрытие соединений. При недоступной БД завершаться с ошибкой и понятной диагностикой без секретов.
-6. Необходимые интеграционные проверки на настоящем изолированном PostgreSQL: запуск на пустой БД, повторный запуск без повторного применения миграций, ошибка подключения. Не подменять PostgreSQL H2 и не пропускать проверки молча при отсутствии Docker.
-7. GitHub Actions CI для Java 21: сборка и релевантные тесты, включая PostgreSQL-интеграцию. Использовать минимальные права workflow; credentials тестовой БД должны быть одноразовыми и публично безопасными.
-8. Обновить README точными командами настройки, запуска, тестирования и остановки. Указать требования окружения, версии и ограничения. Сохранить согласованность статуса основного плана.
+1. Maven project with Maven Wrapper; select a stable supported Spring Boot version compatible with Java 21 and verify official sources.
+2. Minimal modular structure following the plan. A batch run does not require a web server; do not create empty controllers/services/repositories solely for structure.
+3. Docker Compose PostgreSQL with healthcheck and a dedicated persistent volume. Bind the database port to localhost only. Use environment configuration; exclude local secrets from Git. Examples contain explicitly synthetic values only.
+4. Flyway and a minimal foundation migration (e.g. agent_runs). Do not implement ingestion, outbox or the full domain here. Explain the schema boundary in the handoff and subsequent PR.
+5. Verifiable startup: connect, migrate/validate, exit correctly and close connections. Database unavailability produces a failure exit and useful diagnostics without secrets.
+6. Necessary integration checks against real isolated PostgreSQL: empty database, repeat startup without reapplying migrations and connection failure. No H2 substitute or silently skipped Docker checks.
+7. GitHub Actions CI on Java 21 for build and relevant tests including PostgreSQL integration. Use least workflow privileges and disposable public-safe test credentials.
+8. README with verified setup/run/test/stop commands, requirements, versions and limits. Keep the master-plan status consistent.
 
-## Границы
+## Boundaries
 
-Gmail/Sheet остаются действующим старым процессом; их данные и действия не затрагивать. Не создавать платные AWS-ресурсы, не подключать LLM/search API и live источники. Не запрашивать CV. Не реализовывать фазу 2 (ingestion, dedup, retry/outbox), UI, embeddings или ML. Не повторять исследование AWS-цен без причины. Дополнительные Work-чаты и агенты не создавать.
+Leave the old Gmail/Sheet process, data and actions intact. No paid AWS resources, LLM/search APIs, live sources or private-CV requests. Phase 2 ingestion/dedup/retry/outbox, UI, embeddings and ML are outside scope. Do not repeat AWS pricing research without a concrete reason or create extra Work chats/agents.
 
-## Критерии готовности
+## Acceptance criteria
 
-- Чистый запуск по README на новой изолированной БД проходит.
-- Сборка и необходимые тесты проходят локально и в CI.
-- Повторный запуск валидирует миграции и не пересоздаёт схему.
-- Ошибка соединения даёт ненулевой exit code; диагностика не раскрывает пароль.
-- В Git отсутствуют реальные секреты, приватные документы и персональные fixtures.
-- Отчёт implementation-чата содержит созданные и изменённые файлы, краткий результат, команды и результаты проверок, ограничения. Исходный чат после ревью готовит название и описание PR с причиной, проверками, ограничениями и ссылкой на задание; пользователь выполняет push и создаёт PR.
+- Clean startup against a fresh isolated database follows README.
+- Build and necessary tests pass locally and in CI.
+- Repeat startup validates migrations without recreating schema.
+- Connection failure produces a nonzero exit and no password in diagnostics.
+- Git contains no actual secrets, private documents or personal fixtures.
+- Implementation report includes created/changed files, concise result, commands/results and limitations. The original chat prepares PR text after review; the user pushes and creates the PR.
 
-## Передача на ревью
+## Handoff for review
 
-Оставь изменения незакоммиченными. В финальном отчёте перечисли созданные и изменённые файлы, краткий результат, точные выполненные и пропущенные проверки, ограничения. Не выполняй commit, push, создание PR или merge: исходный чат после ревью может сделать локальный commit, а push, PR и merge выполняет пользователь. Если проверка заблокирована, сохрани подготовленный результат и назови конкретный блокер; не объявляй фазу завершённой. Проверенные карьерные достижения фиксируются после merge; не считать интеграцию с Career Board уже работающей.
+Leave changes uncommitted. Report created/changed files, result, executed/skipped checks and limitations. Do not commit, push, create PRs or merge: the original chat may commit after review; the user publishes and merges. Preserve work and identify concrete blockers without claiming completion. Career achievements are recorded after merge; do not claim automatic Career Board integration is working.

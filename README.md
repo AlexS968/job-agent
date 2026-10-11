@@ -35,7 +35,7 @@ docker compose down -v        # delete local development data when no longer nee
 ## Start here
 
 - [AGENTS.md](AGENTS.md): permanent instructions for all Work/Codex tasks.
-- [MASTER_PLAN_RU.md](MASTER_PLAN_RU.md): authoritative roadmap and phase order (Russian).
+- [MASTER_PLAN.md](MASTER_PLAN.md): authoritative roadmap and phase order.
 - [PHASE_0.md](PHASE_0.md): requirements, source choices, proposed AWS architecture and dated cost assumptions.
 - [Phase 1 task](docs/PHASE_1_TASK.md): scope and acceptance criteria for the implementation chat.
 - [CAREER_EVIDENCE.md](CAREER_EVIDENCE.md): verified public-safe evidence; not a replacement for the existing AI Career Board.
