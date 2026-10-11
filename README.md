@@ -6,7 +6,7 @@ The planned agent discovers vacancies and employers, normalizes and deduplicates
 
 ## Current status
 
-Phase 0 is complete. Phase 1 foundation is implemented on a review branch; it is not yet merged. This batch application checks PostgreSQL and Flyway migrations, then exits. Vacancy discovery, cloud deployment and Gmail/Sheet migration are not implemented. Cloud costs are estimates, not measured bills.
+Phase 0 is complete. The Phase 1 foundation has passed local review and awaits CI and merge. This batch application checks PostgreSQL and Flyway migrations, then exits. Vacancy discovery, cloud deployment and Gmail/Sheet migration are not implemented. Cloud costs are estimates, not measured bills.
 
 ## Local run
 
@@ -30,7 +30,7 @@ docker compose down           # preserve the named database volume
 docker compose down -v        # delete local development data when no longer needed
 ```
 
-`verify` requires a working Docker daemon and fails if PostgreSQL cannot start. The tests use synthetic credentials and a disposable PostgreSQL container. No H2 fallback is configured.
+`verify` requires a working Docker daemon and fails if PostgreSQL cannot start. The tests use synthetic credentials and a disposable PostgreSQL 17.11 container. No H2 fallback is configured. Compose uses the same pinned PostgreSQL 17.11 image, whose fixes are listed in the [official release notes](https://www.postgresql.org/docs/17/release-17-11.html).
 
 ## Start here
 
@@ -43,10 +43,10 @@ docker compose down -v        # delete local development data when no longer nee
 
 ## Development workflow
 
-One Work chat handles planning and review; a second implements scoped tasks on separate branches and prepares pull requests. PRs explain changes, rationale, test results, limitations and the linked task. The initial documentation commit bootstraps the repository; subsequent implementation goes through PRs.
+The implementation chat writes code, runs local checks and leaves changes uncommitted. Its handoff report lists created and changed files, the result, checks and limitations. The original chat reviews the work, then commits, pushes and creates the PR after successful review. PRs explain changes, rationale, test results, limitations and the linked task.
 
 The existing Google Sheet remains the sole master of the old pipeline until verified cutover. No private CVs, mailbox content, credentials or confidential commercial information belong in this public repository. Development fixtures must be synthetic. Private documents will be requested only after secured S3 storage is ready.
 
 ## Next milestone
 
-Phase 2 will add vacancy ingestion and durable domain behavior after review of this foundation PR.
+Phase 2 will add vacancy ingestion and durable domain behavior after review and merge of the foundation changes.

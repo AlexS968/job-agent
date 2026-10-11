@@ -3,6 +3,8 @@ package com.alexs.jobagent;
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Map;
@@ -16,7 +18,7 @@ class BatchStartupIT {
 
     @Test
     void emptyDatabaseAndRepeatStart() throws Exception {
-        try (PostgreSQLContainer postgres = new PostgreSQLContainer("postgres:17.6-alpine")
+        try (PostgreSQLContainer postgres = new PostgreSQLContainer("postgres:17.11-alpine")
                 .withDatabaseName("job_agent_test").withUsername("test_user").withPassword(PASSWORD)) {
             postgres.start();
             Result first = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD);
@@ -43,20 +45,29 @@ class BatchStartupIT {
     }
 
     private static Result run(String url, String username, String password) throws IOException, InterruptedException {
+        Path outputFile = Files.createTempFile("job-agent-batch-", ".log");
         ProcessBuilder builder = new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin", "java").toString(),
                 "-jar", JAR.toString());
         builder.redirectErrorStream(true);
+        builder.redirectOutput(outputFile.toFile());
         Map<String, String> env = builder.environment();
         env.put("DB_URL", url);
         env.put("DB_USER", username);
         env.put("DB_PASSWORD", password);
-        Process process = builder.start();
-        boolean finished = process.waitFor(Duration.ofSeconds(40).toMillis(), TimeUnit.MILLISECONDS);
-        if (!finished) {
-            process.destroyForcibly();
-            fail("Batch process timed out");
+        Process process = null;
+        try {
+            process = builder.start();
+            if (!process.waitFor(Duration.ofSeconds(40).toMillis(), TimeUnit.MILLISECONDS)) {
+                process.destroyForcibly().waitFor();
+                fail("Batch process timed out. Output:\n" + Files.readString(outputFile, StandardCharsets.UTF_8));
+            }
+            return new Result(process.exitValue(), Files.readString(outputFile, StandardCharsets.UTF_8));
+        } finally {
+            if (process != null && process.isAlive()) {
+                process.destroyForcibly().waitFor();
+            }
+            Files.deleteIfExists(outputFile);
         }
-        return new Result(process.exitValue(), new String(process.getInputStream().readAllBytes()));
     }
 
     private record Result(int exitCode, String output) {}

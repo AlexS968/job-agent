@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:17.6-alpine
+    image: postgres:17.11-alpine
     environment:
       POSTGRES_DB: ${DB_NAME:-job_agent}
       POSTGRES_USER: ${DB_USER:-job_agent}
