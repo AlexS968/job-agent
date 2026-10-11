@@ -20,6 +20,6 @@ Verified application coverage and prepared Sonar analysis with a Quality Gate. D
 
 Run ./mvnw -B clean verify and git diff --check; inspect JaCoCo XML/HTML. Report test count, coverage and included classes. Mark Sonar analysis and remote CI as not executed when access/push is unavailable.
 
-Do not commit, push, create PRs or merge. The original chat reviews and may commit; the user pushes and creates the PR using the prepared title and description.
+Do not commit, push, create PRs or merge. The original chat prepares implementation prompts and reviews; the implementation chat makes all source-code, configuration, documentation and translation changes and leaves them uncommitted. The original chat may commit after successful review; the user pushes and creates the PR using the prepared title and description, then merges and deletes the remote branch.
 
 Keep the report concise: result, created/changed files, checks, measured coverage, limitations and user setup steps for Sonar. Verify the real Sonar Quality Gate after account setup and publication; do not claim the whole increment is complete beforehand.

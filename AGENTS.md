@@ -14,8 +14,8 @@ These rules apply to local planning and every subsequent Work/Codex task. Keep t
 ## 2. Tasks and GitHub workflow
 
 - One task delivers one concrete, verifiable result. Split large stages into small, complete tasks; closely related small changes may be combined.
-- The implementation chat writes code, runs local checks and hands off uncommitted changes. Its report lists created/changed files, a concise result, executed/skipped checks and limitations.
-- The original chat reviews the work and may create a local commit after successful review. The user performs push, PR creation, merge and remote-branch deletion using the PR title/description prepared by the original chat. No AI chat may push or create a PR without a new explicit user instruction. The implementation chat must not commit, push or create PRs.
+- The original chat plans work, prepares implementation prompts and reviews results. The implementation chat makes all source-code, configuration, documentation and translation changes, runs local checks and hands off uncommitted changes. Its report lists created/changed files, a concise result, executed/skipped checks and limitations.
+- The original chat may create a local commit after successful review. The user performs push, PR creation, merge and remote-branch deletion using the PR title/description prepared by the original chat. No AI chat may push or create a PR without a new explicit user instruction. The implementation chat must not commit, push or create PRs.
 - Use separate branches and PRs. Default branch names: `codex/<description>`. Do not mix independent changes in one PR.
 - Reuse existing decisions and research. Repeat research only for a concrete reason: changed conditions, a contradiction or missing required evidence.
 - GitHub is the primary source of current technical state: code, PRs, checks and documentation. Preserve agreed local work until the user publishes it.

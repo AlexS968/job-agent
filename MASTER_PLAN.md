@@ -96,7 +96,7 @@ Use separate subsequent PRs for feedback, Gmail OAuth, import/reconciliation, cu
 
 Phase 0 is complete; repeat research only for a concrete reason. Phase 1 delivered the runnable foundation. The next task is `docs/QUALITY_TASK.md`. Phase 2 then introduces persistence, synthetic ingestion, idempotency, rollback and events. The broader first technical increment described in Phase 0 spans Phases 1–2 and need not be one PR.
 
-The original Work chat handles planning/review, may commit locally and prepares PR titles/descriptions. The user pushes, creates PRs, merges and deletes remote branches. The implementation chat codes, runs local checks and hands off uncommitted work with a concise file/check/limitation report.
+The original Work chat plans work, prepares implementation prompts, reviews results, may commit locally after successful review and prepares PR titles/descriptions. The implementation chat makes all source-code, configuration, documentation and translation changes, runs local checks and hands off uncommitted work with a concise file/check/limitation report. The user pushes, creates PRs, merges and deletes remote branches.
 
 ## 10. Repository setup and permanent instructions
 
