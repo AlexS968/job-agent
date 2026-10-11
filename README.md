@@ -6,7 +6,7 @@ The planned agent discovers vacancies and employers, normalizes and deduplicates
 
 ## Current status
 
-Phase 0 is complete. The Phase 1 foundation has passed local review and awaits CI and merge. This batch application checks PostgreSQL and Flyway migrations, then exits. Vacancy discovery, cloud deployment and Gmail/Sheet migration are not implemented. Cloud costs are estimates, not measured bills.
+Phase 0 is complete. Phase 1 is merged to main (PR #2, 2026-10-11); local clean verify and GitHub CI passed. This batch application checks PostgreSQL and Flyway migrations, then exits. Vacancy discovery, cloud deployment and Gmail/Sheet migration are not implemented. Cloud costs are estimates, not measured bills.
 
 ## Local run
 
@@ -41,12 +41,14 @@ docker compose down -v        # delete local development data when no longer nee
 - [CAREER_EVIDENCE.md](CAREER_EVIDENCE.md): verified public-safe evidence; not a replacement for the existing AI Career Board.
 - [FIRST_INCREMENT.md](FIRST_INCREMENT.md) and [PROJECT_PLAN.md](PROJECT_PLAN.md): historical supporting plans; the master plan takes precedence.
 
+- [Event-driven processing ADR](docs/adr/0001-event-driven-processing.md): planned event contracts, durable outbox and delivery boundaries.
+
 ## Development workflow
 
-The implementation chat writes code, runs local checks and leaves changes uncommitted. Its handoff report lists created and changed files, the result, checks and limitations. The original chat reviews the work, then commits, pushes and creates the PR after successful review. PRs explain changes, rationale, test results, limitations and the linked task.
+The implementation chat writes code, runs local checks and leaves changes uncommitted. Its handoff report lists created and changed files, the result, checks and limitations. The original chat reviews the work and may create a local commit after successful review. The user pushes and creates the PR using the title and description prepared by the original chat; the user also merges and deletes remote branches. AI chats must not push or create PRs without a new explicit user instruction. PRs explain changes, rationale, test results, limitations and the linked task.
 
 The existing Google Sheet remains the sole master of the old pipeline until verified cutover. No private CVs, mailbox content, credentials or confidential commercial information belong in this public repository. Development fixtures must be synthetic. Private documents will be requested only after secured S3 storage is ready.
 
 ## Next milestone
 
-Phase 2 will add vacancy ingestion and durable domain behavior after review and merge of the foundation changes.
+Next: JaCoCo/Sonar quality checks (docs/QUALITY_TASK.md), then Phase 2 vacancy ingestion, durable domain state and event processing.
