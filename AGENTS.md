@@ -43,7 +43,7 @@ These rules apply to local planning and every subsequent Work/Codex task. Keep t
 - Add embeddings/pgvector, standalone ML and additional services according to the plan and demonstrated benefit.
 - `PHASE_0.md` records proposed AWS configuration, estimated cost and recovery targets. Proposals are not deployed infrastructure or measured guarantees.
 - Do not invent final answers to open decisions, including LLM/search providers.
-- Develop event processing according to `docs/adr/0001-event-driven-processing.md`; Phase 2B local outbox and synthetic handler are prepared for review, while cloud transport and real evaluation handlers remain unimplemented.
+- Develop event processing according to `docs/adr/0001-event-driven-processing.md`; Phase 2B local outbox and synthetic handler are merged in PR #6, while cloud transport and real evaluation handlers remain unimplemented.
 - Follow `docs/adr/0002-layers-and-naming.md`: Controller calls Service; Service uses Mapper and Repository. Repository/Mapper do not depend on Service/Controller; Mapper does not access the database. DTOs and input validation are valid Controller contracts.
 - Persistence classes end in `Entity` (e.g. `VacancyEntity`); DTO classes and records end in `DTO` (e.g. `VacancyDTO`). Do not expose Entity objects directly through HTTP APIs.
 - Use separate `exception`, `exceptionhandler` and `config` packages. Application properties/YAML remain in resources. Organize domain modules as packages with layers inside; introduce separate Maven modules only when justified.

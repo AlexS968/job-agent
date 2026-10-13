@@ -21,41 +21,48 @@ public class LocalEventDispatcher {
         if (limit < 1 || limit > 100) {
             throw new IllegalArgumentException("Dispatch limit must be between 1 and 100");
         }
-        int completed = 0;
-        int deferred = 0;
-        int failed = 0;
+        DispatchCounts counts = new DispatchCounts();
         String worker = UUID.randomUUID().toString();
         for (int i = 0; i < limit; i++) {
             ClaimResultDTO claim = outbox.claimWithRecovery(worker);
-            failed += claim.exhaustedClaims();
+            counts.failed += claim.exhaustedClaims();
             OutboxEventEntity event = claim.event();
-            if (event == null) {
-                if (claim.exhaustedClaims() == 0) {
-                    break;
-                }
-                continue;
+            if (event == null && claim.exhaustedClaims() == 0) {
+                break;
             }
-            try {
-                consumer.handle(event);
-                if (outbox.complete(event)) {
-                    completed++;
-                } else {
-                    deferred++;
-                }
-            } catch (RuntimeException processingFailure) {
-                String code = processingFailure instanceof UnsupportedEventContractException
-                        ? "UNSUPPORTED_CONTRACT" : "HANDLER_ERROR";
-                if (outbox.deferOrFail(event, code)) {
-                    if (event.cycleAttempts() >= outbox.maxAttempts()) {
-                        failed++;
-                    } else {
-                        deferred++;
-                    }
-                } else {
-                    deferred++;
-                }
+            if (event != null) {
+                deliver(event, counts);
             }
         }
-        return new DispatchResultDTO(completed, deferred, failed, outbox.backlog());
+        return new DispatchResultDTO(counts.completed, counts.deferred, counts.failed, outbox.backlog());
+    }
+
+    private void deliver(OutboxEventEntity event, DispatchCounts counts) {
+        try {
+            consumer.handle(event);
+            if (outbox.complete(event)) {
+                counts.completed++;
+            } else {
+                counts.deferred++;
+            }
+        } catch (RuntimeException processingFailure) {
+            recordFailure(event, processingFailure, counts);
+        }
+    }
+
+    private void recordFailure(OutboxEventEntity event, RuntimeException processingFailure, DispatchCounts counts) {
+        String code = processingFailure instanceof UnsupportedEventContractException
+                ? "UNSUPPORTED_CONTRACT" : "HANDLER_ERROR";
+        if (outbox.deferOrFail(event, code) && event.cycleAttempts() >= outbox.maxAttempts()) {
+            counts.failed++;
+        } else {
+            counts.deferred++;
+        }
+    }
+
+    private static final class DispatchCounts {
+        private int completed;
+        private int deferred;
+        private int failed;
     }
 }

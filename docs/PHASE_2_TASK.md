@@ -1,6 +1,6 @@
 # Phase 2 delivery boundary
 
-Status: Phase 2A merged in PR #5. Phase 2B is implemented locally for review; it is not merged.
+Status: Phase 2A merged in PR #5. Phase 2B merged in PR #6.
 
 ## Phase 2A — transactional synthetic ingestion
 

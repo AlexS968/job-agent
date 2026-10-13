@@ -1,6 +1,6 @@
 # Job Agent: Complete delivery plan
 
-Status: 2026-10-11. Phase 1 is complete: PR #2 merged on 2026-10-11. JaCoCo and Sonar CI preparation merged in PR #4; remote Sonar imported coverage and the actual Quality Gate remain unverified. Phase 2A synthetic persistence merged in PR #5. Phase 2B local outbox/dispatcher is prepared in an uncommitted branch for review. This is the authoritative development entry point. `PROJECT_PLAN.md` and `FIRST_INCREMENT.md` contain supporting detail; this plan takes precedence in a conflict.
+Status: 2026-10-12. Phase 1 is complete: PR #2 merged on 2026-10-11. JaCoCo and Sonar CI preparation merged in PR #4; remote Sonar imported coverage and the actual Quality Gate remain unverified. Phase 2A synthetic persistence merged in PR #5. Phase 2B local outbox/dispatcher merged in PR #6. This is the authoritative development entry point. `PROJECT_PLAN.md` and `FIRST_INCREMENT.md` contain supporting detail; this plan takes precedence in a conflict.
 
 Phase 0 completed on 2026-10-07 when the user accepted the preliminary AWS estimate. `PHASE_0.md` records requirements from the existing workflow, source documentation checks, the proposed Fargate/Aurora design and us-east-1 estimate with explicit assumptions. There is no EU-only region requirement: cost and reliability take priority over data location. The estimate excludes later LLM/search-provider choices and does not authorize paid deployment.
 
@@ -94,7 +94,7 @@ Use separate subsequent PRs for feedback, Gmail OAuth, import/reconciliation, cu
 
 ## 9. Next development steps and chat responsibilities
 
-Phase 0 is complete; repeat research only for a concrete reason. Phase 1 delivered the runnable foundation. Quality configuration is merged in PR #4. Phase 2A merged synthetic persistence, identity handling and rollback in PR #5. Phase 2B locally adds durable outbox delivery for review. The broader first technical increment described in Phase 0 spans Phases 1–2 and need not be one PR.
+Phase 0 is complete; repeat research only for a concrete reason. Phase 1 delivered the runnable foundation. Quality configuration is merged in PR #4. Phase 2A merged synthetic persistence, identity handling and rollback in PR #5. Phase 2B merged durable outbox delivery in PR #6. The broader first technical increment described in Phase 0 spans Phases 1–2 and need not be one PR.
 
 The original Work chat plans work, prepares implementation prompts, reviews results, may commit locally after successful review and prepares PR titles/descriptions. The implementation chat makes all source-code, configuration, documentation and translation changes, runs local checks and hands off uncommitted work with a concise file/check/limitation report. The user pushes, creates PRs, merges and deletes remote branches.
 

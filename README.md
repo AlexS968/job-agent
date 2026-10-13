@@ -6,7 +6,7 @@ The planned agent discovers vacancies and employers, normalizes and deduplicates
 
 ## Current status
 
-Phase 0 is complete. Phase 1 is merged to main (PR #2, 2026-10-11); quality configuration is merged in PR #4; Phase 2A synthetic ingestion is merged in PR #5. Phase 2B local outbox delivery is prepared in this uncommitted branch for review. Normal batch startup checks PostgreSQL and Flyway migrations, then exits. Live vacancy discovery, cloud deployment and Gmail/Sheet migration are not implemented. Cloud costs are estimates, not measured bills.
+Phase 0 is complete. Phase 1 is merged to main (PR #2, 2026-10-11); quality configuration is merged in PR #4; Phase 2A synthetic ingestion is merged in PR #5. Phase 2B local outbox delivery is merged in PR #6. A Sonar finding cleanup is being prepared locally for review. Normal batch startup checks PostgreSQL and Flyway migrations, then exits. Live vacancy discovery, cloud deployment and Gmail/Sheet migration are not implemented. Cloud costs are estimates, not measured bills.
 
 ## Local run
 
@@ -48,7 +48,7 @@ An identical source input is a successful no-op. Any changed field under an exis
 
 The ingestion service rejects an ambient transaction before creating a run. Each accepted attempt first creates an `agent_runs` row outside the ingestion transaction. One service-owned database transaction then writes source, employer, vacancy and provenance link, adds a `VacancyDiscovered` outbox event only for a newly created vacancy, and marks the run `SUCCEEDED`. Vacancy persistence and event creation join this transaction and never commit independently. On failure, the transaction rolls back those writes; a separate short write marks the run `FAILED` with a safe error code. If failure tracking also fails, the original ingestion exception is retained with the tracking error suppressed; the run may remain `RUNNING`. If the database is unavailable before run creation, no run can be recorded. A process crash before the failure write can likewise leave `RUNNING`; conservative run recovery remains unimplemented.
 
-## Local outbox dispatch (Phase 2B, uncommitted review branch)
+## Local outbox dispatch (Phase 2B)
 
 With the same database environment, explicitly run:
 
@@ -71,10 +71,12 @@ The CI workflow always builds and verifies PRs without Sonar credentials. On a p
 
 To connect SonarQube Cloud, the repository owner must:
 
-1. Choose an eligible [subscription plan](https://docs.sonarsource.com/sonarqube-cloud/administering-sonarcloud/managing-subscription/subscription-plans), import/bind this GitHub repository to a SonarQube Cloud organization and project, and select CI-based analysis. Turn off Automatic Analysis under **Project Administration → Analysis Method**; [CI and automatic analysis cannot run together](https://docs.sonarsource.com/sonarqube-cloud/analyzing-source-code/ci-based-analysis/overview-of-integrated-cis).
+1. Choose an eligible [subscription plan](https://docs.sonarsource.com/sonarqube-cloud/administering-sonarcloud/managing-subscription/subscription-plans), import/bind this GitHub repository to a SonarQube Cloud organization and project, and select CI-based analysis. Confirm the current method under **Project Administration → Analysis Method** and turn off Automatic Analysis before using CI analysis; [CI and automatic analysis cannot run together](https://docs.sonarsource.com/sonarqube-cloud/analyzing-source-code/ci-based-analysis/overview-of-integrated-cis).
 2. In GitHub **Settings → Secrets and variables → Actions → Variables**, set `SONAR_HOST_URL` to the URL shown by the Sonar project, `SONAR_ORGANIZATION` to its actual organization key, and `SONAR_PROJECT_KEY` to its actual project key. No keys are assumed in this repository.
 3. Create an analysis token with access to that project. Store it **only** as the GitHub Actions repository secret `SONAR_TOKEN` under **Settings → Secrets and variables → Actions → Secrets**. Do not paste the token into chat, files or command arguments.
 4. After publication, inspect the next trusted `main` push workflow, Sonar project analysis, imported JaCoCo coverage and actual Quality Gate result. Configure any required GitHub check in branch protection only after that result is verified. CI-based PR analysis is deliberately not enabled here because PR code runs in the build; evaluate a safe trust model before adding token access. The [Free plan limits PR analysis to PRs targeting `main`](https://docs.sonarsource.com/sonarqube-cloud/administering-sonarcloud/managing-subscription/subscription-plans); the OSS plan offers public-project PR analysis subject to eligibility.
+
+Sonar currently classifies PostgreSQL Flyway `.sql` migrations as PL/SQL because its inherited PL/SQL suffix list includes `sql`. The seven reported PL/SQL issues are analyzer-language mismatches in already merged V3; editing a migration would invalidate Flyway checksums. This branch sets Maven `sonar.plsql.file.suffixes=tab,pkb` for CI-based analysis, leaving migrations in the repository and in PostgreSQL integration tests. If Automatic Analysis remains enabled, the Maven property has no effect: the project owner must set **Project Administration → General Settings → Languages → General → PL/SQL file suffixes** to `tab,pkb` (remove `sql`) in SonarQube Cloud. This stops PL/SQL analysis of PostgreSQL migrations; it does not provide equivalent PostgreSQL SQL static analysis. Review the issue list after the next analysis; issue status changes cannot be verified locally. The inspected merged Phase 2B main workflow printed **Sonar analysis NOT CONFIGURED**; a separate SonarCloud check ran, but its analysis method and imported coverage require owner-side confirmation.
 
 Proposed remote checks: start with Sonar's built-in **Sonar way** gate for new code—reliability, security and maintainability ratings A; review all new security hotspots; at least 80% new-code coverage; at most 3% duplicated new lines. These are [Sonar's published defaults](https://docs.sonarsource.com/sonarqube-cloud/standards/managing-quality-gates/introduction-to-quality-gates), not locally enforced thresholds. They focus on changes while Phase 2 adds substantial logic. Coverage and duplication conditions are ignored for fewer than 20 new lines by default, and PR gates evaluate new-code conditions only. Review the first real results before deciding whether to keep this gate; custom gates require Team/Enterprise (or an eligible OSS plan). This repository does not set the remote gate or account settings.
 
@@ -84,7 +86,7 @@ Proposed remote checks: start with Sonar's built-in **Sonar way** gate for new c
 - [MASTER_PLAN.md](MASTER_PLAN.md): authoritative roadmap and phase order.
 - [PHASE_0.md](PHASE_0.md): requirements, source choices, proposed AWS architecture and dated cost assumptions.
 - [Phase 1 task](docs/PHASE_1_TASK.md): scope and acceptance criteria for the implementation chat.
-- [Phase 2 task](docs/PHASE_2_TASK.md): merged synthetic persistence and locally prepared outbox/dispatcher.
+- [Phase 2 task](docs/PHASE_2_TASK.md): merged synthetic persistence and local outbox/dispatcher.
 - [CAREER_EVIDENCE.md](CAREER_EVIDENCE.md): verified public-safe evidence; not a replacement for the existing AI Career Board.
 - [FIRST_INCREMENT.md](FIRST_INCREMENT.md) and [PROJECT_PLAN.md](PROJECT_PLAN.md): historical supporting plans; the master plan takes precedence.
 
@@ -98,4 +100,4 @@ The existing Google Sheet remains the sole master of the old pipeline until veri
 
 ## Next milestone
 
-Next: review and publish Phase 2B, then independently verify its remote CI and Sonar results. Live discovery, evaluation and cloud transport follow later phases.
+Next: review and publish the Sonar finding cleanup, then independently verify its remote CI and Sonar results. Live discovery, evaluation and cloud transport follow later phases.

@@ -31,7 +31,7 @@ public class SyntheticVacancyConsumer {
             throw new UnsupportedEventContractException();
         }
         transaction.executeWithoutResult(status -> {
-            if (repository.record(CONSUMER_ID, event.eventId(), clock.instant())) {
+            if (repository.recordDeliveryIfAbsent(CONSUMER_ID, event.eventId(), clock.instant())) {
                 repository.observeVacancy(event.aggregateId(), event.eventId(), clock.instant());
             }
         });
