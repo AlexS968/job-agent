@@ -112,12 +112,12 @@ Do not create a separate Work session solely for AGENTS. GitHub is the technical
 
 ## 11. Quality checks and current boundary
 
-PR #4 merged JaCoCo HTML/XML coverage, child-JVM instrumentation and main-push Sonar CI preparation. Local coverage was verified. The public PR showed successful CI and SonarCloud checks, but the imported coverage and actual Quality Gate have not been independently verified. The main-only scanner runs after merge and does not provide a pre-merge Sonar gate.
+PR #4 merged JaCoCo HTML/XML coverage, child-JVM instrumentation and main-push Sonar CI preparation. Local coverage was verified. The public PR showed successful CI and SonarCloud checks, but imported coverage and the actual Quality Gate have not been independently verified. Open cleanup PR #7 includes a locally prepared, distinct Sonar job for trusted PRs targeting `main` and retains main-push analysis. Its real PR analysis and gate remain pending publication and verification.
 
 - JaCoCo: HTML/XML application coverage from unit/integration tests, including instrumented ProcessBuilder child JVMs.
 - Sonar: prepared SonarQube Cloud scanner imports JaCoCo XML after verify when repository configuration is present; verify actual remote analysis and gate independently.
 - Quality Gate: bugs, vulnerabilities, maintainability, duplication and new-code coverage; security hotspots require review. Agree actual service capabilities and thresholds during setup; no arbitrary percentage is already approved.
-- CI: tests/JaCoCo work independently of Sonar access. Main-push analysis is after merge; a pre-merge Sonar gate and required GitHub-check settings remain unverified.
+- CI: tests/JaCoCo work independently of Sonar access. The prepared trusted-PR Sonar job waits for the gate; fork and bot PRs do not receive a token and skip it. A real pre-merge analysis and required GitHub-check settings remain unverified.
 - Secrets: user configures Sonar credentials through GitHub Secrets; never publish tokens or expose them to untrusted PRs. AI does not push or create PRs.
 - Acceptance: clean verify produces a nonempty report covering JobAgentApplication; Sonar displays imported coverage and actual gate results. Record commands, evidence, limitations and justified exclusions.
 
