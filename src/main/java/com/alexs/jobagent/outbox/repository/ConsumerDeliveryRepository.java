@@ -14,7 +14,7 @@ public class ConsumerDeliveryRepository {
         this.jdbc = jdbc;
     }
 
-    public boolean record(String consumerId, UUID eventId, Instant now) {
+    public boolean recordDeliveryIfAbsent(String consumerId, UUID eventId, Instant now) {
         return jdbc.update("INSERT INTO consumer_deliveries(consumer_id, event_id, processed_at) "
                         + "VALUES (?, ?, ?) ON CONFLICT DO NOTHING", consumerId, eventId, Timestamp.from(now)) == 1;
     }

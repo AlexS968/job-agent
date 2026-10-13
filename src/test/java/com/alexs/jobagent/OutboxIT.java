@@ -20,7 +20,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
-import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -177,7 +176,7 @@ class OutboxIT {
         ingestion.ingest(fixture());
         OutboxEventEntity first = outbox.claim("crash-one");
         expireLease();
-        OutboxEventEntity second = outbox.claim("crash-two");
+        outbox.claim("crash-two");
         expireLease();
         OutboxEventEntity third = outbox.claim("final-worker");
         consumer.handle(third);
@@ -227,7 +226,7 @@ class OutboxIT {
         start.countDown();
         OutboxEventEntity one = first.get(10, TimeUnit.SECONDS);
         OutboxEventEntity two = second.get(10, TimeUnit.SECONDS);
-        assertTrue((one == null) != (two == null));
+        assertNotEquals(one == null, two == null);
         OutboxEventEntity old = one == null ? two : one;
         expireLease();
         OutboxEventEntity newer = outbox.claim("new-owner");

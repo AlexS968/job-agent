@@ -182,12 +182,12 @@ class SyntheticIngestionIT {
     @Test
     void ambientTransactionIsRejectedBeforeRunAndCallerRollbackLeavesNoWrites() throws Exception {
         SyntheticInputDTO input = fixture();
-        assertThrows(IllegalStateException.class, () -> new TransactionTemplate(transactionManager)
-                .execute(status -> {
-                    jdbc.update("INSERT INTO agent_runs(status) VALUES ('RUNNING')");
-                    service.ingest(input);
-                    return null;
-                }));
+        new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+            jdbc.update("INSERT INTO agent_runs(status) VALUES ('RUNNING')");
+            assertThrows(IllegalStateException.class, () -> service.ingest(input));
+            assertEquals(1, count("agent_runs"));
+            status.setRollbackOnly();
+        });
         assertEquals(0, count("agent_runs"));
         assertEquals(0, count("source_items"));
         assertEquals(0, count("employers"));

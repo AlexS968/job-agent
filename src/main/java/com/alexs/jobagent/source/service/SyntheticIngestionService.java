@@ -52,17 +52,26 @@ public class SyntheticIngestionService {
             validate(input);
             return transaction.execute(status -> ingestInTransaction(runId, input));
         } catch (RuntimeException failure) {
-            String code = failure instanceof InvalidIngestionException ? "INVALID_INPUT"
-                    : failure instanceof IngestionConflictException || failure instanceof VacancyConflictException
-                    ? "IDENTITY_CONFLICT"
-                    : failure instanceof DataAccessException ? "DATABASE_ERROR" : "PROCESSING_ERROR";
             try {
-                runs.fail(runId, code);
+                runs.fail(runId, failureCode(failure));
             } catch (RuntimeException trackingFailure) {
                 failure.addSuppressed(trackingFailure);
             }
             throw failure;
         }
+    }
+
+    private static String failureCode(RuntimeException failure) {
+        if (failure instanceof InvalidIngestionException) {
+            return "INVALID_INPUT";
+        }
+        if (failure instanceof IngestionConflictException || failure instanceof VacancyConflictException) {
+            return "IDENTITY_CONFLICT";
+        }
+        if (failure instanceof DataAccessException) {
+            return "DATABASE_ERROR";
+        }
+        return "PROCESSING_ERROR";
     }
 
     private IngestionResultDTO ingestInTransaction(long runId, SyntheticInputDTO input) {
