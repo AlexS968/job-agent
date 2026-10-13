@@ -6,6 +6,7 @@ import com.alexs.jobagent.source.service.SyntheticIngestionService;
 import com.alexs.jobagent.outbox.dto.DispatchResultDTO;
 import com.alexs.jobagent.outbox.service.LocalEventDispatcher;
 import com.alexs.jobagent.outbox.service.OutboxService;
+import java.io.IOException;
 import java.io.InputStream;
 import java.util.Arrays;
 import java.util.UUID;
@@ -46,7 +47,7 @@ public class JobAgentApplication {
     }
 
     private void executeMode(String[] args, SyntheticIngestionService ingestion, JsonMapper json,
-                             LocalEventDispatcher dispatcher, OutboxService outbox) throws Exception {
+                             LocalEventDispatcher dispatcher, OutboxService outbox) throws IOException {
         String[] modes = Arrays.stream(args).filter(arg -> arg.startsWith("--mode=")).toArray(String[]::new);
         if (modes.length == 0) {
             return;
@@ -88,7 +89,7 @@ public class JobAgentApplication {
         LOGGER.info("Failed event queued for replay: event_id={}", eventId);
     }
 
-    private void runSynthetic(String[] args, SyntheticIngestionService ingestion, JsonMapper json) throws Exception {
+    private void runSynthetic(String[] args, SyntheticIngestionService ingestion, JsonMapper json) throws IOException {
         if (args.length != 1) {
             throw new IllegalArgumentException("Unsupported batch mode");
         }
