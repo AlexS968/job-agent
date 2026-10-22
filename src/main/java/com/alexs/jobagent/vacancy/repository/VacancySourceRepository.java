@@ -12,6 +12,7 @@ public class VacancySourceRepository {
     }
 
     public void link(long vacancyId, long sourceItemId) {
-        jdbc.update("INSERT INTO vacancy_sources(vacancy_id, source_item_id) VALUES (?, ?)", vacancyId, sourceItemId);
+        jdbc.update("INSERT INTO vacancy_sources(vacancy_id, source_item_id) VALUES (?, ?) "
+                + "ON CONFLICT (vacancy_id, source_item_id) DO NOTHING", vacancyId, sourceItemId);
     }
 }

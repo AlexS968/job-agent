@@ -3,6 +3,7 @@ package com.alexs.jobagent.vacancy.repository;
 import com.alexs.jobagent.vacancy.exception.VacancyConflictException;
 import com.alexs.jobagent.vacancy.entity.VacancyEntity;
 import com.alexs.jobagent.vacancy.entity.LiveVacancyEntity;
+import com.alexs.jobagent.vacancy.entity.ObservedVacancyEntity;
 import java.sql.Timestamp;
 import java.time.Instant;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -75,5 +76,34 @@ public class VacancyRepository {
         jdbc.update("UPDATE vacancies SET title = ?, location = ?, description = ?, source_updated_at = ?, "
                         + "content_digest = ? WHERE id = ?", vacancy.title(), vacancy.location(), description,
                 updatedAt == null ? null : Timestamp.from(updatedAt), digest, id);
+    }
+
+    public Long insertObservedIfAbsent(VacancyEntity vacancy, String description, Instant observedAt, String digest) {
+        return jdbc.query("INSERT INTO vacancies(employer_id, source_namespace, listing_id, title, location, "
+                        + "description, observation_started_at, content_digest) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                        + "ON CONFLICT (source_namespace, listing_id) DO NOTHING RETURNING id",
+                ps -> {
+                    ps.setLong(1, vacancy.employerDbId());
+                    ps.setString(2, vacancy.sourceNamespace());
+                    ps.setString(3, vacancy.listingId());
+                    ps.setString(4, vacancy.title());
+                    ps.setString(5, vacancy.location());
+                    ps.setString(6, description);
+                    ps.setTimestamp(7, Timestamp.from(observedAt));
+                    ps.setString(8, digest);
+                }, rs -> rs.next() ? rs.getLong(1) : null);
+    }
+
+    public ObservedVacancyEntity lockObserved(String namespace, String listingId) {
+        return jdbc.queryForObject("SELECT id, employer_id, observation_started_at, content_digest FROM vacancies "
+                        + "WHERE source_namespace = ? AND listing_id = ? FOR UPDATE",
+                (rs, row) -> new ObservedVacancyEntity(rs.getLong(1), rs.getLong(2),
+                        rs.getTimestamp(3).toInstant(), rs.getString(4)), namespace, listingId);
+    }
+
+    public void updateObserved(long id, VacancyEntity vacancy, String description, Instant observedAt, String digest) {
+        jdbc.update("UPDATE vacancies SET title = ?, location = ?, description = ?, observation_started_at = ?, "
+                        + "content_digest = ? WHERE id = ?", vacancy.title(), vacancy.location(), description,
+                Timestamp.from(observedAt), digest, id);
     }
 }

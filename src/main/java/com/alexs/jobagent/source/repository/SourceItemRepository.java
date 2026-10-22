@@ -64,4 +64,32 @@ public class SourceItemRepository {
         return jdbc.queryForObject("SELECT content_digest FROM source_items "
                 + "WHERE source_namespace = ? AND source_item_id = ?", String.class, namespace, itemId);
     }
+
+    public long insertOrFindObservedSnapshot(SourceItemEntity item, String applyUrl, String contentDigest) {
+        Long inserted = jdbc.query("INSERT INTO source_items(source_namespace, source_item_id, listing_namespace, "
+                        + "listing_id, original_url, apply_url, fetched_at, raw_payload, input_version, "
+                        + "normalization_version, input_digest, content_digest) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?, ?) "
+                        + "ON CONFLICT (source_namespace, source_item_id) DO NOTHING RETURNING id",
+                ps -> {
+                    ps.setString(1, item.sourceNamespace());
+                    ps.setString(2, item.sourceItemId());
+                    ps.setString(3, item.listingNamespace());
+                    ps.setString(4, item.listingId());
+                    ps.setString(5, item.originalUrl());
+                    ps.setString(6, applyUrl);
+                    ps.setTimestamp(7, Timestamp.from(item.fetchedAt()));
+                    ps.setString(8, item.rawPayload());
+                    ps.setString(9, item.inputVersion());
+                    ps.setString(10, item.normalizationVersion());
+                    ps.setString(11, item.inputDigest());
+                    ps.setString(12, contentDigest);
+                }, rs -> rs.next() ? rs.getLong(1) : null);
+        if (inserted != null) {
+            return inserted;
+        }
+        return jdbc.queryForObject("SELECT id FROM source_items WHERE source_namespace = ? AND source_item_id = ? "
+                        + "AND content_digest = ?", Long.class,
+                item.sourceNamespace(), item.sourceItemId(), contentDigest);
+    }
 }

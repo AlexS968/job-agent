@@ -10,8 +10,6 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
-import java.time.ZonedDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
@@ -26,17 +24,17 @@ public class GreenhouseSourceAdapter implements VacancySourceAdapter {
     private static final int MAX_ATTEMPTS = 3;
     private static final Duration RETRY_WAIT_BUDGET = Duration.ofSeconds(4);
     private static final int MAX_LISTINGS = 300;
-    private final GreenhouseHttpTransport transport;
+    private final BoundedSourceHttpTransport transport;
     private final JsonMapper json;
     private final Clock clock;
     private final Sleeper sleeper;
 
     @Autowired
-    public GreenhouseSourceAdapter(GreenhouseHttpTransport transport, JsonMapper json, Clock clock) {
+    public GreenhouseSourceAdapter(BoundedSourceHttpTransport transport, JsonMapper json, Clock clock) {
         this(transport, json, clock, duration -> Thread.sleep(duration.toMillis()));
     }
 
-    GreenhouseSourceAdapter(GreenhouseHttpTransport transport, JsonMapper json, Clock clock, Sleeper sleeper) {
+    GreenhouseSourceAdapter(BoundedSourceHttpTransport transport, JsonMapper json, Clock clock, Sleeper sleeper) {
         this.transport = transport;
         this.json = json;
         this.clock = clock;
@@ -53,16 +51,16 @@ public class GreenhouseSourceAdapter implements VacancySourceAdapter {
         URI uri = URI.create("https://boards-api.greenhouse.io/v1/boards/" + board.token() + "/jobs?content=true");
         Duration remainingWait = RETRY_WAIT_BUDGET;
         for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-            GreenhouseHttpTransport.Response response;
+            BoundedSourceHttpTransport.Response response;
             try {
                 response = transport.get(uri);
-            } catch (GreenhouseHttpTransport.ResponseTooLargeException tooLarge) {
+            } catch (BoundedSourceHttpTransport.ResponseTooLargeException tooLarge) {
                 throw new GreenhouseFetchException("Greenhouse response exceeds size limit", attempt, tooLarge);
             } catch (IOException transportFailure) {
                 if (attempt == MAX_ATTEMPTS) {
                     throw new GreenhouseFetchException("Greenhouse transport exhausted", attempt, transportFailure);
                 }
-                Duration delay = withinBudget(Duration.ofMillis(200L * attempt), remainingWait, attempt);
+                Duration delay = retryDelay(null, attempt, remainingWait);
                 pause(delay, attempt);
                 remainingWait = remainingWait.minus(delay);
                 continue;
@@ -96,38 +94,11 @@ public class GreenhouseSourceAdapter implements VacancySourceAdapter {
     }
 
     private Duration retryDelay(String value, int attempt, Duration remainingWait) throws GreenhouseFetchException {
-        if (value != null) {
-            String header = value.trim();
-            if (header.matches("[0-9]+")) {
-                try {
-                    return withinBudget(Duration.ofSeconds(Long.parseLong(header)), remainingWait, attempt);
-                } catch (NumberFormatException tooLarge) {
-                    throw new GreenhouseFetchException("Greenhouse Retry-After exceeds retry budget", attempt, null);
-                }
-            }
-            try {
-                Instant when = ZonedDateTime.parse(header, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant();
-                Instant now = clock.instant();
-                if (!when.isAfter(now)) {
-                    return Duration.ZERO;
-                }
-                if (when.isAfter(now.plus(remainingWait))) {
-                    throw new GreenhouseFetchException("Greenhouse Retry-After exceeds retry budget", attempt, null);
-                }
-                return Duration.between(now, when);
-            } catch (java.time.format.DateTimeParseException malformed) {
-                // An invalid advisory header falls back to the local bounded retry delay.
-            }
-        }
-        return withinBudget(Duration.ofMillis(200L * attempt), remainingWait, attempt);
-    }
-
-    private static Duration withinBudget(Duration delay, Duration remaining, int attempt)
-            throws GreenhouseFetchException {
-        if (delay.compareTo(remaining) > 0) {
+        try {
+            return SourceRetryPolicy.delay(value, attempt, remainingWait, clock);
+        } catch (SourceRetryPolicy.BudgetExceededException exhausted) {
             throw new GreenhouseFetchException("Greenhouse Retry-After exceeds retry budget", attempt, null);
         }
-        return delay;
     }
 
     private List<GreenhouseListingDTO> parse(byte[] body) throws IOException {

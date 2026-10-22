@@ -5,6 +5,8 @@ import com.alexs.jobagent.source.dto.SyntheticInputDTO;
 import com.alexs.jobagent.source.service.SyntheticIngestionService;
 import com.alexs.jobagent.source.service.GreenhouseBatchService;
 import com.alexs.jobagent.source.dto.GreenhouseBatchResultDTO;
+import com.alexs.jobagent.source.dto.LeverBatchResultDTO;
+import com.alexs.jobagent.source.service.LeverBatchService;
 import com.alexs.jobagent.outbox.dto.DispatchResultDTO;
 import com.alexs.jobagent.outbox.service.LocalEventDispatcher;
 import com.alexs.jobagent.outbox.service.OutboxService;
@@ -42,18 +44,21 @@ public class JobAgentApplication {
                                      SyntheticIngestionService ingestion, JsonMapper json,
                                      LocalEventDispatcher dispatcher, OutboxService outbox,
                                      GreenhouseBatchService greenhouse,
-                                     @Value("${GREENHOUSE_BOARDS:}") String boards) {
+                                     @Value("${GREENHOUSE_BOARDS:}") String boards,
+                                     LeverBatchService lever,
+                                     @Value("${LEVER_SITES:}") String leverSites) {
         return args -> {
             flyway.validate();
             Integer count = jdbc.queryForObject("SELECT COUNT(*) FROM agent_runs", Integer.class);
             LOGGER.info("Database ready; agent_runs rows: {}", count);
-            executeMode(args, ingestion, json, dispatcher, outbox, greenhouse, boards);
+            executeMode(args, ingestion, json, dispatcher, outbox, greenhouse, boards, lever, leverSites);
         };
     }
 
     private void executeMode(String[] args, SyntheticIngestionService ingestion, JsonMapper json,
                              LocalEventDispatcher dispatcher, OutboxService outbox,
-                             GreenhouseBatchService greenhouse, String boards) throws IOException {
+                             GreenhouseBatchService greenhouse, String boards,
+                             LeverBatchService lever, String leverSites) throws IOException {
         String[] modes = Arrays.stream(args).filter(arg -> arg.startsWith("--mode=")).toArray(String[]::new);
         if (modes.length == 0) {
             return;
@@ -66,7 +71,18 @@ public class JobAgentApplication {
             case "--mode=dispatch" -> runDispatch(args, dispatcher);
             case "--mode=replay-failed" -> runReplay(args, outbox);
             case "--mode=greenhouse" -> runGreenhouse(args, greenhouse, boards);
+            case "--mode=lever" -> runLever(args, lever, leverSites);
             default -> throw new IllegalArgumentException("Unsupported batch mode");
+        }
+    }
+
+    private void runLever(String[] args, LeverBatchService lever, String sites) {
+        if (args.length != 1) {
+            throw new IllegalArgumentException("Unsupported lever arguments");
+        }
+        LeverBatchResultDTO result = lever.run(sites);
+        if (result.failed() > 0 || result.rejected() > 0) {
+            throw new IllegalStateException("Lever invocation had failed or rejected work");
         }
     }
 

@@ -15,21 +15,14 @@ import com.alexs.jobagent.vacancy.dto.EmployerDTO;
 import com.alexs.jobagent.vacancy.exception.VacancyConflictException;
 import com.alexs.jobagent.vacancy.dto.VacancyChangeDTO;
 import com.alexs.jobagent.vacancy.service.VacancyPersistenceService;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.net.URI;
-import java.util.HexFormat;
-import java.util.Map;
-import java.util.TreeMap;
+import java.util.Set;
 import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
-import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.json.JsonMapper;
 
 @Service
 public class GreenhouseIngestionService {
@@ -38,19 +31,19 @@ public class GreenhouseIngestionService {
     private final VacancyPersistenceService vacancies;
     private final OutboxService outbox;
     private final GreenhouseVacancyMapper mapper;
-    private final JsonMapper json;
+    private final SourceContentDigest contentDigest;
     private final TransactionTemplate transaction;
 
     public GreenhouseIngestionService(AgentRunService runs, SourceItemRepository sources,
                                      VacancyPersistenceService vacancies, OutboxService outbox,
-                                     GreenhouseVacancyMapper mapper, JsonMapper json,
+                                     GreenhouseVacancyMapper mapper, SourceContentDigest contentDigest,
                                      PlatformTransactionManager manager) {
         this.runs = runs;
         this.sources = sources;
         this.vacancies = vacancies;
         this.outbox = outbox;
         this.mapper = mapper;
-        this.json = json;
+        this.contentDigest = contentDigest;
         this.transaction = new TransactionTemplate(manager);
     }
 
@@ -79,7 +72,7 @@ public class GreenhouseIngestionService {
                                                               GreenhouseListingDTO listing, Instant fetchedAt) {
         String namespace = "greenhouse:" + board.token();
         String versionId = listing.id() + ":" + (listing.updatedAt() == null ? "undated" : listing.updatedAt());
-        String digest = digest(listing.rawPayload());
+        String digest = contentDigest.digest(listing.rawPayload(), Set.of("updated_at"));
         SourceItemEntity snapshot = new SourceItemEntity(namespace, versionId, namespace, listing.id(),
                 listing.originalUrl(), fetchedAt, listing.rawPayload().toString(), "greenhouse-board-v1",
                 "greenhouse-normalization-v1", digest);
@@ -102,52 +95,6 @@ public class GreenhouseIngestionService {
         }
         runs.succeedLive(runId, RunResultDTO.valueOf(stored.change().name()));
         return stored.change();
-    }
-
-    private String digest(JsonNode node) {
-        StringBuilder canonical = new StringBuilder();
-        canonical(node, canonical, true);
-        try {
-            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
-                    .digest(canonical.toString().getBytes(StandardCharsets.UTF_8)));
-        } catch (NoSuchAlgorithmException impossible) {
-            throw new IllegalStateException("SHA-256 is unavailable", impossible);
-        }
-    }
-
-    private void canonical(JsonNode node, StringBuilder result, boolean root) {
-        if (node.isObject()) {
-            result.append('{');
-            Map<String, JsonNode> sorted = new TreeMap<>();
-            node.properties().forEach(property -> {
-                if (!root || !"updated_at".equals(property.getKey())) {
-                    sorted.put(property.getKey(), property.getValue());
-                }
-            });
-            boolean first = true;
-            for (Map.Entry<String, JsonNode> entry : sorted.entrySet()) {
-                if (!first) {
-                    result.append(',');
-                }
-                first = false;
-                result.append(json.writeValueAsString(entry.getKey())).append(':');
-                canonical(entry.getValue(), result, false);
-            }
-            result.append('}');
-        } else if (node.isArray()) {
-            result.append('[');
-            boolean first = true;
-            for (JsonNode child : node) {
-                if (!first) {
-                    result.append(',');
-                }
-                first = false;
-                canonical(child, result, false);
-            }
-            result.append(']');
-        } else {
-            result.append(json.writeValueAsString(node));
-        }
     }
 
     private static void validate(GreenhouseBoardDTO board, GreenhouseListingDTO listing, Instant fetchedAt) {

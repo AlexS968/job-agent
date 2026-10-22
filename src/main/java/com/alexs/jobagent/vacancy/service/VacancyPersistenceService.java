@@ -3,6 +3,7 @@ package com.alexs.jobagent.vacancy.service;
 import com.alexs.jobagent.vacancy.dto.VacancyDTO;
 import com.alexs.jobagent.vacancy.dto.VacancyChangeDTO;
 import com.alexs.jobagent.vacancy.entity.LiveVacancyEntity;
+import com.alexs.jobagent.vacancy.entity.ObservedVacancyEntity;
 import com.alexs.jobagent.vacancy.entity.VacancyEntity;
 import com.alexs.jobagent.vacancy.exception.VacancyConflictException;
 import com.alexs.jobagent.vacancy.mapper.VacancyMapper;
@@ -81,5 +82,44 @@ public class VacancyPersistenceService {
     }
 
     public record LiveResult(long vacancyId, VacancyChangeDTO change) {
+    }
+
+    public LiveResult persistObserved(VacancyDTO vacancy, long sourceItemId, String description,
+                                      Instant observationStartedAt, String contentDigest) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive()) {
+            throw new IllegalStateException("Vacancy persistence requires an ingestion transaction");
+        }
+        if (observationStartedAt == null || observationStartedAt.getNano() % 1_000 != 0) {
+            throw new IllegalArgumentException("Observation time must have microsecond precision");
+        }
+        long employerId = employers.findOrCreate(mapper.toEntity(vacancy.employer()));
+        VacancyEntity candidate = mapper.toEntity(vacancy, employerId);
+        Long inserted = vacancies.insertObservedIfAbsent(candidate, description, observationStartedAt, contentDigest);
+        long vacancyId;
+        VacancyChangeDTO change;
+        if (inserted != null) {
+            vacancyId = inserted;
+            change = VacancyChangeDTO.CREATED;
+        } else {
+            ObservedVacancyEntity current = vacancies.lockObserved(candidate.sourceNamespace(), candidate.listingId());
+            vacancyId = current.id();
+            if (current.employerDbId() != candidate.employerDbId()) {
+                throw new VacancyConflictException("Listing identity has conflicting employer identity");
+            }
+            if (observationStartedAt.isBefore(current.observationStartedAt())) {
+                change = VacancyChangeDTO.STALE;
+            } else if (observationStartedAt.equals(current.observationStartedAt())) {
+                if (!contentDigest.equals(current.contentDigest())) {
+                    throw new VacancyConflictException("Equal observation time has conflicting content");
+                }
+                change = VacancyChangeDTO.UNCHANGED;
+            } else {
+                vacancies.updateObserved(vacancyId, candidate, description, observationStartedAt, contentDigest);
+                change = contentDigest.equals(current.contentDigest())
+                        ? VacancyChangeDTO.UNCHANGED : VacancyChangeDTO.UPDATED;
+            }
+        }
+        links.link(vacancyId, sourceItemId);
+        return new LiveResult(vacancyId, change);
     }
 }
