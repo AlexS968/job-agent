@@ -6,6 +6,7 @@ import com.alexs.jobagent.source.dto.GreenhouseBoardDTO;
 import com.alexs.jobagent.source.dto.GreenhouseListingDTO;
 import com.alexs.jobagent.source.dto.GreenhouseFetchResultDTO;
 import com.alexs.jobagent.source.exception.IngestionConflictException;
+import com.alexs.jobagent.source.exception.InvalidIngestionException;
 import com.alexs.jobagent.source.service.GreenhouseBatchService;
 import com.alexs.jobagent.source.service.GreenhouseIngestionService;
 import com.alexs.jobagent.source.mapper.GreenhouseVacancyMapper;
@@ -94,6 +95,51 @@ class GreenhouseIngestionIT {
         assertEquals("Engineer", mapped.title());
         assertNull(mapped.location());
         assertEquals("example-board", mapped.employer().employerId());
+    }
+
+    @Test
+    void invalidDirectInputsCreateFailedRunsWithoutDomainWrites() {
+        GreenhouseListingDTO valid = listing("1", "Engineer", "2026-10-21T10:00:00Z");
+        GreenhouseListingDTO blankTitle = new GreenhouseListingDTO(valid.id(), " ", valid.location(),
+                valid.description(), valid.originalUrl(), valid.updatedAt(), valid.rawPayload());
+        GreenhouseListingDTO credentialUrl = new GreenhouseListingDTO(valid.id(), valid.title(), valid.location(),
+                valid.description(), "https://user@example.org/jobs/1", valid.updatedAt(), valid.rawPayload());
+        GreenhouseListingDTO nonObject = new GreenhouseListingDTO(valid.id(), valid.title(), valid.location(),
+                valid.description(), valid.originalUrl(), valid.updatedAt(), json.readTree("[]"));
+        assertThrows(InvalidIngestionException.class, () -> service.ingest(BOARD, blankTitle, FETCHED));
+        assertThrows(InvalidIngestionException.class, () -> service.ingest(BOARD, credentialUrl, FETCHED));
+        assertThrows(InvalidIngestionException.class, () -> service.ingest(BOARD, nonObject, FETCHED));
+        assertThrows(InvalidIngestionException.class,
+                () -> service.ingest(new GreenhouseBoardDTO("bad/token", "Synthetic Inc"), valid, FETCHED));
+        assertEquals(4, count("agent_runs"));
+        assertEquals(4, jdbc.queryForObject("SELECT COUNT(*) FROM agent_runs "
+                + "WHERE status = 'FAILED' AND error_code = 'INVALID_INPUT'", Integer.class));
+        assertEquals(0, count("source_items"));
+        assertEquals(0, count("vacancies"));
+        assertEquals(0, count("outbox_events"));
+    }
+
+    @Test
+    void nestedObjectOrderIsCanonicalButArrayOrderIsSourceContent() {
+        GreenhouseListingDTO base = listing("1", "Engineer", "2026-10-21T10:00:00Z");
+        String common = "{\"id\":1,\"title\":\"Engineer\",\"absolute_url\":\""
+                + base.originalUrl() + "\",\"updated_at\":\"2026-10-21T10:00:00Z\",";
+        GreenhouseListingDTO first = new GreenhouseListingDTO(base.id(), base.title(), base.location(),
+                base.description(), base.originalUrl(), base.updatedAt(),
+                json.readTree(common + "\"metadata\":[{\"a\":1,\"b\":2},{\"a\":3}]}"));
+        GreenhouseListingDTO reordered = new GreenhouseListingDTO(base.id(), base.title(), base.location(),
+                base.description(), base.originalUrl(), base.updatedAt(),
+                json.readTree(common + "\"metadata\":[{\"b\":2,\"a\":1},{\"a\":3}]}"));
+        GreenhouseListingDTO changedOrder = new GreenhouseListingDTO(base.id(), base.title(), base.location(),
+                base.description(), base.originalUrl(), base.updatedAt(),
+                json.readTree(common + "\"metadata\":[{\"a\":3},{\"a\":1,\"b\":2}]}"));
+        assertEquals(VacancyChangeDTO.CREATED, service.ingest(BOARD, first, FETCHED).change());
+        assertEquals(VacancyChangeDTO.UNCHANGED, service.ingest(BOARD, reordered, FETCHED).change());
+        assertThrows(IngestionConflictException.class, () -> service.ingest(BOARD, changedOrder, FETCHED));
+        assertEquals(1, count("source_items"));
+        assertEquals(1, count("outbox_events"));
+        assertEquals("FAILED", jdbc.queryForObject("SELECT status FROM agent_runs ORDER BY id DESC LIMIT 1",
+                String.class));
     }
 
     @Test
@@ -208,6 +254,35 @@ class GreenhouseIngestionIT {
         assertEquals(0, result.failed());
         assertEquals(1, count("vacancies"));
         assertEquals(1, count("outbox_events"));
+    }
+
+    @Test
+    void databaseFailureStopsLaterListingsButKeepsEarlierCommittedListing() {
+        jdbc.execute("CREATE FUNCTION reject_second_greenhouse_vacancy() RETURNS trigger LANGUAGE plpgsql AS $$ "
+                + "BEGIN IF NEW.listing_id = '2' THEN RAISE EXCEPTION 'synthetic test failure'; END IF; "
+                + "RETURN NEW; END $$");
+        jdbc.execute("CREATE TRIGGER reject_second_greenhouse_vacancy BEFORE INSERT ON vacancies "
+                + "FOR EACH ROW EXECUTE FUNCTION reject_second_greenhouse_vacancy()");
+        try {
+            GreenhouseBatchService batch = new GreenhouseBatchService(board -> new GreenhouseFetchResultDTO(
+                    List.of(listing("1", "Engineer", "2026-10-21T10:00:00Z"),
+                            listing("2", "Engineer", "2026-10-21T10:00:00Z"),
+                            listing("3", "Engineer", "2026-10-21T10:00:00Z")), 1), service, clock);
+            var result = batch.run("example-board|Example Board Inc");
+            assertEquals(3, result.fetched());
+            assertEquals(1, result.created());
+            assertEquals(1, result.failed());
+            assertEquals(0, result.rejected());
+            assertEquals(1, count("vacancies"));
+            assertEquals(1, count("source_items"));
+            assertEquals(1, count("outbox_events"));
+            assertEquals(2, count("agent_runs"));
+            assertEquals("FAILED", jdbc.queryForObject("SELECT status FROM agent_runs ORDER BY id DESC LIMIT 1",
+                    String.class));
+        } finally {
+            jdbc.execute("DROP TRIGGER reject_second_greenhouse_vacancy ON vacancies");
+            jdbc.execute("DROP FUNCTION reject_second_greenhouse_vacancy()");
+        }
     }
 
     @Test

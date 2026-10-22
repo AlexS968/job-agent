@@ -141,6 +141,12 @@ class BatchStartupIT {
             assertNotEquals(0, missing.exitCode());
             assertTrue(missing.output().contains("Job Agent startup failed"));
             assertFalse(missing.output().contains(PASSWORD));
+            Result invalid = runWithBoards(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
+                    "https://invalid.example/board|Synthetic Employer", "--mode=greenhouse");
+            assertNotEquals(0, invalid.exitCode());
+            assertTrue(invalid.output().contains("failed=1"), invalid.output());
+            assertTrue(invalid.output().contains("Job Agent startup failed"), invalid.output());
+            assertFalse(invalid.output().contains(PASSWORD));
             try (var connection = java.sql.DriverManager.getConnection(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD);
                  var statement = connection.createStatement();
                  var rows = statement.executeQuery("SELECT (SELECT COUNT(*) FROM agent_runs), "
@@ -196,6 +202,11 @@ class BatchStartupIT {
 
     private static Result run(String url, String username, String password, String... arguments)
             throws IOException, InterruptedException {
+        return runWithBoards(url, username, password, null, arguments);
+    }
+
+    private static Result runWithBoards(String url, String username, String password, String boards,
+                                        String... arguments) throws IOException, InterruptedException {
         Path outputFile = Files.createTempFile("job-agent-batch-", ".log");
         String jacocoAgent = System.getProperty("jacoco.agent.argLine");
         if (jacocoAgent == null || !jacocoAgent.startsWith("-javaagent:")) {
@@ -215,7 +226,11 @@ class BatchStartupIT {
         env.put("DB_URL", url);
         env.put("DB_USER", username);
         env.put("DB_PASSWORD", password);
-        env.remove("GREENHOUSE_BOARDS");
+        if (boards == null) {
+            env.remove("GREENHOUSE_BOARDS");
+        } else {
+            env.put("GREENHOUSE_BOARDS", boards);
+        }
         Process process = null;
         try {
             process = builder.start();

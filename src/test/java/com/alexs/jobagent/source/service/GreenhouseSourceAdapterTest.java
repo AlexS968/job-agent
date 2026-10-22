@@ -69,6 +69,28 @@ class GreenhouseSourceAdapterTest {
     }
 
     @Test
+    void malformedListingsFailBeforeAnyPartialBoardResult() {
+        List<String> malformedBodies = List.of(
+                "{}", "{\"jobs\":{}}", "{\"jobs\":[null]}",
+                "{\"jobs\":[{\"id\":\"not-numeric\",\"title\":\"Engineer\","
+                        + "\"absolute_url\":\"https://example.org/1\"}]}",
+                "{\"jobs\":[{\"id\":1,\"title\":\"Engineer\","
+                        + "\"absolute_url\":\"https://user@example.org/1\"}]}",
+                "{\"jobs\":[{\"id\":1,\"title\":\"Engineer\","
+                        + "\"absolute_url\":\"https://example.org/1\",\"updated_at\":\"bad-date\"}]}",
+                "{\"jobs\":[{\"id\":1,\"title\":\"Engineer\","
+                        + "\"absolute_url\":\"https://example.org/1\"},null]}");
+        for (String body : malformedBodies) {
+            FakeTransport transport = new FakeTransport(response(200, body));
+            GreenhouseFetchException failure = assertThrows(GreenhouseFetchException.class,
+                    () -> adapter(transport).fetch(BOARD));
+            assertEquals("Malformed Greenhouse response", failure.getMessage());
+            assertEquals(1, failure.attempts());
+            assertEquals(1, transport.calls);
+        }
+    }
+
+    @Test
     void invalidBoardCannotIssueRequest() {
         FakeTransport transport = new FakeTransport(response(200, "{\"jobs\":[]}"));
         assertThrows(IllegalArgumentException.class,
@@ -137,6 +159,40 @@ class GreenhouseSourceAdapterTest {
             assertEquals(1, failure.attempts());
             assertEquals(1, extreme.calls);
             assertTrue(sleeps.isEmpty());
+        }
+    }
+
+    @Test
+    void cumulativeRetryBudgetPreventsThirdRequestAndPastDateIsImmediate() throws Exception {
+        FakeTransport budget = new FakeTransport(response(429, "{}", Map.of("retry-after", List.of("3"))),
+                response(503, "{}", Map.of("retry-after", List.of("2"))), response(200, "{\"jobs\":[]}"));
+        var delays = new java.util.ArrayList<Duration>();
+        GreenhouseFetchException failure = assertThrows(GreenhouseFetchException.class,
+                () -> new GreenhouseSourceAdapter(budget, json, CLOCK, delays::add).fetch(BOARD));
+        assertEquals(2, failure.attempts());
+        assertEquals(2, budget.calls);
+        assertEquals(List.of(Duration.ofSeconds(3)), delays);
+
+        FakeTransport past = new FakeTransport(response(429, "{}", Map.of("retry-after",
+                List.of("Thu, 22 Oct 2026 09:59:59 GMT"))), response(200, "{\"jobs\":[]}"));
+        var pastDelays = new java.util.ArrayList<Duration>();
+        assertEquals(2, new GreenhouseSourceAdapter(past, json, CLOCK, pastDelays::add).fetch(BOARD).requests());
+        assertEquals(List.of(Duration.ZERO), pastDelays);
+    }
+
+    @Test
+    void interruptedRetryStopsWithoutAnotherRequest() {
+        FakeTransport transport = new FakeTransport(response(429, "{}"), response(200, "{\"jobs\":[]}"));
+        try {
+            GreenhouseFetchException failure = assertThrows(GreenhouseFetchException.class,
+                    () -> new GreenhouseSourceAdapter(transport, json, CLOCK, delay -> {
+                        throw new InterruptedException("synthetic cancellation");
+                    }).fetch(BOARD));
+            assertEquals(1, failure.attempts());
+            assertTrue(Thread.currentThread().isInterrupted());
+            assertEquals(1, transport.calls);
+        } finally {
+            Thread.interrupted();
         }
     }
 
