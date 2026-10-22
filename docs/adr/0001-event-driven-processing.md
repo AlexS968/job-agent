@@ -1,7 +1,7 @@
 # ADR 0001: Event-driven module processing
 
 Date: 2026-10-11.
-Status: Phase 2B local outbox and synthetic consumer are implemented in an uncommitted review branch. The user confirmed SQS as the later cloud transport; its configuration, workers and complete cost still need design.
+Status: Phase 2B local outbox and synthetic consumer merged in PR #6. The user confirmed SQS as the later cloud transport; its configuration, workers and complete cost still need design.
 
 ## Context
 

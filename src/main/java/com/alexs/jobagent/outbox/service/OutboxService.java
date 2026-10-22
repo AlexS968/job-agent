@@ -37,6 +37,13 @@ public class OutboxService {
         repository.enqueue(UUID.randomUUID(), vacancyId, runId, clock.instant());
     }
 
+    public void vacancyUpdated(long vacancyId, long runId) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive()) {
+            throw new IllegalStateException("Event creation requires the vacancy transaction");
+        }
+        repository.enqueue(UUID.randomUUID(), "VacancyUpdated", vacancyId, runId, clock.instant());
+    }
+
     public OutboxEventEntity claim(String worker) {
         return claimWithRecovery(worker).event();
     }

@@ -18,10 +18,14 @@ public class OutboxRepository {
     }
 
     public void enqueue(UUID eventId, long vacancyId, long runId, Instant now) {
+        enqueue(eventId, "VacancyDiscovered", vacancyId, runId, now);
+    }
+
+    public void enqueue(UUID eventId, String eventType, long vacancyId, long runId, Instant now) {
         jdbc.update("INSERT INTO outbox_events(event_id, event_type, schema_version, aggregate_id, occurred_at, "
-                        + "run_id, payload, next_attempt_at) VALUES (?, 'VacancyDiscovered', 1, ?, ?, ?, "
+                        + "run_id, payload, next_attempt_at) VALUES (?, ?, 1, ?, ?, ?, "
                         + "jsonb_build_object('vacancy_id', ?::bigint), ?)",
-                eventId, vacancyId, Timestamp.from(now), runId, vacancyId, Timestamp.from(now));
+                eventId, eventType, vacancyId, Timestamp.from(now), runId, vacancyId, Timestamp.from(now));
     }
 
     public int expireExhaustedClaims(Instant now, int maxAttempts, int limit) {

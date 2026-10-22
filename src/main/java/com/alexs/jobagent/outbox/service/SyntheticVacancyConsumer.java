@@ -27,12 +27,15 @@ public class SyntheticVacancyConsumer {
         if (TransactionSynchronizationManager.isActualTransactionActive()) {
             throw new IllegalStateException("Consumer handling requires no ambient transaction");
         }
-        if (!"VacancyDiscovered".equals(event.eventType()) || event.schemaVersion() != 1) {
+        if (!("VacancyDiscovered".equals(event.eventType()) || "VacancyUpdated".equals(event.eventType()))
+                || event.schemaVersion() != 1) {
             throw new UnsupportedEventContractException();
         }
         transaction.executeWithoutResult(status -> {
             if (repository.recordDeliveryIfAbsent(CONSUMER_ID, event.eventId(), clock.instant())) {
-                repository.observeVacancy(event.aggregateId(), event.eventId(), clock.instant());
+                if ("VacancyDiscovered".equals(event.eventType())) {
+                    repository.observeVacancy(event.aggregateId(), event.eventId(), clock.instant());
+                }
             }
         });
     }

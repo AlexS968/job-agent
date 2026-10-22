@@ -1,6 +1,6 @@
 # Job Agent: Complete delivery plan
 
-Status: 2026-10-12. Phase 1 is complete: PR #2 merged on 2026-10-11. JaCoCo and Sonar CI preparation merged in PR #4; remote Sonar imported coverage and the actual Quality Gate remain unverified. Phase 2A synthetic persistence merged in PR #5. Phase 2B local outbox/dispatcher merged in PR #6. This is the authoritative development entry point. `PROJECT_PLAN.md` and `FIRST_INCREMENT.md` contain supporting detail; this plan takes precedence in a conflict.
+Status: 2026-10-22. Phase 1 merged in PR #2; JaCoCo/Sonar preparation in PR #4; Phase 2A synthetic persistence in PR #5; Phase 2B local outbox/dispatcher in PR #6; and Sonar cleanup with a successful pre-merge PR gate in PR #7. The PR #7 merge-commit main-push Sonar Quality Gate failed and remains to be investigated. Phase 3A Greenhouse board ingestion is under local review, not merged. This is the authoritative development entry point. `PROJECT_PLAN.md` and `FIRST_INCREMENT.md` contain supporting detail; this plan takes precedence in a conflict.
 
 Phase 0 completed on 2026-10-07 when the user accepted the preliminary AWS estimate. `PHASE_0.md` records requirements from the existing workflow, source documentation checks, the proposed Fargate/Aurora design and us-east-1 estimate with explicit assumptions. There is no EU-only region requirement: cost and reliability take priority over data location. The estimate excludes later LLM/search-provider choices and does not authorize paid deployment.
 
@@ -94,7 +94,7 @@ Use separate subsequent PRs for feedback, Gmail OAuth, import/reconciliation, cu
 
 ## 9. Next development steps and chat responsibilities
 
-Phase 0 is complete; repeat research only for a concrete reason. Phase 1 delivered the runnable foundation. Quality configuration is merged in PR #4. Phase 2A merged synthetic persistence, identity handling and rollback in PR #5. Phase 2B merged durable outbox delivery in PR #6. The broader first technical increment described in Phase 0 spans Phases 1–2 and need not be one PR.
+Phase 0 is complete; repeat research only for a concrete reason. Phase 1 delivered the runnable foundation. Quality configuration is merged in PR #4. Phase 2A merged synthetic persistence, identity handling and rollback in PR #5. Phase 2B merged durable outbox delivery in PR #6. PR #7 merged pre-merge Sonar analysis and cleanup. Phase 3A locally implements the first explicit Greenhouse board adapter with board-scoped identity and versioned updates; see [the Phase 3A task](docs/PHASE_3_TASK.md). Broader discovery and fit evaluation remain future work. The broader first technical increment described in Phase 0 spans Phases 1–2 and need not be one PR.
 
 The original Work chat plans work, prepares implementation prompts, reviews results, may commit locally after successful review and prepares PR titles/descriptions. The implementation chat makes all source-code, configuration, documentation and translation changes, runs local checks and hands off uncommitted work with a concise file/check/limitation report. The user pushes, creates PRs, merges and deletes remote branches.
 
@@ -112,12 +112,12 @@ Do not create a separate Work session solely for AGENTS. GitHub is the technical
 
 ## 11. Quality checks and current boundary
 
-PR #4 merged JaCoCo HTML/XML coverage, child-JVM instrumentation and main-push Sonar CI preparation. Local coverage was verified. The public PR showed successful CI and SonarCloud checks, but imported coverage and the actual Quality Gate have not been independently verified. Open cleanup PR #7 includes a locally prepared, distinct Sonar job for trusted PRs targeting `main` and retains main-push analysis. Its real PR analysis and gate remain pending publication and verification.
+PR #4 merged JaCoCo HTML/XML coverage, child-JVM instrumentation and main-push Sonar CI preparation. PR #7 merged a distinct Sonar job for trusted PRs targeting `main` and retained main-push analysis. PR #7's real pre-merge `Build and test` and `Sonar Quality Gate` checks passed, but the merge-commit main-push gate failed. Imported coverage and the failing main conditions require inspection in SonarQube Cloud before stronger claims.
 
 - JaCoCo: HTML/XML application coverage from unit/integration tests, including instrumented ProcessBuilder child JVMs.
 - Sonar: prepared SonarQube Cloud scanner imports JaCoCo XML after verify when repository configuration is present; verify actual remote analysis and gate independently.
 - Quality Gate: bugs, vulnerabilities, maintainability, duplication and new-code coverage; security hotspots require review. Agree actual service capabilities and thresholds during setup; no arbitrary percentage is already approved.
-- CI: tests/JaCoCo work independently of Sonar access. The prepared trusted-PR Sonar job waits for the gate; fork and bot PRs do not receive a token and skip it. A real pre-merge analysis and required GitHub-check settings remain unverified.
+- CI: tests/JaCoCo work independently of Sonar access. The trusted-PR Sonar job waits for the gate; fork and bot PRs do not receive a token and skip it. PR #7 pre-merge analysis ran successfully; required GitHub-check settings and this branch's remote analysis remain unverified.
 - Secrets: user configures Sonar credentials through GitHub Secrets; never publish tokens or expose them to untrusted PRs. AI does not push or create PRs.
 - Acceptance: clean verify produces a nonempty report covering JobAgentApplication; Sonar displays imported coverage and actual gate results. Record commands, evidence, limitations and justified exclusions.
 
@@ -127,6 +127,6 @@ References: [JaCoCo agent](https://www.jacoco.org/jacoco/trunk/doc/agent.html), 
 
 The user selected MapStruct as the mapping standard. Introduce it with the first actual DTO/domain mapping in Phase 2; use shared Spring/constructor-injection configuration and compile errors for unmapped target properties. Keep field conversion separate from evaluation/normalization business rules.
 
-Limited Lombok use is recommended: DI constructors, logging and selected getters/builders. Adoption and the precise annotation set remain to be agreed. Immutable DTOs/events may use Java records; do not apply @Data automatically to entities. Keep toString safe and verify MapStruct/Lombok processors in clean builds. Neither dependency is configured yet.
+Limited Lombok use is recommended: DI constructors, logging and selected getters/builders. Adoption and the precise annotation set remain to be agreed. Immutable DTOs/events may use Java records; do not apply @Data automatically to entities. Keep toString safe. MapStruct is already configured and verified in clean builds; Lombok is not configured.
 
 References: [MapStruct](https://mapstruct.org/documentation/stable/reference/html/), [Lombok constructors](https://projectlombok.org/features/constructor), [Lombok Data](https://projectlombok.org/features/Data).

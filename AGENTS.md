@@ -61,7 +61,7 @@ These rules apply to local planning and every subsequent Work/Codex task. Keep t
 - Sonar runs after JaCoCo XML generation. Store tokens in GitHub Secrets; untrusted PR analysis must not receive secrets. Local tests and JaCoCo work without Sonar access.
 - MapStruct is the agreed standard for DTO/domain mapping. Use shared Spring/constructor-injection configuration, ERROR for unmapped target properties and explicit exceptions; business rules stay in services. Test meaningful conversions, null behavior and enum contracts.
 - Lombok is recommended for limited use reflecting the user's preference; its final annotation set is still to be agreed. Candidates: `@RequiredArgsConstructor`, `@Slf4j`, selective `@Getter`/`@Builder`. Do not apply `@Data` automatically to entities or expose secrets through generated `toString`. Consider Java records for immutable DTOs/events.
-- MapStruct/Lombok are not yet configured. When integrating them, explicitly configure processors and the `lombok-mapstruct-binding` required by selected versions; verify generation in a clean build independently of the IDE.
+- MapStruct is configured and used for DTO/model conversion; verify generation in a clean build independently of the IDE. Lombok is not configured. If adopted later, explicitly configure its processor and the `lombok-mapstruct-binding` required by selected versions.
 
 ## 6. Security and private data
 

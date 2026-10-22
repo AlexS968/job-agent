@@ -1,6 +1,7 @@
 package com.alexs.jobagent.run.service;
 
 import com.alexs.jobagent.run.repository.AgentRunRepository;
+import com.alexs.jobagent.run.dto.RunResultDTO;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
@@ -27,6 +28,13 @@ public class AgentRunService {
     public void fail(long runId, String errorCode) {
         requireNoTransaction();
         repository.fail(runId, errorCode);
+    }
+
+    public void succeedLive(long runId, RunResultDTO change) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive()) {
+            throw new IllegalStateException("Run success requires an ingestion transaction");
+        }
+        repository.succeedLive(runId, change);
     }
 
     private static void requireNoTransaction() {
