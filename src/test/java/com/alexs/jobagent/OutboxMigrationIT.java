@@ -33,7 +33,7 @@ class OutboxMigrationIT {
                          + "WHERE success), (SELECT COUNT(*) FROM vacancies), "
                          + "(SELECT COUNT(*) FROM outbox_events)")) {
                 result.next();
-                assertEquals(3, result.getInt(1));
+                assertEquals(4, result.getInt(1));
                 assertEquals(1, result.getInt(2));
                 assertEquals(0, result.getInt(3));
             }

@@ -2,9 +2,9 @@
 
 This file records verifiable, public-safe material for future LinkedIn posts, CV bullets, and interview stories. Planned work is not an achievement. The AI Career Board remains the source of truth for overall program status.
 
-## Current status (2026-10-11)
+## Current status (2026-10-22)
 
-Phase 0 complete; Phase 1 foundation merged in PR #2; quality configuration merged in PR #4; Phase 2A synthetic ingestion merged in PR #5. Phase 2B local event processing is uncommitted and not a published achievement. No live vacancy discovery, LLM, AWS deployment or legacy migration is implemented. The dated Phase 0 entries below are historical planning evidence.
+Phase 0 complete; Phase 1 foundation merged in PR #2; quality configuration in PR #4; Phase 2A synthetic ingestion in PR #5; Phase 2B local event processing in PR #6; and Sonar cleanup/pre-merge analysis in PR #7. Phase 3A Greenhouse ingestion is local, uncommitted work under review, not a published achievement. No broad vacancy discovery, fit evaluation, AWS deployment or legacy migration is implemented. PR #7's pre-merge Sonar gate passed, but its merge-commit main-push gate failed. The dated Phase 0 entries below are historical planning evidence.
 
 Phase 0 design package saved in PHASE_0.md: requirements grounded in the existing workflow and Sheet structure; independent discovery via source adapters and a separate search gateway; scheduled Fargate/private Aurora design; assumption-based AWS cost model. Evidence is documentation and official-source research only. Region baseline us-east-1 reflects cost/reliability preference; it is not a proven globally cheapest region. No implementation/deployment claim is supported yet.
 
@@ -64,3 +64,19 @@ Do not include private documents, employer-confidential information, real mailbo
 - LinkedIn angle: showing how explicit source identities and transaction ownership prevent duplicate or partial vacancy records before connecting live sources.
 - Interview story: explain the choice to reject ambient transactions, commit domain writes and success together, retain failure evidence separately, and use database constraints for concurrent replay.
 - Handoff for the original chat: review this evidence against PR #5, then update the existing AI Career Board and Narrative through their established workflow; verify that synchronization rather than assuming it occurred.
+
+## Verified milestone — Phase 2B local outbox, 2026-10-11
+
+- PR: https://github.com/AlexS968/job-agent/pull/6; merged 2026-10-11T17:30:08Z; merge commit `6f1dd5cb0afd4a1523f31e4039fb793724c106a4`.
+- Delivered: transactional pending `VacancyDiscovered` events, explicit local dispatch, claim-token fencing, bounded retries and lease exhaustion, controlled replay, consumer receipts and one synthetic observation effect per vacancy.
+- Evidence: PR #6 [CI build check passed](https://github.com/AlexS968/job-agent/actions/runs/38159733262/job/114529948305); [SonarCloud Code Analysis check passed](https://sonarcloud.io/dashboard?id=AlexS968_job-agent&pullRequest=6). PostgreSQL integration tests cover atomic emission, concurrency, retries, lost acknowledgement and replay. These checks do not prove external delivery or a configured cloud queue.
+- Limits: no AWS/SQS transport, real vacancy evaluation or external actions. Required branch checks, Sonar imported coverage and remote gate details were not independently verified for this PR. Career Board/Narrative synchronization is not claimed.
+- Public-safe CV draft: Added transaction-safe local outbox processing with bounded PostgreSQL claim recovery and idempotent consumer effects.
+
+## Verified milestone — Sonar cleanup and pre-merge gate, 2026-10-13
+
+- PR: https://github.com/AlexS968/job-agent/pull/7; merged 2026-10-13T20:47:23Z; merge commit `a295ed0f360f846f8f40b1b74f180023d841fcec`.
+- Delivered: distinct trusted-PR `Sonar Quality Gate` CI job with tested-revision JaCoCo artifact reuse, a bounded gate wait, and corrected PostgreSQL-versus-PL/SQL analysis configuration; a Java `java:S112` finding was addressed without suppression.
+- Evidence: PR #7 [Build and test](https://github.com/AlexS968/job-agent/actions/runs/38464766792/job/115528710636), [Sonar Quality Gate](https://github.com/AlexS968/job-agent/actions/runs/38464766792/job/115529447864) and [SonarCloud Code Analysis](https://sonarcloud.io/dashboard?id=AlexS968_job-agent&pullRequest=7) checks all passed. The separate [main-push build passed, but Sonar Quality Gate failed](https://github.com/AlexS968/job-agent/actions/runs/38465595112) on the merge commit. Do not claim all earlier issues resolved or main gate green without inspecting the failing conditions.
+- Limits: fork/bot PRs receive no token and skip Sonar; required GitHub ruleset/check settings were not verified. Career Board/Narrative synchronization is not claimed.
+- Public-safe CV draft: Prepared trusted pre-merge static analysis with coverage reuse and an explicit failing Quality Gate signal, while keeping ordinary CI independent of Sonar credentials.

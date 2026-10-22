@@ -31,7 +31,7 @@ class BatchStartupIT {
                  var statement = connection.createStatement();
                  var rows = statement.executeQuery("SELECT COUNT(*) FROM flyway_schema_history WHERE success")) {
                 assertTrue(rows.next());
-                assertEquals(3, rows.getInt(1));
+                assertEquals(4, rows.getInt(1));
             }
         }
     }
@@ -132,6 +132,33 @@ class BatchStartupIT {
     }
 
     @Test
+    void greenhouseModeNeedsExplicitBoardsAndNormalStartupIsOffline() throws Exception {
+        try (PostgreSQLContainer postgres = new PostgreSQLContainer("postgres:17.11-alpine")
+                .withDatabaseName("job_agent_greenhouse_batch_test").withUsername("test_user").withPassword(PASSWORD)) {
+            postgres.start();
+            assertEquals(0, run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD).exitCode());
+            Result missing = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD, "--mode=greenhouse");
+            assertNotEquals(0, missing.exitCode());
+            assertTrue(missing.output().contains("Job Agent startup failed"));
+            assertFalse(missing.output().contains(PASSWORD));
+            Result invalid = runWithBoards(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
+                    "https://invalid.example/board|Synthetic Employer", "--mode=greenhouse");
+            assertNotEquals(0, invalid.exitCode());
+            assertTrue(invalid.output().contains("failed=1"), invalid.output());
+            assertTrue(invalid.output().contains("Job Agent startup failed"), invalid.output());
+            assertFalse(invalid.output().contains(PASSWORD));
+            try (var connection = java.sql.DriverManager.getConnection(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD);
+                 var statement = connection.createStatement();
+                 var rows = statement.executeQuery("SELECT (SELECT COUNT(*) FROM agent_runs), "
+                         + "(SELECT COUNT(*) FROM source_items)")) {
+                assertTrue(rows.next());
+                assertEquals(0, rows.getInt(1));
+                assertEquals(0, rows.getInt(2));
+            }
+        }
+    }
+
+    @Test
     void exhaustedDispatchReturnsNonzeroAndDeferredRetriesRemainPending() throws Exception {
         try (PostgreSQLContainer postgres = new PostgreSQLContainer("postgres:17.11-alpine")
                 .withDatabaseName("job_agent_failed_dispatch_test").withUsername("test_user").withPassword(PASSWORD)) {
@@ -175,6 +202,11 @@ class BatchStartupIT {
 
     private static Result run(String url, String username, String password, String... arguments)
             throws IOException, InterruptedException {
+        return runWithBoards(url, username, password, null, arguments);
+    }
+
+    private static Result runWithBoards(String url, String username, String password, String boards,
+                                        String... arguments) throws IOException, InterruptedException {
         Path outputFile = Files.createTempFile("job-agent-batch-", ".log");
         String jacocoAgent = System.getProperty("jacoco.agent.argLine");
         if (jacocoAgent == null || !jacocoAgent.startsWith("-javaagent:")) {
@@ -194,6 +226,11 @@ class BatchStartupIT {
         env.put("DB_URL", url);
         env.put("DB_USER", username);
         env.put("DB_PASSWORD", password);
+        if (boards == null) {
+            env.remove("GREENHOUSE_BOARDS");
+        } else {
+            env.put("GREENHOUSE_BOARDS", boards);
+        }
         Process process = null;
         try {
             process = builder.start();

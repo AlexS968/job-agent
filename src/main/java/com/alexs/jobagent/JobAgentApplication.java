@@ -3,6 +3,8 @@ package com.alexs.jobagent;
 import com.alexs.jobagent.source.dto.IngestionResultDTO;
 import com.alexs.jobagent.source.dto.SyntheticInputDTO;
 import com.alexs.jobagent.source.service.SyntheticIngestionService;
+import com.alexs.jobagent.source.service.GreenhouseBatchService;
+import com.alexs.jobagent.source.dto.GreenhouseBatchResultDTO;
 import com.alexs.jobagent.outbox.dto.DispatchResultDTO;
 import com.alexs.jobagent.outbox.service.LocalEventDispatcher;
 import com.alexs.jobagent.outbox.service.OutboxService;
@@ -16,6 +18,7 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.Bean;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -37,17 +40,20 @@ public class JobAgentApplication {
     @Bean
     CommandLineRunner verifyDatabase(Flyway flyway, JdbcTemplate jdbc,
                                      SyntheticIngestionService ingestion, JsonMapper json,
-                                     LocalEventDispatcher dispatcher, OutboxService outbox) {
+                                     LocalEventDispatcher dispatcher, OutboxService outbox,
+                                     GreenhouseBatchService greenhouse,
+                                     @Value("${GREENHOUSE_BOARDS:}") String boards) {
         return args -> {
             flyway.validate();
             Integer count = jdbc.queryForObject("SELECT COUNT(*) FROM agent_runs", Integer.class);
             LOGGER.info("Database ready; agent_runs rows: {}", count);
-            executeMode(args, ingestion, json, dispatcher, outbox);
+            executeMode(args, ingestion, json, dispatcher, outbox, greenhouse, boards);
         };
     }
 
     private void executeMode(String[] args, SyntheticIngestionService ingestion, JsonMapper json,
-                             LocalEventDispatcher dispatcher, OutboxService outbox) throws IOException {
+                             LocalEventDispatcher dispatcher, OutboxService outbox,
+                             GreenhouseBatchService greenhouse, String boards) throws IOException {
         String[] modes = Arrays.stream(args).filter(arg -> arg.startsWith("--mode=")).toArray(String[]::new);
         if (modes.length == 0) {
             return;
@@ -59,7 +65,18 @@ public class JobAgentApplication {
             case "--mode=synthetic" -> runSynthetic(args, ingestion, json);
             case "--mode=dispatch" -> runDispatch(args, dispatcher);
             case "--mode=replay-failed" -> runReplay(args, outbox);
+            case "--mode=greenhouse" -> runGreenhouse(args, greenhouse, boards);
             default -> throw new IllegalArgumentException("Unsupported batch mode");
+        }
+    }
+
+    private void runGreenhouse(String[] args, GreenhouseBatchService greenhouse, String boards) {
+        if (args.length != 1) {
+            throw new IllegalArgumentException("Unsupported greenhouse arguments");
+        }
+        GreenhouseBatchResultDTO result = greenhouse.run(boards);
+        if (result.failed() > 0 || result.rejected() > 0) {
+            throw new IllegalStateException("Greenhouse invocation had failed or rejected work");
         }
     }
 
