@@ -23,17 +23,17 @@ import java.util.concurrent.TimeoutException;
 import org.springframework.stereotype.Component;
 
 @Component
-public class GreenhouseHttpTransport {
+public class BoundedSourceHttpTransport {
     private static final int MAX_BYTES = 4_000_000;
     private final RequestSender sender;
     private final Duration completionTimeout;
 
-    public GreenhouseHttpTransport() {
+    public BoundedSourceHttpTransport() {
         this(HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3))
                 .followRedirects(HttpClient.Redirect.NEVER).build()::sendAsync, Duration.ofSeconds(9));
     }
 
-    GreenhouseHttpTransport(RequestSender sender, Duration completionTimeout) {
+    BoundedSourceHttpTransport(RequestSender sender, Duration completionTimeout) {
         this.sender = sender;
         this.completionTimeout = completionTimeout;
     }
@@ -46,17 +46,17 @@ public class GreenhouseHttpTransport {
             return new Response(response.statusCode(), response.body(), response.headers().map());
         } catch (TimeoutException timeout) {
             call.cancel(true);
-            throw new IOException("Greenhouse request timed out", timeout);
+            throw new IOException("Source request timed out", timeout);
         } catch (ExecutionException failed) {
             Throwable cause = failed.getCause();
             if (cause instanceof ResponseTooLargeException tooLarge) {
                 throw tooLarge;
             }
-            throw new IOException("Greenhouse transport failed", cause);
+            throw new IOException("Source transport failed", cause);
         } catch (InterruptedException interrupted) {
             call.cancel(true);
             Thread.currentThread().interrupt();
-            throw new IOException("Greenhouse request interrupted", interrupted);
+            throw new IOException("Source request interrupted", interrupted);
         }
     }
 
@@ -96,7 +96,7 @@ public class GreenhouseHttpTransport {
 
     public static final class ResponseTooLargeException extends IOException {
         public ResponseTooLargeException() {
-            super("Greenhouse response exceeds configured size limit");
+            super("Source response exceeds configured size limit");
         }
     }
 

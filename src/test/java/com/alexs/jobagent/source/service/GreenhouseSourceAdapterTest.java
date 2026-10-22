@@ -216,7 +216,7 @@ class GreenhouseSourceAdapterTest {
 
     @Test
     void oversizedResponseIsNotRetriedAndTimeoutUsesBoundedRetryBudget() {
-        FakeTransport oversized = new FakeTransport(new GreenhouseHttpTransport.ResponseTooLargeException());
+        FakeTransport oversized = new FakeTransport(new BoundedSourceHttpTransport.ResponseTooLargeException());
         GreenhouseFetchException rejected = assertThrows(GreenhouseFetchException.class,
                 () -> adapter(oversized).fetch(BOARD));
         assertEquals(1, rejected.attempts());
@@ -235,15 +235,15 @@ class GreenhouseSourceAdapterTest {
         return new GreenhouseSourceAdapter(transport, json, CLOCK, delay -> {});
     }
 
-    private static GreenhouseHttpTransport.Response response(int status, String body) {
+    private static BoundedSourceHttpTransport.Response response(int status, String body) {
         return response(status, body, Map.of());
     }
 
-    private static GreenhouseHttpTransport.Response response(int status, String body, Map<String, List<String>> headers) {
-        return new GreenhouseHttpTransport.Response(status, body.getBytes(StandardCharsets.UTF_8), headers);
+    private static BoundedSourceHttpTransport.Response response(int status, String body, Map<String, List<String>> headers) {
+        return new BoundedSourceHttpTransport.Response(status, body.getBytes(StandardCharsets.UTF_8), headers);
     }
 
-    private static final class FakeTransport extends GreenhouseHttpTransport {
+    private static final class FakeTransport extends BoundedSourceHttpTransport {
         private final Queue<Object> outcomes = new ArrayDeque<>();
         private URI lastUri;
         private int calls;

@@ -14,34 +14,34 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeoutException;
 import org.junit.jupiter.api.Test;
 
-class GreenhouseHttpTransportTest {
+class BoundedSourceHttpTransportTest {
     private static final URI ENDPOINT = URI.create("https://boards-api.greenhouse.io/v1/boards/example/jobs");
 
     @Test
     void responseHasContentValueSemanticsAndDoesNotExposeBody() {
         byte[] original = {1, 2, 3};
         var mutableHeaders = new java.util.ArrayList<>(List.of("3"));
-        var response = new GreenhouseHttpTransport.Response(429, original,
+        var response = new BoundedSourceHttpTransport.Response(429, original,
                 Map.of("Retry-After", mutableHeaders));
         original[0] = 9;
         mutableHeaders.add("4");
         response.body()[1] = 9;
-        var sameContent = new GreenhouseHttpTransport.Response(429, new byte[]{1, 2, 3},
+        var sameContent = new BoundedSourceHttpTransport.Response(429, new byte[]{1, 2, 3},
                 Map.of("Retry-After", List.of("3")));
         assertEquals(sameContent, response);
         assertEquals(sameContent.hashCode(), response.hashCode());
         assertEquals("3", response.firstHeader("retry-after"));
         assertFalse(response.toString().contains("Retry-After"));
-        assertFalse(response.equals(new GreenhouseHttpTransport.Response(503, new byte[]{1, 2, 3},
+        assertFalse(response.equals(new BoundedSourceHttpTransport.Response(503, new byte[]{1, 2, 3},
                 Map.of("Retry-After", List.of("3")))));
     }
 
     @Test
     void overallTimeoutCancelsOutstandingRequest() throws Exception {
         CompletableFuture<HttpResponse<byte[]>> pending = new CompletableFuture<>();
-        GreenhouseHttpTransport transport = withFuture(pending, Duration.ofMillis(1));
+        BoundedSourceHttpTransport transport = withFuture(pending, Duration.ofMillis(1));
         IOException failure = assertThrows(IOException.class, () -> transport.get(ENDPOINT));
-        assertEquals("Greenhouse request timed out", failure.getMessage());
+        assertEquals("Source request timed out", failure.getMessage());
         assertInstanceOf(TimeoutException.class, failure.getCause());
         assertTrue(pending.isCancelled());
     }
@@ -49,11 +49,11 @@ class GreenhouseHttpTransportTest {
     @Test
     void interruptionCancelsOutstandingRequestAndRestoresFlag() throws Exception {
         CompletableFuture<HttpResponse<byte[]>> pending = new CompletableFuture<>();
-        GreenhouseHttpTransport transport = withFuture(pending, Duration.ofSeconds(9));
+        BoundedSourceHttpTransport transport = withFuture(pending, Duration.ofSeconds(9));
         try {
             Thread.currentThread().interrupt();
             IOException failure = assertThrows(IOException.class, () -> transport.get(ENDPOINT));
-            assertEquals("Greenhouse request interrupted", failure.getMessage());
+            assertEquals("Source request interrupted", failure.getMessage());
             assertTrue(Thread.currentThread().isInterrupted());
             assertTrue(pending.isCancelled());
         } finally {
@@ -64,18 +64,18 @@ class GreenhouseHttpTransportTest {
     @Test
     void oversizeFailureKeepsItsTypeAndOtherTransportFailuresStaySafe() throws Exception {
         var oversize = withFuture(CompletableFuture.failedFuture(
-                new GreenhouseHttpTransport.ResponseTooLargeException()), Duration.ofSeconds(1));
-        assertThrows(GreenhouseHttpTransport.ResponseTooLargeException.class, () -> oversize.get(ENDPOINT));
+                new BoundedSourceHttpTransport.ResponseTooLargeException()), Duration.ofSeconds(1));
+        assertThrows(BoundedSourceHttpTransport.ResponseTooLargeException.class, () -> oversize.get(ENDPOINT));
         var failed = withFuture(CompletableFuture.failedFuture(new IOException("synthetic private detail")),
                 Duration.ofSeconds(1));
         IOException failure = assertThrows(IOException.class, () -> failed.get(ENDPOINT));
-        assertEquals("Greenhouse transport failed", failure.getMessage());
+        assertEquals("Source transport failed", failure.getMessage());
         assertInstanceOf(IOException.class, failure.getCause());
     }
 
-    private static GreenhouseHttpTransport withFuture(CompletableFuture<HttpResponse<byte[]>> response,
+    private static BoundedSourceHttpTransport withFuture(CompletableFuture<HttpResponse<byte[]>> response,
                                                        Duration timeout) {
-        return new GreenhouseHttpTransport((request, handler) -> response, timeout);
+        return new BoundedSourceHttpTransport((request, handler) -> response, timeout);
     }
 
     @Test
@@ -96,8 +96,8 @@ class GreenhouseHttpTransportTest {
         server.start();
         try {
             URI base = URI.create("http://127.0.0.1:" + server.getAddress().getPort());
-            GreenhouseHttpTransport transport = new GreenhouseHttpTransport();
-            assertThrows(GreenhouseHttpTransport.ResponseTooLargeException.class,
+            BoundedSourceHttpTransport transport = new BoundedSourceHttpTransport();
+            assertThrows(BoundedSourceHttpTransport.ResponseTooLargeException.class,
                     () -> transport.get(base.resolve("/large")));
             assertEquals(302, transport.get(base.resolve("/redirect")).status());
         } finally {
