@@ -6,7 +6,7 @@ The planned agent discovers vacancies and employers, normalizes and deduplicates
 
 ## Current status
 
-Phase 0 is complete. Phase 1, quality configuration, Phase 2A, Phase 2B, Sonar cleanup and Phase 3A Greenhouse retrieval are merged in PRs #2, #4, #5, #6, #7 and #8 respectively. Phase 3B Lever retrieval is local work for review. Normal batch startup checks PostgreSQL and Flyway migrations, then exits. Broad employer discovery, evaluation, cloud deployment and Gmail/Sheet migration are not implemented. Cloud costs are estimates, not measured bills. PR #8's pre-merge build and Sonar gate passed, but its separate [main-push Sonar Quality Gate failed](https://github.com/AlexS968/job-agent/actions/runs/39771947523) on the merge commit; do not treat main analysis as green.
+Phase 0 is complete. Phase 1, quality configuration, Phase 2A, Phase 2B, Sonar cleanup and Phase 3A Greenhouse retrieval are merged in PRs #2, #4, #5, #6, #7 and #8 respectively. Phase 3B Lever retrieval merged in PR #9; Phase 3C.1 Tavily candidate discovery is local work for review. Normal batch startup checks PostgreSQL and Flyway migrations, then exits. Verified employer discovery, evaluation, cloud deployment and Gmail/Sheet migration are not implemented. Cloud costs are estimates, not measured bills. PR #9 passed pre-merge build and Sonar checks, while its separate [main-push CI failed](https://github.com/AlexS968/job-agent/actions/runs/39778774983).
 
 ## Local run
 
@@ -22,7 +22,7 @@ docker compose up -d --wait
 java -jar target/job-agent-0.1.0-SNAPSHOT.jar
 ```
 
-The batch process prints the `agent_runs` row count and exits. Flyway applies and validates five migrations, then the connection pool closes. `DB_URL` defaults to `jdbc:postgresql://localhost:5432/job_agent`; set it when changing `DB_NAME` or `DB_PORT`. `DB_USER` and `DB_PASSWORD` come from the environment. Do not commit `.env`.
+The batch process prints the `agent_runs` row count and exits. Flyway applies and validates six migrations, then the connection pool closes. `DB_URL` defaults to `jdbc:postgresql://localhost:5432/job_agent`; set it when changing `DB_NAME` or `DB_PORT`. `DB_USER` and `DB_PASSWORD` come from the environment. Do not commit `.env`.
 
 ```sh
 ./mvnw -B clean verify        # isolated PostgreSQL tests and fresh JaCoCo coverage
@@ -66,7 +66,7 @@ The adapter fetches and validates an entire board outside database transactions.
 
 The bounded live smoke test on 2026-10-22 used the `greenhouse` board (19 published posts at that moment) and a disposable local PostgreSQL database. One request imported 19 vacancies and 19 discovery events; a second request imported 0 and reported 19 unchanged. Aggregate database counts were 19 source items, 19 vacancies, 19 events and 38 successful runs. The smoke database and volume were removed. Board contents can change after this observation; no real response fixture is committed.
 
-## Lever site ingestion (Phase 3B, local review)
+## Lever site ingestion (Phase 3B, merged)
 
 Configure one or two public employer sites as `region|site|verified display name`, separated by commas. `region` is `global` or `eu`; `site` is the employer's stable Lever site identifier, not its display name. With the database environment above:
 
@@ -83,6 +83,24 @@ Identity is `(lever, region, site, posting id)` for vacancies and `(lever-site, 
 HTTP fetch and full-page validation happen outside transactions. Each listing then gets its own run and transaction: snapshot, employer/vacancy, provenance, optional outbox event and `SUCCEEDED` commit atomically. A failed listing rolls back those writes and records `FAILED` separately; no run can be recorded when the database is unavailable before run creation. Ambient transactions are rejected. A fetch failure has no listing run. Previously committed listings remain when a later listing fails. The invocation reports `requests`, `fetched`, `created`, `updated`, `unchanged`, `rejected` and `failed`; stale observations count as unchanged. Any rejected or failed work produces a nonzero exit. Ingestion never dispatches events.
 
 A bounded live smoke on 2026-10-22 used `global|mashgin|Mashgin` and a disposable localhost PostgreSQL 17.11 container. The first run made one GET and fetched/created 14 postings; the second made one GET and reported 14 unchanged. Aggregate counts were 14 source snapshots, 14 vacancies, 14 pending events and 28 successful runs. The container was removed. Live board contents may change; no response fixture was committed.
+
+## Search candidate pilot (Phase 3C.1, local review)
+
+The versioned `pilot-v1` query set contains four searches for Java/Spring product employers in Germany, international SaaS employers, Germany-compatible remote roles and official Greenhouse/Lever career pages. Dry-run still checks the local database but makes no search request and needs no key:
+
+```sh
+java -jar target/job-agent-0.1.0-SNAPSHOT.jar --mode=search-dry-run
+```
+
+For a live run, the owner must first create a Tavily free-plan key and configure `TAVILY_API_KEY` **locally outside Git**; do not paste it into chat or put it in a URL. Keep PAYGO disabled and add no payment method. No live pilot has run yet. With the database environment configured above:
+
+```sh
+java -jar target/job-agent-0.1.0-SNAPSHOT.jar --mode=search-pilot
+```
+
+The command calls only Tavily Search Basic at its fixed HTTPS endpoint. It sets `auto_parameters=false`, disables answer/raw-content/images, requests usage metadata and at most ten results per query. It never fetches candidates or activates ATS boards. PostgreSQL V6 reserves one of the pilot's 100 permanent attempts before **each** request, including retries; a crash or uncertain timeout does not refund it. Concurrent workers share the cap. One invocation makes at most 12 attempts, with up to three per query. Restarts and calendar months do not reset the cap. A missing key or exhausted budget exits nonzero; failed queries also yield a nonzero exit after the summary. Provider-reported credits can differ from reserved attempts. The local cap cannot verify or control Tavily account billing: maintain the free plan and disabled PAYGO separately. `429` and server/transport failures retry within bounded delays; a valid `Retry-After` longer than the local delay budget stops the invocation before another request. Authentication and credit-limit responses do not retry.
+
+The reservation service commits the guarded budget increment and attempt row together before HTTP; it rejects ambient transactions. Interruption during HTTP or retry waiting cancels the full invocation, preserves prior reservations and successful URLs, reports a failure and exits nonzero without another request. The output reports queries, attempts, remaining local budget, failures, cancellation and deduplicated `UNVERIFIED` URLs. Titles/snippets are transient and never persisted. V6 stores only query version/ordinal, reservation time, safe outcome, request ID and reported credits. Search locale is a preference, not proof of hiring eligibility. A search result or reachable ATS board does not establish employer ownership. Phase 3C.2 must verify official career pages and ATS ownership with SSRF-safe fetching before source registration; no candidate is currently trusted. Durable result retention needs a separate review of provider rights. See [ADR 0003](docs/adr/0003-tavily-search-pilot.md).
 
 ## Local outbox dispatch (Phase 2B)
 
@@ -141,4 +159,4 @@ The existing Google Sheet remains the sole master of the old pipeline until veri
 
 ## Next milestone
 
-Next: review the local Phase 3B Lever increment, then publish it and inspect its PR checks. The PR #8 merge-commit main Sonar failure still needs diagnosis. Broad employer discovery, evaluation and cloud transport remain later phases.
+Next: review the local Phase 3C.1 search pilot. Its live execution requires owner-controlled Tavily free-plan configuration; Phase 3C.2 source verification is separate. The PR #9 merge-commit main Sonar failure still needs diagnosis. Evaluation and cloud transport remain later phases.

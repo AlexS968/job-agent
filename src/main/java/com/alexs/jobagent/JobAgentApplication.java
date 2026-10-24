@@ -7,6 +7,8 @@ import com.alexs.jobagent.source.service.GreenhouseBatchService;
 import com.alexs.jobagent.source.dto.GreenhouseBatchResultDTO;
 import com.alexs.jobagent.source.dto.LeverBatchResultDTO;
 import com.alexs.jobagent.source.service.LeverBatchService;
+import com.alexs.jobagent.source.service.SearchPilotService;
+import com.alexs.jobagent.source.dto.SearchPilotResultDTO;
 import com.alexs.jobagent.outbox.dto.DispatchResultDTO;
 import com.alexs.jobagent.outbox.service.LocalEventDispatcher;
 import com.alexs.jobagent.outbox.service.OutboxService;
@@ -46,19 +48,20 @@ public class JobAgentApplication {
                                      GreenhouseBatchService greenhouse,
                                      @Value("${GREENHOUSE_BOARDS:}") String boards,
                                      LeverBatchService lever,
-                                     @Value("${LEVER_SITES:}") String leverSites) {
+                                     @Value("${LEVER_SITES:}") String leverSites,
+                                     SearchPilotService searchPilot) {
         return args -> {
             flyway.validate();
             Integer count = jdbc.queryForObject("SELECT COUNT(*) FROM agent_runs", Integer.class);
             LOGGER.info("Database ready; agent_runs rows: {}", count);
-            executeMode(args, ingestion, json, dispatcher, outbox, greenhouse, boards, lever, leverSites);
+            executeMode(args, ingestion, json, dispatcher, outbox, greenhouse, boards, lever, leverSites, searchPilot);
         };
     }
 
     private void executeMode(String[] args, SyntheticIngestionService ingestion, JsonMapper json,
                              LocalEventDispatcher dispatcher, OutboxService outbox,
                              GreenhouseBatchService greenhouse, String boards,
-                             LeverBatchService lever, String leverSites) throws IOException {
+                             LeverBatchService lever, String leverSites, SearchPilotService searchPilot) throws IOException {
         String[] modes = Arrays.stream(args).filter(arg -> arg.startsWith("--mode=")).toArray(String[]::new);
         if (modes.length == 0) {
             return;
@@ -72,7 +75,41 @@ public class JobAgentApplication {
             case "--mode=replay-failed" -> runReplay(args, outbox);
             case "--mode=greenhouse" -> runGreenhouse(args, greenhouse, boards);
             case "--mode=lever" -> runLever(args, lever, leverSites);
+            case "--mode=search-dry-run" -> runSearchDryRun(args, searchPilot);
+            case "--mode=search-pilot" -> runSearchPilot(args, searchPilot);
             default -> throw new IllegalArgumentException("Unsupported batch mode");
+        }
+    }
+
+    private void runSearchDryRun(String[] args, SearchPilotService pilot) {
+        if (args.length != 1) {
+            throw new IllegalArgumentException("Unsupported search arguments");
+        }
+        LOGGER.info("Search query set: version={}, count={}", SearchPilotService.QUERY_VERSION,
+                pilot.plannedQueries().size());
+        pilot.plannedQueries().forEach(query -> LOGGER.info("Planned search: {}", query.query()));
+    }
+
+    private void runSearchPilot(String[] args, SearchPilotService pilot) {
+        if (args.length != 1 || System.getenv("TAVILY_API_KEY") == null
+                || System.getenv("TAVILY_API_KEY").isBlank()) {
+            throw new IllegalArgumentException("Search pilot requires local TAVILY_API_KEY and no extra arguments");
+        }
+        SearchPilotResultDTO result;
+        try {
+            result = pilot.run();
+        } catch (IllegalStateException exhausted) {
+            if (exhausted.getMessage() != null && exhausted.getMessage().startsWith("Search pilot budget exhausted")) {
+                LOGGER.error("Search pilot budget exhausted; no further request sent");
+            }
+            throw exhausted;
+        }
+        LOGGER.info("Search pilot: queries={}, outbound_attempts={}, remaining_budget={}, unverified_candidates={}, failures={}, cancelled={}",
+                result.queries(), result.attempts(), result.remaining(), result.unverifiedUrls().size(),
+                result.failures(), result.cancelled());
+        result.unverifiedUrls().forEach(url -> LOGGER.info("UNVERIFIED candidate URL: {}", url));
+        if (result.failures() > 0) {
+            throw new IllegalStateException("Search pilot had failed queries");
         }
     }
 

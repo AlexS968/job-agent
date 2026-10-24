@@ -31,7 +31,7 @@ class BatchStartupIT {
                  var statement = connection.createStatement();
                  var rows = statement.executeQuery("SELECT COUNT(*) FROM flyway_schema_history WHERE success")) {
                 assertTrue(rows.next());
-                assertEquals(5, rows.getInt(1));
+                assertEquals(6, rows.getInt(1));
             }
         }
     }
@@ -42,6 +42,27 @@ class BatchStartupIT {
         assertNotEquals(0, result.exitCode());
         assertTrue(result.output().contains("Job Agent startup failed"), result.output());
         assertFalse(result.output().contains(PASSWORD), result.output());
+    }
+
+    @Test
+    void searchDryRunNeedsNoKeyAndLiveModeWithoutKeyFailsBeforeReservation() throws Exception {
+        try (PostgreSQLContainer postgres = new PostgreSQLContainer("postgres:17.11-alpine")
+                .withDatabaseName("job_agent_search_batch_test").withUsername("test_user").withPassword(PASSWORD)) {
+            postgres.start();
+            Result dry = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD, "--mode=search-dry-run");
+            assertEquals(0, dry.exitCode(), dry.output());
+            assertTrue(dry.output().contains("Search query set: version=pilot-v1, count=4"), dry.output());
+            Result live = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD, "--mode=search-pilot");
+            assertNotEquals(0, live.exitCode(), live.output());
+            assertFalse(live.output().contains(PASSWORD));
+            try (var connection = java.sql.DriverManager.getConnection(postgres.getJdbcUrl(),
+                    postgres.getUsername(), PASSWORD);
+                 var statement = connection.createStatement();
+                 var rows = statement.executeQuery("SELECT reserved_attempts FROM search_pilot_budget")) {
+                assertTrue(rows.next());
+                assertEquals(0, rows.getInt(1));
+            }
+        }
     }
 
     @Test
@@ -261,6 +282,7 @@ class BatchStartupIT {
         env.put("DB_URL", url);
         env.put("DB_USER", username);
         env.put("DB_PASSWORD", password);
+        env.remove("TAVILY_API_KEY");
         if (boards == null) {
             env.remove("GREENHOUSE_BOARDS");
         } else {
