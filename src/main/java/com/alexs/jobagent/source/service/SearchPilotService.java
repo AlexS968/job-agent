@@ -10,6 +10,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -19,11 +20,12 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 public class SearchPilotService {
     public static final String QUERY_VERSION = "pilot-v1";
     private static final int INVOCATION_LIMIT = 12;
+    private static final String GERMANY = "germany";
     private static final List<SearchQueryDTO> QUERIES = List.of(
-            new SearchQueryDTO("Java Spring backend product company careers Germany", "germany", "en", 10),
+            new SearchQueryDTO("Java Spring backend product company careers Germany", GERMANY, "en", 10),
             new SearchQueryDTO("international SaaS product company Java backend careers", null, "en", 10),
-            new SearchQueryDTO("Java backend remote Germany eligible employer careers", "germany", "en", 10),
-            new SearchQueryDTO("official careers Java Spring Greenhouse Lever Germany", "germany", "en", 10));
+            new SearchQueryDTO("Java backend remote Germany eligible employer careers", GERMANY, "en", 10),
+            new SearchQueryDTO("official careers Java Spring Greenhouse Lever Germany", GERMANY, "en", 10));
 
     private final SearchGateway gateway;
     private final SearchPilotRepository repository;
@@ -54,79 +56,121 @@ public class SearchPilotService {
         if (TransactionSynchronizationManager.isActualTransactionActive()) {
             throw new IllegalStateException("Search pilot requires no ambient transaction");
         }
-        Set<String> urls = new LinkedHashSet<>();
-        int attempts = 0;
-        int failures = 0;
-        int queries = 0;
+        Invocation state = new Invocation();
         for (int i = 0; i < QUERIES.size(); i++) {
             if (Thread.currentThread().isInterrupted()) {
-                return result(queries, attempts, failures + 1, true, urls);
+                state.cancel();
+                return result(state);
             }
-            SearchQueryDTO query = QUERIES.get(i);
-            queries++;
-            for (int retry = 1; retry <= 3 && attempts < INVOCATION_LIMIT; retry++) {
-                if (Thread.currentThread().isInterrupted()) {
-                    return result(queries, attempts, failures + 1, true, urls);
-                }
-                Long id = reservation.reserve(QUERY_VERSION, i + 1);
-                if (id == null) {
-                    throw new IllegalStateException("Search pilot budget exhausted; no request sent");
-                }
-                attempts++;
-                try {
-                    SearchResponseDTO response = gateway.search(query);
-                    repository.finish(id, "SUCCESS", response.requestId(), response.billedCredits());
-                    response.results().stream().map(SearchResultDTO::url).map(SearchCandidateUrl::normalize)
-                            .filter(url -> url != null).forEach(urls::add);
-                    break;
-                } catch (SearchFailureException failure) {
-                    boolean wasInterrupted = Thread.interrupted();
-                    try {
-                        repository.finish(id, failure.kind().name(), failure.requestId(), null);
-                    } finally {
-                        if (wasInterrupted) {
-                            Thread.currentThread().interrupt();
-                        }
-                    }
-                    if (failure.kind() == SearchFailureException.Kind.CANCELLED || wasInterrupted) {
-                        Thread.currentThread().interrupt();
-                        return result(queries, attempts, failures + 1, true, urls);
-                    }
-                    if (failure.kind() == SearchFailureException.Kind.QUOTA
-                            || failure.kind() == SearchFailureException.Kind.AUTHENTICATION) {
-                        return result(queries, attempts, failures + 1, false, urls);
-                    }
-                    if (failure.kind() != SearchFailureException.Kind.TRANSIENT || retry == 3) {
-                        failures++;
-                        break;
-                    }
-                    Duration delay;
-                    try {
-                        delay = SourceRetryPolicy.delay(failure.retryAfter(), retry,
-                                Duration.ofSeconds(2), clock);
-                    } catch (SourceRetryPolicy.BudgetExceededException tooLong) {
-                        return result(queries, attempts, failures + 1, false, urls);
-                    }
-                    try {
-                        wait.await(delay);
-                    } catch (InterruptedException interrupted) {
-                        Thread.currentThread().interrupt();
-                        return result(queries, attempts, failures + 1, true, urls);
-                    }
-                }
+            state.queries++;
+            if (runQuery(QUERIES.get(i), i + 1, state) == QueryOutcome.STOP) {
+                return result(state);
             }
         }
-        return result(queries, attempts, failures, false, urls);
+        return result(state);
     }
 
-    private SearchPilotResultDTO result(int queries, int attempts, int failures, boolean cancelled, Set<String> urls) {
+    private QueryOutcome runQuery(SearchQueryDTO query, int queryNumber, Invocation state) {
+        int retry = 1;
+        while (retry <= 3 && state.attempts < INVOCATION_LIMIT) {
+            if (Thread.currentThread().isInterrupted()) {
+                state.cancel();
+                return QueryOutcome.STOP;
+            }
+            SearchFailureException failure = searchOnce(query, queryNumber, state);
+            if (failure == null) {
+                return QueryOutcome.NEXT;
+            }
+            QueryOutcome decision = handleFailure(failure, retry, state);
+            if (decision != QueryOutcome.RETRY) {
+                return decision;
+            }
+            retry++;
+        }
+        return QueryOutcome.NEXT;
+    }
+
+    private SearchFailureException searchOnce(SearchQueryDTO query, int queryNumber, Invocation state) {
+        Long id = reservation.reserve(QUERY_VERSION, queryNumber);
+        if (id == null) {
+            throw new IllegalStateException("Search pilot budget exhausted; no request sent");
+        }
+        state.attempts++;
+        try {
+            SearchResponseDTO response = gateway.search(query);
+            repository.finish(id, "SUCCESS", response.requestId(), response.billedCredits());
+            response.results().stream().map(SearchResultDTO::url).map(SearchCandidateUrl::normalize)
+                    .filter(Objects::nonNull).forEach(state.urls::add);
+            return null;
+        } catch (SearchFailureException failure) {
+            finishFailure(id, failure);
+            return failure;
+        }
+    }
+
+    private void finishFailure(long id, SearchFailureException failure) {
         boolean interrupted = Thread.interrupted();
         try {
-            return new SearchPilotResultDTO(queries, attempts, repository.remaining(), failures, cancelled, List.copyOf(urls));
+            repository.finish(id, failure.kind().name(), failure.requestId(), null);
         } finally {
             if (interrupted) {
                 Thread.currentThread().interrupt();
             }
+        }
+    }
+
+    private QueryOutcome handleFailure(SearchFailureException failure, int retry, Invocation state) {
+        if (failure.kind() == SearchFailureException.Kind.CANCELLED || Thread.currentThread().isInterrupted()) {
+            state.cancel();
+            return QueryOutcome.STOP;
+        }
+        if (failure.kind() == SearchFailureException.Kind.QUOTA
+                || failure.kind() == SearchFailureException.Kind.AUTHENTICATION) {
+            state.failures++;
+            return QueryOutcome.STOP;
+        }
+        if (failure.kind() != SearchFailureException.Kind.TRANSIENT || retry == 3) {
+            state.failures++;
+            return QueryOutcome.NEXT;
+        }
+        try {
+            Duration delay = SourceRetryPolicy.delay(failure.retryAfter(), retry, Duration.ofSeconds(2), clock);
+            wait.await(delay);
+            return QueryOutcome.RETRY;
+        } catch (SourceRetryPolicy.BudgetExceededException exceeded) {
+            state.failures++;
+            return QueryOutcome.STOP;
+        } catch (InterruptedException interrupted) {
+            state.cancel();
+            return QueryOutcome.STOP;
+        }
+    }
+
+    private SearchPilotResultDTO result(Invocation state) {
+        boolean interrupted = Thread.interrupted();
+        try {
+            return new SearchPilotResultDTO(state.queries, state.attempts, repository.remaining(),
+                    state.failures, state.cancelled, List.copyOf(state.urls));
+        } finally {
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+    private enum QueryOutcome { RETRY, NEXT, STOP }
+
+    private static final class Invocation {
+        private final Set<String> urls = new LinkedHashSet<>();
+        private int queries;
+        private int attempts;
+        private int failures;
+        private boolean cancelled;
+
+        private void cancel() {
+            Thread.currentThread().interrupt();
+            cancelled = true;
+            failures++;
         }
     }
 }

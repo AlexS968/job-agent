@@ -40,6 +40,24 @@ public class TavilySearchGateway implements SearchGateway {
         if (key == null || key.isBlank()) {
             throw new SearchFailureException(SearchFailureException.Kind.AUTHENTICATION, null, null);
         }
+        BoundedSourceHttpTransport.Response response = send(query, key);
+        classifyStatus(response);
+        return normalize(response, query.maxResults());
+    }
+
+    private BoundedSourceHttpTransport.Response send(SearchQueryDTO query, String key) throws SearchFailureException {
+        try {
+            return transport.postJson(ENDPOINT, key, json.writeValueAsString(requestBody(query)));
+        } catch (BoundedSourceHttpTransport.RequestInterruptedException interrupted) {
+            throw new SearchFailureException(SearchFailureException.Kind.CANCELLED, null, null);
+        } catch (BoundedSourceHttpTransport.ResponseTooLargeException tooLarge) {
+            throw new SearchFailureException(SearchFailureException.Kind.INVALID_RESPONSE, null, null);
+        } catch (IOException transportFailure) {
+            throw new SearchFailureException(SearchFailureException.Kind.TRANSIENT, null, null);
+        }
+    }
+
+    private Map<String, Object> requestBody(SearchQueryDTO query) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("query", query.query());
         body.put("country", query.country());
@@ -51,16 +69,10 @@ public class TavilySearchGateway implements SearchGateway {
         body.put("include_raw_content", false);
         body.put("include_images", false);
         body.put("include_usage", true);
-        BoundedSourceHttpTransport.Response response;
-        try {
-            response = transport.postJson(ENDPOINT, key, json.writeValueAsString(body));
-        } catch (BoundedSourceHttpTransport.RequestInterruptedException interrupted) {
-            throw new SearchFailureException(SearchFailureException.Kind.CANCELLED, null, null);
-        } catch (BoundedSourceHttpTransport.ResponseTooLargeException tooLarge) {
-            throw new SearchFailureException(SearchFailureException.Kind.INVALID_RESPONSE, null, null);
-        } catch (IOException transportFailure) {
-            throw new SearchFailureException(SearchFailureException.Kind.TRANSIENT, null, null);
-        }
+        return body;
+    }
+
+    private void classifyStatus(BoundedSourceHttpTransport.Response response) throws SearchFailureException {
         String requestId = response.firstHeader("X-Request-Id");
         if (response.status() == 429 || response.status() >= 500) {
             throw new SearchFailureException(SearchFailureException.Kind.TRANSIENT, requestId,
@@ -75,6 +87,11 @@ public class TavilySearchGateway implements SearchGateway {
         if (response.status() != 200) {
             throw new SearchFailureException(SearchFailureException.Kind.PERMANENT, requestId, null);
         }
+    }
+
+    private SearchResponseDTO normalize(BoundedSourceHttpTransport.Response response, int maxResults)
+            throws SearchFailureException {
+        String requestId = response.firstHeader("X-Request-Id");
         try {
             JsonNode root = json.readTree(response.body());
             JsonNode results = root.path("results");
@@ -84,7 +101,7 @@ public class TavilySearchGateway implements SearchGateway {
             List<SearchResultDTO> normalized = new ArrayList<>();
             int rank = 0;
             for (JsonNode result : results) {
-                if (rank >= query.maxResults()) {
+                if (rank >= maxResults) {
                     break;
                 }
                 rank++;

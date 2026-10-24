@@ -10,6 +10,7 @@ import com.alexs.jobagent.source.service.SearchPilotService;
 import com.alexs.jobagent.source.service.SearchAttemptReservationService;
 import java.time.Clock;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.stream.IntStream;
 import org.junit.jupiter.api.BeforeEach;
@@ -72,7 +73,7 @@ class SearchPilotIT {
     void concurrentReservationCannotExceedHundredAndUncertainCallIsNotRefunded() {
         var attempts = IntStream.range(0, 120).mapToObj(index -> CompletableFuture.supplyAsync(
                 () -> reservation.reserve("pilot-v1", 1))).toList();
-        long reserved = attempts.stream().map(CompletableFuture::join).filter(id -> id != null).count();
+        long reserved = attempts.stream().map(CompletableFuture::join).filter(Objects::nonNull).count();
         assertEquals(100, reserved);
         assertEquals(0, repository.remaining());
         assertEquals(100, jdbc.queryForObject("SELECT count(*) FROM search_pilot_attempts WHERE outcome = 'RESERVED'", Integer.class));
@@ -178,8 +179,80 @@ class SearchPilotIT {
 
     @Test
     void failedAttemptInsertionRollsBackBudgetIncrement() {
-        assertThrows(DataAccessException.class, () -> reservation.reserve("x".repeat(33), 1));
+        String invalidVersion = "x".repeat(33);
+        assertThrows(DataAccessException.class, () -> reservation.reserve(invalidVersion, 1));
         assertEquals(100, repository.remaining());
         assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM search_pilot_attempts", Integer.class));
+    }
+
+    @Test
+    void laterPermanentFailureRetainsEarlierCandidateAndContinues() {
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        SearchPilotService pilot = new SearchPilotService(query -> {
+            int call = calls.incrementAndGet();
+            if (call == 2) {
+                throw new SearchFailureException(SearchFailureException.Kind.PERMANENT, "failed", null);
+            }
+            return new SearchResponseDTO(call == 1
+                    ? List.of(new SearchResultDTO("https://example.org/jobs/1", null, null, 1))
+                    : List.of(), "ok", null);
+        }, repository, reservation, Clock.systemUTC());
+        var result = pilot.run();
+        assertEquals(4, calls.get());
+        assertEquals(4, result.attempts());
+        assertEquals(1, result.failures());
+        assertFalse(result.cancelled());
+        assertEquals(List.of("https://example.org/jobs/1"), result.unverifiedUrls());
+    }
+
+    @Test
+    void authenticationAfterSuccessStopsBeforeFurtherQueries() {
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        SearchPilotService pilot = new SearchPilotService(query -> {
+            if (calls.incrementAndGet() == 2) {
+                throw new SearchFailureException(SearchFailureException.Kind.AUTHENTICATION, null, null);
+            }
+            return new SearchResponseDTO(List.of(new SearchResultDTO("https://example.org/jobs/1", null, null, 1)), null, null);
+        }, repository, reservation, Clock.systemUTC());
+        var result = pilot.run();
+        assertEquals(2, calls.get());
+        assertEquals(2, result.attempts());
+        assertEquals(1, result.failures());
+        assertEquals(List.of("https://example.org/jobs/1"), result.unverifiedUrls());
+    }
+
+    @Test
+    void budgetExhaustionAfterTwoCommittedRequestsDoesNotSendThird() {
+        for (int i = 0; i < 98; i++) {
+            reservation.reserve("prior", 1);
+        }
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        SearchPilotService pilot = new SearchPilotService(query -> {
+            calls.incrementAndGet();
+            return new SearchResponseDTO(List.of(), null, null);
+        }, repository, reservation, Clock.systemUTC());
+        assertThrows(IllegalStateException.class, pilot::run);
+        assertEquals(2, calls.get());
+        assertEquals(0, repository.remaining());
+        assertEquals(100, jdbc.queryForObject("SELECT count(*) FROM search_pilot_attempts", Integer.class));
+    }
+
+    @Test
+    void preInterruptedInvocationDoesNotReserveOrCallProvider() {
+        SearchPilotService pilot = new SearchPilotService(query -> {
+            fail("HTTP must not start");
+            return new SearchResponseDTO(List.of(), null, null);
+        }, repository, reservation, Clock.systemUTC());
+        Thread.currentThread().interrupt();
+        try {
+            var result = pilot.run();
+            assertTrue(result.cancelled());
+            assertEquals(0, result.attempts());
+            assertEquals(0, result.queries());
+            assertEquals(1, result.failures());
+            assertEquals(100, result.remaining());
+        } finally {
+            Thread.interrupted();
+        }
     }
 }

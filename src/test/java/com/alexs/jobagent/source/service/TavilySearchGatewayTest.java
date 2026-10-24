@@ -96,6 +96,21 @@ class TavilySearchGatewayTest {
     }
 
     @Test
+    void invalidUrlsAreDiscardedAndMissingMetadataIsUnknown() throws Exception {
+        var transport = new BoundedSourceHttpTransport((request, handler) -> CompletableFuture.completedFuture(
+                response(200, "{\"results\":[{\"url\":\"javascript:alert(1)\"},"
+                        + "{\"url\":\"https://example.org/jobs\"}]}")), Duration.ofSeconds(1));
+        var result = new TavilySearchGateway(transport, JsonMapper.builder().build(), () -> "synthetic-secret")
+                .search(QUERY);
+        assertEquals(1, result.results().size());
+        assertEquals("https://example.org/jobs", result.results().getFirst().url());
+        assertEquals(2, result.results().getFirst().rank());
+        assertNull(result.results().getFirst().title());
+        assertNull(result.billedCredits());
+        assertEquals("req-1", result.requestId());
+    }
+
+    @Test
     void candidateUrlValidationKeepsPathAndQueryButRejectsUnsafeForms() {
         assertEquals("https://example.org/jobs/a?ref=search", SearchCandidateUrl.normalize(
                 "https://example.org/jobs/a?ref=search"));
@@ -122,7 +137,9 @@ class TavilySearchGatewayTest {
                 bytes.writeBytes(chunk);
             }
             @Override public void onError(Throwable throwable) { fail(throwable); }
-            @Override public void onComplete() { }
+            @Override public void onComplete() {
+                // The publisher has no completion value; onNext already captured its bytes.
+            }
         });
         return bytes.toString(StandardCharsets.UTF_8);
     }
