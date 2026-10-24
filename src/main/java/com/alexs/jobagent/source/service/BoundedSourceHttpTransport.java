@@ -40,6 +40,18 @@ public class BoundedSourceHttpTransport {
 
     public Response get(URI uri) throws IOException {
         HttpRequest request = HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(8)).GET().build();
+        return send(request);
+    }
+
+    public Response postJson(URI uri, String authorization, String json) throws IOException {
+        HttpRequest request = HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(8))
+                .header("Authorization", "Bearer " + authorization)
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(json)).build();
+        return send(request);
+    }
+
+    private Response send(HttpRequest request) throws IOException {
         CompletableFuture<HttpResponse<byte[]>> call = sender.send(request, info -> new LimitedBodySubscriber());
         try {
             HttpResponse<byte[]> response = call.get(completionTimeout.toMillis(), TimeUnit.MILLISECONDS);
@@ -56,7 +68,7 @@ public class BoundedSourceHttpTransport {
         } catch (InterruptedException interrupted) {
             call.cancel(true);
             Thread.currentThread().interrupt();
-            throw new IOException("Source request interrupted", interrupted);
+            throw new RequestInterruptedException(interrupted);
         }
     }
 
@@ -97,6 +109,12 @@ public class BoundedSourceHttpTransport {
     public static final class ResponseTooLargeException extends IOException {
         public ResponseTooLargeException() {
             super("Source response exceeds configured size limit");
+        }
+    }
+
+    public static final class RequestInterruptedException extends IOException {
+        public RequestInterruptedException(InterruptedException cause) {
+            super("Source request interrupted", cause);
         }
     }
 
