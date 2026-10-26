@@ -6,7 +6,7 @@ The planned agent discovers vacancies and employers, normalizes and deduplicates
 
 ## Current status
 
-Phase 0 is complete. Phase 1, quality configuration, Phase 2A, Phase 2B, Sonar cleanup and Phase 3A Greenhouse retrieval are merged in PRs #2, #4, #5, #6, #7 and #8 respectively. Phase 3B Lever retrieval merged in PR #9; Phase 3C.1 Tavily candidate discovery is local work for review. Normal batch startup checks PostgreSQL and Flyway migrations, then exits. Verified employer discovery, evaluation, cloud deployment and Gmail/Sheet migration are not implemented. Cloud costs are estimates, not measured bills. PR #9 passed pre-merge build and Sonar checks, while its separate [main-push CI failed](https://github.com/AlexS968/job-agent/actions/runs/39778774983).
+Phase 0 is complete. Phase 1, quality configuration, Phase 2A, Phase 2B, Sonar cleanup and Phase 3A Greenhouse retrieval are merged in PRs #2, #4, #5, #6, #7 and #8 respectively. Phase 3B Lever retrieval merged in PR #9; Phase 3C.1 bounded Tavily URL-candidate discovery merged in PR #10. Normal batch startup checks PostgreSQL and Flyway migrations, then exits. Verified employer discovery, evaluation, cloud deployment and Gmail/Sheet migration are not implemented. Cloud costs are estimates, not measured bills. PR #9 passed pre-merge build and Sonar checks, while its separate [main-push CI failed](https://github.com/AlexS968/job-agent/actions/runs/39778774983). A bounded Tavily live pilot made 4 requests and returned 34 unique URL candidates without errors; their ownership and usefulness remain unverified. PR #10 post-merge checks are not verified here. [The master plan](MASTER_PLAN.md#selection-criteria-and-useful-results) records the current selection and source-usefulness decisions.
 
 ## Local run
 
@@ -84,7 +84,7 @@ HTTP fetch and full-page validation happen outside transactions. Each listing th
 
 A bounded live smoke on 2026-10-22 used `global|mashgin|Mashgin` and a disposable localhost PostgreSQL 17.11 container. The first run made one GET and fetched/created 14 postings; the second made one GET and reported 14 unchanged. Aggregate counts were 14 source snapshots, 14 vacancies, 14 pending events and 28 successful runs. The container was removed. Live board contents may change; no response fixture was committed.
 
-## Search candidate pilot (Phase 3C.1, local review)
+## Search candidate pilot (Phase 3C.1)
 
 The versioned `pilot-v1` query set contains four searches for Java/Spring product employers in Germany, international SaaS employers, Germany-compatible remote roles and official Greenhouse/Lever career pages. Dry-run still checks the local database but makes no search request and needs no key:
 
@@ -92,7 +92,7 @@ The versioned `pilot-v1` query set contains four searches for Java/Spring produc
 java -jar target/job-agent-0.1.0-SNAPSHOT.jar --mode=search-dry-run
 ```
 
-For a live run, the owner must first create a Tavily free-plan key and configure `TAVILY_API_KEY` **locally outside Git**; do not paste it into chat or put it in a URL. Keep PAYGO disabled and add no payment method. No live pilot has run yet. With the database environment configured above:
+For a live run, the owner must first create a Tavily free-plan key and configure `TAVILY_API_KEY` **locally outside Git**; do not paste it into chat or put it in a URL. Keep PAYGO disabled and add no payment method. A bounded live pilot has already run; do not repeat it without a concrete reason. With the database environment configured above:
 
 ```sh
 java -jar target/job-agent-0.1.0-SNAPSHOT.jar --mode=search-pilot
