@@ -1,6 +1,6 @@
 # Job Agent: Complete delivery plan
 
-Status: 2026-10-24. Phase 1, quality preparation, Phase 2A/B, Sonar cleanup, Greenhouse and Lever ingestion are merged through PR #9. PR #9 passed pre-merge build and Sonar checks; its separate main-push CI failed. Phase 3C.1 Tavily candidate discovery is local work awaiting review. Phase 3 is not complete. This is the authoritative development entry point. `PROJECT_PLAN.md` and `FIRST_INCREMENT.md` contain supporting detail; this plan takes precedence in a conflict.
+Status: 2026-10-26. Phase 1, quality preparation, Phase 2A/B, Sonar cleanup, Greenhouse and Lever ingestion, and the bounded Tavily candidate-discovery pilot are merged through PR #10. PR #10 is a source-URL pilot, not verified vacancy discovery or fit evaluation; a bounded live pilot made 4 requests and returned 34 unique URL candidates without errors; their ownership and usefulness remain unverified. Phase 3 is not complete. This is the authoritative development entry point. `PROJECT_PLAN.md` and `FIRST_INCREMENT.md` contain supporting detail; this plan takes precedence in a conflict.
 
 Phase 0 completed on 2026-10-07 when the user accepted the preliminary AWS estimate. `PHASE_0.md` records requirements from the existing workflow, source documentation checks, the proposed Fargate/Aurora design and us-east-1 estimate with explicit assumptions. There is no EU-only region requirement: cost and reliability take priority over data location. The estimate excludes later LLM/search-provider choices and does not authorize paid deployment.
 
@@ -32,6 +32,16 @@ A future House Agent may reuse platform patterns but keeps its domain logic and 
 6. Present a shortlist with links, reasons for/against, unknowns and recommended next actions. Record interested/not interested feedback and reasons.
 7. Update criteria/prompts in a controlled, versioned way and compare quality. Do not submit applications autonomously.
 8. For Gmail messages, finish processing and commit PostgreSQL state before labeling, marking read or archiving. Persist failed Gmail actions for safe retry.
+
+### Selection criteria and useful results
+
+Phase 4 should use a versioned, privately stored search profile. The initial role families are senior Java/Spring backend, backend/integration engineering, application modernization and senior software engineering; application management or technical operations is a reserve category when experience fits. These are configurable search preferences, not permanent source-code constants. A future owner-facing control may edit roles, location and salary after the first useful shortlist is proven; it does not add a new phase now.
+
+Rank confirmed fully remote work in Germany first, then remote EU roles that explicitly permit permanent work from the user's country, with geographically acceptable hybrid roles as a reserve. Keep the employer's marketing `remote` label separate from verified work-country eligibility. Mark missing or contradictory eligibility as unknown and surface it for review rather than inventing permission. Keep the owner's target salary in private configuration as a soft preference, not an automatic rejection threshold; lower-paid roles can remain visible when they offer a credible employment option. Do not commit an individual's salary target, residence, applications or employment decisions to this public repository.
+
+Measure usefulness after filtering: suitable vacancies, applications sent, interview invitations, rejections with known reasons, and application-to-interview conversion. Found-vacancy count is a diagnostic, not the main success measure. Start real applications when the useful shortlist and human review are ready; later phases can improve the agent while applications continue.
+
+Greenhouse, Lever and the bounded search pilot are the current discovery inputs. Verify that they yield enough suitable, actionable vacancies before adding providers. Expand sources only when observed yield or coverage is insufficient; record why each new source is needed. Search-pilot URLs remain unverified until an explicit verification step.
 
 ## 4. Code and repository architecture
 
@@ -69,13 +79,13 @@ Then introduce `evaluation_criteria`, `vacancy_evaluations`, `review_feedback`, 
 | 1. Foundation | Java/Spring Boot, Docker PostgreSQL, migrations, secret-free configuration and CI. | Clean documented startup and passing checks. Completed in PR #2 on 2026-10-11. |
 | 2. Persistent state and safe processing | Runs, source inputs, vacancies, stable IDs, transactions and pending events/actions. | Repeated inputs create no duplicates; failed DB writes trigger no external action; failed processing can retry safely. |
 | 3. Independent discovery | First agreed non-Gmail sources, source URLs/raw data, normalization and deduplication. | Real new vacancies are discovered without LinkedIn alerts and repeat runs do not duplicate them. |
-| 4. Evaluation and shortlist | Explicit criteria, initial filters, cloud LLM and explained shortlist with provenance. | A reviewable shortlist and evaluation cases demonstrate which vacancies pass and why. First useful MVP. |
+| 4. Evaluation and shortlist | Versioned private selection criteria, initial filters, cloud LLM and explained shortlist with provenance and explicit eligibility unknowns. | A reviewable shortlist and evaluation cases demonstrate which vacancies pass and why, including role families, actual remote eligibility and salary preference. First useful MVP. |
 | 5. AWS | Application, PostgreSQL, S3, secrets, schedule, logs, alarms, backups and restore test. | Runs work without a MacBook; costs/errors are visible; budget notification and recovery are verified. |
-| 6. Feedback | User decisions/reasons, criteria/prompt comparisons and shortlist-quality metrics. | Feedback persists and can affect later results without losing history. |
+| 6. Feedback | User decisions/reasons, criteria/prompt comparisons and shortlist-quality metrics. | Feedback persists and can affect later results without losing history; suitable-vacancy yield is visible. |
 | 7. Old pipeline and cutover | Gmail OAuth/alerts, legacy rules, full Sheet snapshot/final delta, reconciliation and master switch. | Successful cloud rehearsal, reconciliation and retry checks precede disabling the old writer. Sheet stays the old master until then. |
 | 8. Semantic matching | Embeddings/pgvector after baseline quality evaluation. | Measured improvement over ordinary rules justifies semantic matching. |
 | 9. Analytics and strategy | Market/employer/skill trends, search strategy and career intelligence. | Recommendations cite accumulated vacancies and user feedback. |
-| 10. Applications and outcomes | Career profile, S3 CV versions, drafts, approval and application outcomes. | No submission without approval; vacancy → application → CV version → outcome is traceable. |
+| 10. Applications and outcomes | Career profile, S3 CV versions, drafts, approval and application outcomes. | No submission without approval; vacancy → application → CV version → outcome is traceable, including interview conversion and known rejection reasons. |
 | 11. Optional ML | Consider a separate model only with sufficient data and measurable benefit. | Comparison supports the decision; this phase may be omitted. |
 
 ## 7. Small PRs
@@ -94,7 +104,7 @@ Use separate subsequent PRs for feedback, Gmail OAuth, import/reconciliation, cu
 
 ## 9. Next development steps and chat responsibilities
 
-Phase 0 is complete; repeat research only for a concrete reason. Phase 1 delivered the runnable foundation. Quality configuration is merged in PR #4. Phase 2A merged synthetic persistence, identity handling and rollback in PR #5. Phase 2B merged durable outbox delivery in PR #6. PR #7 merged pre-merge Sonar analysis and cleanup. Phase 3A merged in PR #8: it implements the first explicit Greenhouse board adapter with board-scoped identity and versioned updates. Phase 3B merged configured Lever site retrieval with observation ordering in PR #9. Phase 3C.1 locally adds a bounded, explicit Tavily Basic search pilot for unverified URL candidates; see [ADR 0003](docs/adr/0003-tavily-search-pilot.md). Its remote checks and live pilot remain pending. Source verification and fit evaluation remain future work. The broader first technical increment described in Phase 0 spans Phases 1–2 and need not be one PR.
+Phase 0 is complete; repeat research only for a concrete reason. Phase 1 delivered the runnable foundation. Quality configuration is merged in PR #4. Phase 2A merged synthetic persistence, identity handling and rollback in PR #5. Phase 2B merged durable outbox delivery in PR #6. PR #7 merged pre-merge Sonar analysis and cleanup. Phase 3A merged in PR #8: it implements the first explicit Greenhouse board adapter with board-scoped identity and versioned updates. Phase 3B merged configured Lever site retrieval with observation ordering in PR #9. Phase 3C.1 merged a bounded, explicit Tavily Basic search pilot for unverified URL candidates in PR #10; see [ADR 0003](docs/adr/0003-tavily-search-pilot.md). A bounded live pilot made 4 requests and returned 34 unique URL candidates without errors; 96 of 100 persistent attempt slots remained. The candidates are not verified sources or vacancies. Source verification and fit evaluation remain future work. The broader first technical increment described in Phase 0 spans Phases 1–2 and need not be one PR.
 
 The original Work chat plans work, prepares implementation prompts, reviews results, may commit locally after successful review and prepares PR titles/descriptions. The implementation chat makes all source-code, configuration, documentation and translation changes, runs local checks and hands off uncommitted work with a concise file/check/limitation report. The user pushes, creates PRs, merges and deletes remote branches.
 
@@ -117,7 +127,7 @@ PR #4 merged JaCoCo HTML/XML coverage, child-JVM instrumentation and main-push S
 - JaCoCo: HTML/XML application coverage from unit/integration tests, including instrumented ProcessBuilder child JVMs.
 - Sonar: prepared SonarQube Cloud scanner imports JaCoCo XML after verify when repository configuration is present; verify actual remote analysis and gate independently.
 - Quality Gate: bugs, vulnerabilities, maintainability, duplication and new-code coverage; security hotspots require review. Agree actual service capabilities and thresholds during setup; no arbitrary percentage is already approved.
-- CI: tests/JaCoCo work independently of Sonar access. The trusted-PR Sonar job waits for the gate; fork and bot PRs do not receive a token and skip it. PRs #7, #8 and #9 passed pre-merge analysis; required GitHub-check settings and the latest main gate diagnosis remain unverified. Phase 3C.1 remote analysis is pending publication.
+- CI: tests/JaCoCo work independently of Sonar access. The trusted-PR Sonar job waits for the gate; fork and bot PRs do not receive a token and skip it. PRs #7, #8 and #9 passed pre-merge analysis; required GitHub-check settings and the latest main gate diagnosis remain unverified. PR #10 post-merge gate status requires independent verification.
 - Secrets: user configures Sonar credentials through GitHub Secrets; never publish tokens or expose them to untrusted PRs. AI does not push or create PRs.
 - Acceptance: clean verify produces a nonempty report covering JobAgentApplication; Sonar displays imported coverage and actual gate results. Record commands, evidence, limitations and justified exclusions.
 
