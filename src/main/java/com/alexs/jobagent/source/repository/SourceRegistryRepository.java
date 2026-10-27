@@ -14,6 +14,7 @@ import org.springframework.stereotype.Repository;
 
 @Repository
 public class SourceRegistryRepository {
+    private static final String EVIDENCE_HASH_COLUMN = "evidence_hash";
     private static final RowMapper<VerifiedSourceEntity> SOURCE = (rs, row) -> map(rs);
     private final JdbcTemplate jdbc;
 
@@ -73,7 +74,7 @@ public class SourceRegistryRepository {
                 FROM source_verification_decisions WHERE employer_domain = ? FOR UPDATE
                 """, (rs, row) -> new VerificationDecisionEntity(rs.getString("employer_domain"),
                 rs.getTimestamp("observed_at").toInstant(), rs.getString("decision"),
-                rs.getString("evidence_hash"), rs.getString("associated_platform"),
+                rs.getString(EVIDENCE_HASH_COLUMN), rs.getString("associated_platform"),
                 rs.getString("associated_region"), rs.getString("associated_source_id")),
                 domain).stream().findFirst().orElseThrow();
     }
@@ -149,14 +150,14 @@ public class SourceRegistryRepository {
                     rs.getString("claimed_employer_domain"), rs.getString("official_page_url"),
                     rs.getString("observed_url"), rs.getTimestamp("observed_at").toInstant(),
                     rs.getString("outcome"), rs.getString("reason"), identity, null,
-                    rs.getInt("requests"), rs.getString("evidence_hash"));
+                    rs.getInt("requests"), rs.getString(EVIDENCE_HASH_COLUMN));
         });
     }
 
     private static VerifiedSourceEntity map(ResultSet rs) throws SQLException {
         return new VerifiedSourceEntity(rs.getLong("id"), rs.getString("platform"), rs.getString("region"),
                 rs.getString("source_id"), rs.getString("employer_domain"), rs.getString("employer_name"),
-                rs.getString("official_page_url"), rs.getString("evidence_url"), rs.getString("evidence_hash"),
+                rs.getString("official_page_url"), rs.getString("evidence_url"), rs.getString(EVIDENCE_HASH_COLUMN),
                 rs.getTimestamp("verified_at").toInstant(), rs.getString("status"), rs.getBoolean("active"));
     }
 }

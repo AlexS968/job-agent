@@ -7,6 +7,7 @@ import com.alexs.jobagent.source.repository.SourceRegistryRepository;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.List;
+import java.util.Optional;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
@@ -15,6 +16,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Service
 public class SourceRegistryService {
     public static final Duration EVIDENCE_MAX_AGE = Duration.ofDays(30);
+    private static final String VERIFIED_STATUS = "VERIFIED";
     private final SourceRegistryRepository repository;
     private final GreenhouseBatchService greenhouse;
     private final LeverBatchService lever;
@@ -38,7 +40,7 @@ public class SourceRegistryService {
         return Boolean.TRUE.equals(transaction.execute(status -> {
             VerifiedSourceEntity source = repository.findByIdForUpdate(id);
             if (!eligible(source)) {
-                if (source != null && "VERIFIED".equals(source.status()) && !fresh(source)) {
+                if (source != null && VERIFIED_STATUS.equals(source.status()) && !fresh(source)) {
                     repository.markStale(id);
                 }
                 return false;
@@ -57,36 +59,47 @@ public class SourceRegistryService {
             throw new IllegalStateException("At most five active sources can be imported per invocation");
         }
         for (VerifiedSourceEntity listed : active) {
-            VerifiedSourceEntity source = transaction.execute(status -> {
-                VerifiedSourceEntity current = repository.findByIdForUpdate(listed.id());
-                if (!eligible(current) || !current.active()) {
-                    if (current != null && "VERIFIED".equals(current.status()) && !fresh(current)) {
-                        repository.markStale(current.id());
-                    }
-                    return null;
-                }
-                return current;
-            });
-            if (source == null) {
+            Optional<VerifiedSourceEntity> source = eligibleSource(listed.id());
+            if (source.isEmpty()) {
                 failures++;
                 continue;
             }
             sources++;
-            if ("GREENHOUSE".equals(source.platform())) {
-                var result = greenhouse.run(source.sourceId() + "|" + source.employerName());
-                failures += result.failed() + result.rejected();
-            } else if ("LEVER".equals(source.platform())) {
-                var result = lever.run(source.region() + "|" + source.sourceId() + "|" + source.employerName());
-                failures += result.failed() + result.rejected();
-            } else {
-                failures++;
-            }
+            failures += importSource(source.orElseThrow());
         }
         return new ActiveSourceImportResultDTO(sources, failures);
     }
 
+    private Optional<VerifiedSourceEntity> eligibleSource(long id) {
+        return transaction.execute(status -> {
+            VerifiedSourceEntity current = repository.findByIdForUpdate(id);
+            if (current == null) {
+                return Optional.empty();
+            }
+            if (!eligible(current) || !current.active()) {
+                if (VERIFIED_STATUS.equals(current.status()) && !fresh(current)) {
+                    repository.markStale(id);
+                }
+                return Optional.empty();
+            }
+            return Optional.of(current);
+        });
+    }
+
+    private int importSource(VerifiedSourceEntity source) {
+        if ("GREENHOUSE".equals(source.platform())) {
+            var result = greenhouse.run(source.sourceId() + "|" + source.employerName());
+            return result.failed() + result.rejected();
+        }
+        if ("LEVER".equals(source.platform())) {
+            var result = lever.run(source.region() + "|" + source.sourceId() + "|" + source.employerName());
+            return result.failed() + result.rejected();
+        }
+        return 1;
+    }
+
     private boolean eligible(VerifiedSourceEntity source) {
-        return source != null && "VERIFIED".equals(source.status()) && fresh(source);
+        return source != null && VERIFIED_STATUS.equals(source.status()) && fresh(source);
     }
 
     private boolean fresh(VerifiedSourceEntity source) {

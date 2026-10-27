@@ -340,7 +340,8 @@ class SourceVerificationIT {
         };
         var rollback = new SourceVerificationService(fetcher("<a href='https://jobs.lever.co/newsite'>Jobs</a>",
                 new AtomicInteger()), broken, clock(NOW.plusSeconds(2)), manager);
-        assertThrows(IllegalStateException.class, () -> rollback.verify(List.of(trusted(OFFICIAL))));
+        List<SourceCandidateDTO> candidates = List.of(trusted(OFFICIAL));
+        assertThrows(IllegalStateException.class, () -> rollback.verify(candidates));
         assertEquals(1, count("source_verification_attempts"));
         assertEquals(1, count("verified_source_registry"));
     }
@@ -349,10 +350,61 @@ class SourceVerificationIT {
     void ambientTransactionIsRejectedBeforeNetwork() {
         var calls = new AtomicInteger();
         var service = verifier("<a href='" + ATS + "'>Jobs</a>", NOW, calls);
+        List<SourceCandidateDTO> candidates = List.of(trusted(ATS));
         new TransactionTemplate(manager).executeWithoutResult(status ->
-                assertThrows(IllegalStateException.class, () -> service.verify(List.of(trusted(ATS)))));
+                assertThrows(IllegalStateException.class, () -> service.verify(candidates)));
         assertEquals(0, calls.get());
         assertEquals(0, count("source_verification_attempts"));
+    }
+
+    @Test
+    void missingLockedSourceAfterInsertFailsSafelyAndRollsBackDecision() {
+        SourceRegistryRepository missing = new SourceRegistryRepository(jdbc) {
+            @Override public com.alexs.jobagent.source.entity.VerifiedSourceEntity findIdentityForUpdate(
+                    com.alexs.jobagent.source.dto.AtsSourceIdentityDTO identity) {
+                return null;
+            }
+        };
+        var service = new SourceVerificationService(fetcher("<a href='" + ATS + "'>Jobs</a>",
+                new AtomicInteger()), missing, clock(NOW), manager);
+        List<SourceCandidateDTO> candidates = List.of(trusted(ATS));
+        IllegalStateException failure = assertThrows(IllegalStateException.class, () -> service.verify(candidates));
+        assertEquals("Verified source missing after insert", failure.getMessage());
+        assertEquals(0, count("verified_source_registry"));
+        assertEquals(0, count("source_verification_decisions"));
+        assertEquals(0, count("source_verification_attempts"));
+    }
+
+    @Test
+    void malformedTrustClaimsCannotCreateOrDeactivateDomainDecisions() {
+        var calls = new AtomicInteger();
+        var service = verifier("<a href='" + ATS + "'>Jobs</a>", NOW, calls);
+        var wrongDomain = new SourceCandidateDTO(ATS, "owner-confirmed", "other.example",
+                OFFICIAL, "Acme Synthetic");
+        assertEquals("TRUST_ROOT_AMBIGUOUS", service.verify(List.of(wrongDomain)).getFirst().reason());
+        var unsafePage = new SourceCandidateDTO(ATS, "owner-confirmed", "acme.example",
+                "http://acme.example/careers", "Acme Synthetic");
+        assertEquals("UNSAFE_OFFICIAL_PAGE", service.verify(List.of(unsafePage)).getFirst().reason());
+        assertEquals(0, calls.get());
+        assertEquals(0, count("source_verification_decisions"));
+        assertEquals(0, count("verified_source_registry"));
+    }
+
+    @Test
+    void activeSourceLimitStopsBatchBeforeAnyAdapterRequest() {
+        jdbc.update("""
+                INSERT INTO verified_source_registry
+                (platform, region, source_id, employer_domain, employer_name, official_page_url,
+                 evidence_url, evidence_hash, verified_at, status, active)
+                SELECT 'GREENHOUSE', 'global', 'synthetic-' || n, 'synthetic-' || n || '.example',
+                       'Synthetic Employer', 'https://synthetic.example/careers',
+                       'https://job-boards.greenhouse.io/synthetic', repeat('a', 64), ?, 'VERIFIED', TRUE
+                FROM generate_series(1, 6) AS n
+                """, java.sql.Timestamp.from(NOW));
+        SourceRegistryService service = registry(NOW);
+        IllegalStateException failure = assertThrows(IllegalStateException.class, service::importActive);
+        assertEquals("At most five active sources can be imported per invocation", failure.getMessage());
+        assertEquals(0, count("source_items"));
     }
 
     private SourceVerificationService verifier(String html, Instant at, AtomicInteger calls) {

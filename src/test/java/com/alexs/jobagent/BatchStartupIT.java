@@ -88,6 +88,58 @@ class BatchStartupIT {
     }
 
     @Test
+    void registryReviewAndActivationAreExplicitAndOfflineUntilImport() throws Exception {
+        try (PostgreSQLContainer postgres = new PostgreSQLContainer("postgres:17.11-alpine")
+                .withDatabaseName("job_agent_registry_batch_test").withUsername("test_user").withPassword(PASSWORD)) {
+            postgres.start();
+            assertEquals(0, run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD).exitCode());
+            try (var connection = java.sql.DriverManager.getConnection(postgres.getJdbcUrl(),
+                    postgres.getUsername(), PASSWORD);
+                 var statement = connection.createStatement()) {
+                statement.execute("""
+                        INSERT INTO verified_source_registry
+                        (platform, region, source_id, employer_domain, employer_name, official_page_url,
+                         evidence_url, evidence_hash, verified_at, status, active)
+                        VALUES ('GREENHOUSE', 'global', 'synthetic', 'synthetic.example', 'Synthetic Employer',
+                                'https://synthetic.example/careers', 'https://job-boards.greenhouse.io/synthetic',
+                                repeat('a', 64), CURRENT_TIMESTAMP, 'VERIFIED', FALSE)
+                        """);
+                statement.execute("""
+                        INSERT INTO source_verification_attempts
+                        (candidate_url, origin, claimed_employer_domain, official_page_url, observed_at,
+                         method_version, outcome, evidence_hash, requests)
+                        VALUES ('https://job-boards.greenhouse.io/synthetic', 'owner-confirmed',
+                                'synthetic.example', 'https://synthetic.example/careers', CURRENT_TIMESTAMP,
+                                'source-verifier-v1', 'VERIFIED', repeat('a', 64), 1)
+                        """);
+            }
+            Result review = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD, "--mode=review-sources");
+            assertEquals(0, review.exitCode(), review.output());
+            assertTrue(review.output().contains("Registry source: id=1, platform=GREENHOUSE"), review.output());
+            assertTrue(review.output().contains("Verification evidence:"), review.output());
+            Result inactive = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
+                    "--mode=import-active-sources");
+            assertEquals(0, inactive.exitCode(), inactive.output());
+            assertTrue(inactive.output().contains("sources=0, failures=0"), inactive.output());
+            Result invalid = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
+                    "--mode=activate-source", "--source-id=999");
+            assertNotEquals(0, invalid.exitCode());
+            Result activated = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
+                    "--mode=activate-source", "--source-id=1");
+            assertEquals(0, activated.exitCode(), activated.output());
+            assertTrue(activated.output().contains("Source activated: id=1"), activated.output());
+            assertFalse(activated.output().contains(PASSWORD));
+            try (var connection = java.sql.DriverManager.getConnection(postgres.getJdbcUrl(),
+                    postgres.getUsername(), PASSWORD);
+                 var statement = connection.createStatement();
+                 var rows = statement.executeQuery("SELECT active FROM verified_source_registry")) {
+                assertTrue(rows.next());
+                assertTrue(rows.getBoolean(1));
+            }
+        }
+    }
+
+    @Test
     void explicitSyntheticModePersistsAndReplays() throws Exception {
         try (PostgreSQLContainer postgres = new PostgreSQLContainer("postgres:17.11-alpine")
                 .withDatabaseName("job_agent_test").withUsername("test_user").withPassword(PASSWORD)) {
