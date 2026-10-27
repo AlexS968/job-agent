@@ -61,7 +61,7 @@ class LeverIngestionIT {
 
     @Test
     void emptyDatabaseMigratesAndFirstObservationStoresProvenanceAndOutbox() {
-        assertEquals(6, count("flyway_schema_history"));
+        assertEquals(8, count("flyway_schema_history"));
         assertEquals(VacancyChangeDTO.CREATED, service.ingest(SITE, listing("1", "Engineer"), OBSERVED).change());
         assertEquals(1, count("source_items"));
         assertEquals(1, count("vacancies"));

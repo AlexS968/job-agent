@@ -31,7 +31,7 @@ class BatchStartupIT {
                  var statement = connection.createStatement();
                  var rows = statement.executeQuery("SELECT COUNT(*) FROM flyway_schema_history WHERE success")) {
                 assertTrue(rows.next());
-                assertEquals(6, rows.getInt(1));
+                assertEquals(8, rows.getInt(1));
             }
         }
     }
@@ -61,6 +61,28 @@ class BatchStartupIT {
                  var rows = statement.executeQuery("SELECT reserved_attempts FROM search_pilot_budget")) {
                 assertTrue(rows.next());
                 assertEquals(0, rows.getInt(1));
+            }
+        }
+    }
+
+    @Test
+    void untrustedCandidateNeverFetchesOrActivatesAndExitsSafely() throws Exception {
+        try (PostgreSQLContainer postgres = new PostgreSQLContainer("postgres:17.11-alpine")
+                .withDatabaseName("job_agent_verification_batch_test").withUsername("test_user").withPassword(PASSWORD)) {
+            postgres.start();
+            Result result = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
+                    "--mode=verify-source", "--candidate-url=https://jobs.lever.co/synthetic",
+                    "--origin=manual-candidate", "--official-domain=", "--official-page-url=", "--employer-name=");
+            assertNotEquals(0, result.exitCode());
+            assertTrue(result.output().contains("NO_TRUST_ROOT"), result.output());
+            assertFalse(result.output().contains(PASSWORD));
+            try (var connection = java.sql.DriverManager.getConnection(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD);
+                 var statement = connection.createStatement();
+                 var rows = statement.executeQuery("SELECT (SELECT count(*) FROM source_verification_attempts), "
+                         + "(SELECT count(*) FROM verified_source_registry)")) {
+                assertTrue(rows.next());
+                assertEquals(1, rows.getInt(1));
+                assertEquals(0, rows.getInt(2));
             }
         }
     }
