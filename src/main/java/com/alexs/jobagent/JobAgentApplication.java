@@ -15,6 +15,10 @@ import com.alexs.jobagent.source.dto.SearchPilotResultDTO;
 import com.alexs.jobagent.outbox.dto.DispatchResultDTO;
 import com.alexs.jobagent.outbox.service.LocalEventDispatcher;
 import com.alexs.jobagent.outbox.service.OutboxService;
+import com.alexs.jobagent.evaluation.service.EvaluationService;
+import com.alexs.jobagent.evaluation.service.ProfileFileService;
+import com.alexs.jobagent.evaluation.service.RuleEvaluationPolicy;
+import com.alexs.jobagent.evaluation.dto.VacancyEvaluationDTO;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Arrays;
@@ -54,13 +58,14 @@ public class JobAgentApplication {
                                      LeverBatchService lever,
                                      @Value("${LEVER_SITES:}") String leverSites,
                                      SearchPilotService searchPilot,
-                                     SourceVerificationService verifier, SourceRegistryService registry) {
+                                     SourceVerificationService verifier, SourceRegistryService registry,
+                                     ProfileFileService profiles, EvaluationService evaluations) {
         return args -> {
             flyway.validate();
             Integer count = jdbc.queryForObject("SELECT COUNT(*) FROM agent_runs", Integer.class);
             LOGGER.info("Database ready; agent_runs rows: {}", count);
             executeMode(args, ingestion, json, dispatcher, outbox, greenhouse, boards, lever, leverSites,
-                    searchPilot, verifier, registry);
+                    searchPilot, verifier, registry, profiles, evaluations);
         };
     }
 
@@ -68,7 +73,8 @@ public class JobAgentApplication {
                              LocalEventDispatcher dispatcher, OutboxService outbox,
                              GreenhouseBatchService greenhouse, String boards,
                              LeverBatchService lever, String leverSites, SearchPilotService searchPilot,
-                             SourceVerificationService verifier, SourceRegistryService registry) throws IOException {
+                             SourceVerificationService verifier, SourceRegistryService registry,
+                             ProfileFileService profiles, EvaluationService evaluations) throws IOException {
         String[] modes = Arrays.stream(args).filter(arg -> arg.startsWith("--mode=")).toArray(String[]::new);
         if (modes.length == 0) {
             return;
@@ -88,6 +94,8 @@ public class JobAgentApplication {
             case "--mode=review-sources" -> runReviewSources(args, registry);
             case "--mode=activate-source" -> runActivateSource(args, registry);
             case "--mode=import-active-sources" -> runImportActiveSources(args, registry);
+            case "--mode=evaluate-rules" -> runEvaluateRules(args, profiles, evaluations);
+            case "--mode=shortlist" -> runShortlist(args, profiles, evaluations);
             default -> throw new IllegalArgumentException("Unsupported batch mode");
         }
     }
@@ -145,6 +153,66 @@ public class JobAgentApplication {
         LOGGER.info("Active source import: sources={}, failures={}", result.sources(), result.failures());
         if (result.failures() > 0) {
             throw new IllegalStateException("Active source import had failures");
+        }
+    }
+
+    private void runEvaluateRules(String[] args, ProfileFileService profiles, EvaluationService evaluations) {
+        if (args.length < 2 || args.length > 4) {
+            throw new IllegalArgumentException("Evaluation requires a profile file and optional cursor/limit");
+        }
+        requireOnlyOptions(args, "--mode=evaluate-rules", "--profile-file=", "--after-id=", "--limit=");
+        var profile = profiles.load(option(args, "--profile-file="));
+        long after = optionalLong(args, "--after-id=", 0);
+        int limit = Math.toIntExact(optionalLong(args, "--limit=", 100));
+        var result = evaluations.evaluate(profile, after, limit, RuleEvaluationPolicy.VERSION);
+        LOGGER.info("Rule evaluation: examined={}, created={}, already_current={}, last_vacancy_id={}, more_available={}",
+                result.examined(), result.created(), result.alreadyCurrent(), result.lastVacancyId(),
+                result.moreAvailable());
+    }
+
+    private void runShortlist(String[] args, ProfileFileService profiles, EvaluationService evaluations) {
+        if (args.length < 2 || args.length > 3) {
+            throw new IllegalArgumentException("Shortlist requires a profile file and optional limit");
+        }
+        requireOnlyOptions(args, "--mode=shortlist", "--profile-file=", "--limit=");
+        var profile = profiles.load(option(args, "--profile-file="));
+        int limit = Math.toIntExact(optionalLong(args, "--limit=", 20));
+        var report = evaluations.shortlist(profile, limit, RuleEvaluationPolicy.VERSION);
+        LOGGER.info("Shortlist: suitable={}, needs_review={}", report.suitable().size(), report.needsReview().size());
+        report.suitable().forEach(item -> logEvaluation("SUITABLE", item));
+        report.needsReview().forEach(item -> logEvaluation("NEEDS_REVIEW", item));
+    }
+
+    private void logEvaluation(String group, VacancyEvaluationDTO item) {
+        LOGGER.info("{} vacancy: id={}, rank={}, url={}, reasons={}, unknowns={}, evidence={}",
+                group, item.vacancyId(), item.preferenceRank(), safeSourceUrl(item.originalUrl()),
+                item.reasons(), item.unknowns(), item.evidence());
+    }
+
+    private static String safeSourceUrl(String url) {
+        String oneLine = url.replaceAll("[\\p{Cntrl}]", " ");
+        return oneLine.substring(0, Math.min(oneLine.length(), 500));
+    }
+
+    private long optionalLong(String[] args, String prefix, long fallback) {
+        List<String> values = Arrays.stream(args).filter(arg -> arg.startsWith(prefix)).toList();
+        if (values.isEmpty()) {
+            return fallback;
+        }
+        if (values.size() != 1) {
+            throw new IllegalArgumentException("Invalid batch arguments");
+        }
+        return Long.parseLong(values.getFirst().substring(prefix.length()));
+    }
+
+    private void requireOnlyOptions(String[] args, String mode, String... prefixes) {
+        for (String argument : args) {
+            if (mode.equals(argument)) {
+                continue;
+            }
+            if (Arrays.stream(prefixes).noneMatch(argument::startsWith)) {
+                throw new IllegalArgumentException("Unsupported evaluation arguments");
+            }
         }
     }
 

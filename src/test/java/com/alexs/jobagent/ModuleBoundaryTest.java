@@ -23,5 +23,12 @@ class ModuleBoundaryTest {
         noClasses().that().resideInAPackage("..outbox..")
                 .should().dependOnClassesThat().resideInAnyPackage("..source.repository..", "..run.repository..", "..vacancy.repository..")
                 .check(production);
+        noClasses().that().resideInAPackage("..evaluation..")
+                .should().dependOnClassesThat().resideInAnyPackage("..source.repository..", "..run.repository..",
+                        "..vacancy.repository..", "..outbox.repository..")
+                .check(production);
+        noClasses().that().resideOutsideOfPackage("..evaluation..")
+                .should().dependOnClassesThat().resideInAPackage("..evaluation.repository..")
+                .check(production);
     }
 }

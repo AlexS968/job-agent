@@ -1,6 +1,7 @@
 package com.alexs.jobagent.source.repository;
 
 import com.alexs.jobagent.source.entity.SourceItemEntity;
+import com.alexs.jobagent.source.dto.SourceEvidenceDTO;
 import java.sql.Timestamp;
 import java.time.Instant;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -91,5 +92,16 @@ public class SourceItemRepository {
         return jdbc.queryForObject("SELECT id FROM source_items WHERE source_namespace = ? AND source_item_id = ? "
                         + "AND content_digest = ?", Long.class,
                 item.sourceNamespace(), item.sourceItemId(), contentDigest);
+    }
+
+    public SourceEvidenceDTO latestForVacancy(long vacancyId) {
+        return jdbc.query("SELECT si.id, si.original_url, si.raw_payload::text, si.input_version, "
+                        + "si.normalization_version FROM source_items si "
+                        + "JOIN vacancy_sources vs ON vs.source_item_id = si.id "
+                        + "JOIN vacancies v ON v.id = vs.vacancy_id "
+                        + "WHERE vs.vacancy_id = ? AND si.content_digest IS NOT DISTINCT FROM v.content_digest "
+                        + "ORDER BY si.id DESC LIMIT 1",
+                rs -> rs.next() ? new SourceEvidenceDTO(rs.getLong(1), rs.getString(2), rs.getString(3),
+                        rs.getString(4), rs.getString(5)) : null, vacancyId);
     }
 }

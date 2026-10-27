@@ -1,0 +1,12 @@
+{
+  "profileId": "fictional-demo",
+  "version": "v1",
+  "workCountry": "DE",
+  "preferredRoleTerms": ["Backend Engineer", "Senior Java", "Spring Engineer", "Integration Engineer", "Modernization Engineer", "Senior Software Engineer"],
+  "reserveRoleTerms": ["Application Manager", "Technical Operations"],
+  "excludedTitleTerms": ["Intern", "Recruiter"],
+  "excludedArrangements": ["ONSITE"],
+  "allowedHybridLocations": ["Berlin"],
+  "allowEuRemote": true,
+  "salaryPreference": {"amount": 60000, "currency": "EUR", "period": "YEAR"}
+}

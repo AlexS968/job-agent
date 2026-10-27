@@ -1,0 +1,7 @@
+# Phase 4A: deterministic evaluation and local shortlist
+
+Status: local implementation for review; Phase 4 remains incomplete.
+
+This increment adds a private versioned profile contract, deterministic conservative rules, PostgreSQL evaluation history and explicit `evaluate-rules`/`shortlist` batch modes. [ADR 0005](adr/0005-rule-evaluation-baseline.md) records identity, transaction, evidence and ordering policies. The profile example is synthetic and must be copied outside the repository before use. Existing synthetic, Greenhouse and Lever vacancies can be assessed without another live API call. Live workplace marketing labels do not establish work-country eligibility, so most live entries require review under this baseline.
+
+Local verification: `./mvnw -B clean verify` passed with 54 unit and 115 PostgreSQL/integration tests, none skipped. Tests cover profile validation/version conflict; preferred/reserve roles and preferred-first shortlist order at equal work rank; explicit exclusion and unknowns, including Lever `on-site` and unknown labels; salary softness; transaction rollback; concurrent replay; accepted versus rejected source provenance; current-revision shortlist; stable order and bounded cursor/limit; batch exit codes; and module boundaries. JaCoCo reports 236/254 lines and 187/251 branches in the evaluation service package. These are local aggregate figures, not Sonar new-code coverage. PR/remote Sonar results are pending publication. No event handler, LLM, AWS resource, Gmail/Sheet change or application action is part of this increment.
