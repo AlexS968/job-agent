@@ -94,3 +94,10 @@ Do not include private documents, employer-confidential information, real mailbo
 - Evidence: PR #9 [Build and test](https://github.com/AlexS968/job-agent/actions/runs/39778133173/job/119822205784) and [Sonar Quality Gate](https://github.com/AlexS968/job-agent/actions/runs/39778133173/job/119823618187) passed. The separate [main-push build passed](https://github.com/AlexS968/job-agent/actions/runs/39778774983/job/119824385891), but its [Sonar Quality Gate failed](https://github.com/AlexS968/job-agent/actions/runs/39778774983/job/119825784722). The exact main gate conditions were not inspected here.
 - Limits: configured sites only; no independent employer search, fit evaluation, applications, AWS delivery, old-pipeline cutover or verified Career Board/Narrative synchronization.
 - Public-safe CV draft: Added a read-only Lever ingestion adapter with bounded HTTP retrieval, conservative observation ordering and transactional PostgreSQL provenance/event persistence.
+
+## Verified milestone — bounded search candidate pilot, 2026-10-24
+
+- Scope: [PR #10](https://github.com/AlexS968/job-agent/pull/10) merged in commit `6f7fa32`: explicit Tavily Basic search pilot, four planned queries, a persistent 100-attempt local cap, reservation before HTTP and transient unverified URL output. It did not verify employers, store the candidate URLs or import vacancies.
+- Dated live observation supplied by the owner: four requests returned 34 unique `UNVERIFIED` URLs with no reported failures; 96/100 attempt slots remained **at that run**. The current database balance was not independently queried here. The sample does not establish ownership, fit, source yield or a durable retention right.
+- Limits: no Brave integration, PAYGO, automated activation, evaluation, applications, AWS deployment or verified Career Board/Narrative synchronization. PR #10's separate post-merge CI and Sonar gate were not independently checked for this entry.
+- Public-safe CV draft: Implemented a bounded, explicit search-candidate pilot with PostgreSQL attempt accounting and a clear trust boundary before source activation.

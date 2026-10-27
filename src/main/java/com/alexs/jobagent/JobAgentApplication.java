@@ -8,6 +8,9 @@ import com.alexs.jobagent.source.dto.GreenhouseBatchResultDTO;
 import com.alexs.jobagent.source.dto.LeverBatchResultDTO;
 import com.alexs.jobagent.source.service.LeverBatchService;
 import com.alexs.jobagent.source.service.SearchPilotService;
+import com.alexs.jobagent.source.service.SourceVerificationService;
+import com.alexs.jobagent.source.service.SourceRegistryService;
+import com.alexs.jobagent.source.dto.SourceCandidateDTO;
 import com.alexs.jobagent.source.dto.SearchPilotResultDTO;
 import com.alexs.jobagent.outbox.dto.DispatchResultDTO;
 import com.alexs.jobagent.outbox.service.LocalEventDispatcher;
@@ -15,6 +18,7 @@ import com.alexs.jobagent.outbox.service.OutboxService;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Arrays;
+import java.util.List;
 import java.util.UUID;
 import org.flywaydb.core.Flyway;
 import org.springframework.boot.CommandLineRunner;
@@ -49,19 +53,22 @@ public class JobAgentApplication {
                                      @Value("${GREENHOUSE_BOARDS:}") String boards,
                                      LeverBatchService lever,
                                      @Value("${LEVER_SITES:}") String leverSites,
-                                     SearchPilotService searchPilot) {
+                                     SearchPilotService searchPilot,
+                                     SourceVerificationService verifier, SourceRegistryService registry) {
         return args -> {
             flyway.validate();
             Integer count = jdbc.queryForObject("SELECT COUNT(*) FROM agent_runs", Integer.class);
             LOGGER.info("Database ready; agent_runs rows: {}", count);
-            executeMode(args, ingestion, json, dispatcher, outbox, greenhouse, boards, lever, leverSites, searchPilot);
+            executeMode(args, ingestion, json, dispatcher, outbox, greenhouse, boards, lever, leverSites,
+                    searchPilot, verifier, registry);
         };
     }
 
     private void executeMode(String[] args, SyntheticIngestionService ingestion, JsonMapper json,
                              LocalEventDispatcher dispatcher, OutboxService outbox,
                              GreenhouseBatchService greenhouse, String boards,
-                             LeverBatchService lever, String leverSites, SearchPilotService searchPilot) throws IOException {
+                             LeverBatchService lever, String leverSites, SearchPilotService searchPilot,
+                             SourceVerificationService verifier, SourceRegistryService registry) throws IOException {
         String[] modes = Arrays.stream(args).filter(arg -> arg.startsWith("--mode=")).toArray(String[]::new);
         if (modes.length == 0) {
             return;
@@ -77,8 +84,76 @@ public class JobAgentApplication {
             case "--mode=lever" -> runLever(args, lever, leverSites);
             case "--mode=search-dry-run" -> runSearchDryRun(args, searchPilot);
             case "--mode=search-pilot" -> runSearchPilot(args, searchPilot);
+            case "--mode=verify-source" -> runVerifySource(args, verifier);
+            case "--mode=review-sources" -> runReviewSources(args, registry);
+            case "--mode=activate-source" -> runActivateSource(args, registry);
+            case "--mode=import-active-sources" -> runImportActiveSources(args, registry);
             default -> throw new IllegalArgumentException("Unsupported batch mode");
         }
+    }
+
+    private void runVerifySource(String[] args, SourceVerificationService verifier) {
+        List<String> urls = Arrays.stream(args).filter(arg -> arg.startsWith("--candidate-url="))
+                .map(arg -> arg.substring("--candidate-url=".length())).toList();
+        if (urls.isEmpty() || urls.size() > SourceVerificationService.MAX_CANDIDATES
+                || args.length != urls.size() + 5) {
+            throw new IllegalArgumentException("Verification requires one to five candidates and four metadata arguments");
+        }
+        String origin = option(args, "--origin=");
+        String domain = option(args, "--official-domain=");
+        String page = option(args, "--official-page-url=");
+        String name = option(args, "--employer-name=");
+        var candidates = urls.stream().map(url -> new SourceCandidateDTO(url, origin, domain, page, name)).toList();
+        var results = verifier.verify(candidates);
+        results.forEach(result -> LOGGER.info("Source verification: outcome={}, reason={}, identity={}, requests={}, evidence={}",
+                result.outcome(), result.reason(), result.identity(), result.requests(), result.evidenceHash()));
+        if (results.stream().anyMatch(result -> !"VERIFIED".equals(result.outcome()))) {
+            throw new IllegalStateException("Source verification requires review or retry");
+        }
+    }
+
+    private void runReviewSources(String[] args, SourceRegistryService registry) {
+        if (args.length != 1) {
+            throw new IllegalArgumentException("Unsupported review arguments");
+        }
+        registry.sources().forEach(source -> LOGGER.info(
+                "Registry source: id={}, platform={}, region={}, source_id={}, employer_domain={}, status={}, active={}, verified_at={}",
+                source.id(), source.platform(), source.region(), source.sourceId(), source.employerDomain(),
+                source.status(), source.active(), source.verifiedAt()));
+        registry.attempts().forEach(attempt -> LOGGER.info(
+                "Verification evidence: observed_at={}, origin={}, outcome={}, reason={}, identity={}, requests={}, evidence={}",
+                attempt.observedAt(), attempt.origin(), attempt.outcome(), attempt.reason(), attempt.identity(),
+                attempt.requests(), attempt.evidenceHash()));
+    }
+
+    private void runActivateSource(String[] args, SourceRegistryService registry) {
+        if (args.length != 2 || !args[1].startsWith("--source-id=")) {
+            throw new IllegalArgumentException("A source ID is required");
+        }
+        long id = Long.parseLong(args[1].substring("--source-id=".length()));
+        if (!registry.activate(id)) {
+            throw new IllegalStateException("Source is not eligible for activation");
+        }
+        LOGGER.info("Source activated: id={}", id);
+    }
+
+    private void runImportActiveSources(String[] args, SourceRegistryService registry) {
+        if (args.length != 1) {
+            throw new IllegalArgumentException("Unsupported import arguments");
+        }
+        var result = registry.importActive();
+        LOGGER.info("Active source import: sources={}, failures={}", result.sources(), result.failures());
+        if (result.failures() > 0) {
+            throw new IllegalStateException("Active source import had failures");
+        }
+    }
+
+    private String option(String[] args, String prefix) {
+        List<String> values = Arrays.stream(args).filter(arg -> arg.startsWith(prefix)).toList();
+        if (values.size() != 1) {
+            throw new IllegalArgumentException("Invalid verification arguments");
+        }
+        return values.getFirst().substring(prefix.length());
     }
 
     private void runSearchDryRun(String[] args, SearchPilotService pilot) {
