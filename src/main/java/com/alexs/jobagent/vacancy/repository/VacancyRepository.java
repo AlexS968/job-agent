@@ -4,6 +4,9 @@ import com.alexs.jobagent.vacancy.exception.VacancyConflictException;
 import com.alexs.jobagent.vacancy.entity.VacancyEntity;
 import com.alexs.jobagent.vacancy.entity.LiveVacancyEntity;
 import com.alexs.jobagent.vacancy.entity.ObservedVacancyEntity;
+import com.alexs.jobagent.vacancy.dto.VacancyReadDTO;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -11,6 +14,10 @@ import org.springframework.stereotype.Repository;
 
 @Repository
 public class VacancyRepository {
+    private static final String EVALUATION_SELECT = "SELECT id, source_namespace, title, location, description, "
+            + "content_digest FROM vacancies WHERE id = ?";
+    private static final String EVALUATION_SELECT_FOR_UPDATE = "SELECT id, source_namespace, title, location, "
+            + "description, content_digest FROM vacancies WHERE id = ? FOR UPDATE";
     private final JdbcTemplate jdbc;
 
     public Result findOrCreate(VacancyEntity vacancy) {
@@ -45,6 +52,24 @@ public class VacancyRepository {
     }
 
     public record Result(long id, boolean created) {
+    }
+
+    public java.util.List<Long> idsAfter(long afterId, int limit) {
+        return jdbc.query("SELECT id FROM vacancies WHERE id > ? ORDER BY id LIMIT ?",
+                (rs, row) -> rs.getLong(1), afterId, limit);
+    }
+
+    public VacancyReadDTO readForEvaluation(long id) {
+        return jdbc.query(EVALUATION_SELECT, VacancyRepository::mapEvaluation, id);
+    }
+
+    public VacancyReadDTO lockForEvaluation(long id) {
+        return jdbc.query(EVALUATION_SELECT_FOR_UPDATE, VacancyRepository::mapEvaluation, id);
+    }
+
+    private static VacancyReadDTO mapEvaluation(ResultSet rs) throws SQLException {
+        return rs.next() ? new VacancyReadDTO(rs.getLong(1), rs.getString(2), rs.getString(3),
+                rs.getString(4), rs.getString(5), rs.getString(6)) : null;
     }
 
     public Long insertLiveIfAbsent(VacancyEntity vacancy, String description, Instant updatedAt, String digest) {

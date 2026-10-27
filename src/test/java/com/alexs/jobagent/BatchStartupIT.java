@@ -31,7 +31,7 @@ class BatchStartupIT {
                  var statement = connection.createStatement();
                  var rows = statement.executeQuery("SELECT COUNT(*) FROM flyway_schema_history WHERE success")) {
                 assertTrue(rows.next());
-                assertEquals(8, rows.getInt(1));
+                assertEquals(9, rows.getInt(1));
             }
         }
     }
@@ -159,6 +159,58 @@ class BatchStartupIT {
                 assertEquals(1, rows.getInt(2));
                 assertEquals(2, rows.getInt(3));
             }
+        }
+    }
+
+    @Test
+    void ruleEvaluationAndShortlistAreExplicitAndInvalidProfilesFailSafely() throws Exception {
+        Path profile = Files.createTempFile("fictional-search-profile-", ".json");
+        try (PostgreSQLContainer postgres = new PostgreSQLContainer("postgres:17.11-alpine")
+                .withDatabaseName("job_agent_rule_batch_test").withUsername("test_user").withPassword(PASSWORD)) {
+            postgres.start();
+            Files.writeString(profile, """
+                    {"profileId":"fictional","version":"v1","workCountry":"DE",
+                     "preferredRoleTerms":["Backend Engineer"],"reserveRoleTerms":[],
+                     "excludedTitleTerms":[],"excludedArrangements":["ONSITE"],
+                     "allowedHybridLocations":["Berlin"],"allowEuRemote":true,
+                     "salaryPreference":null}
+                    """);
+            assertEquals(0, run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD, "--mode=synthetic").exitCode());
+            Result missing = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
+                    "--mode=evaluate-rules");
+            assertNotEquals(0, missing.exitCode());
+            Result premature = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
+                    "--mode=shortlist", "--profile-file=" + profile);
+            assertNotEquals(0, premature.exitCode());
+            Result evaluated = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
+                    "--mode=evaluate-rules", "--profile-file=" + profile);
+            assertEquals(0, evaluated.exitCode(), evaluated.output());
+            assertTrue(evaluated.output().contains("examined=1, created=1, already_current=0"), evaluated.output());
+            Result repeat = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
+                    "--mode=evaluate-rules", "--profile-file=" + profile);
+            assertEquals(0, repeat.exitCode(), repeat.output());
+            assertTrue(repeat.output().contains("examined=1, created=0, already_current=1"), repeat.output());
+            Result shortlist = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
+                    "--mode=shortlist", "--profile-file=" + profile, "--limit=5");
+            assertEquals(0, shortlist.exitCode(), shortlist.output());
+            assertTrue(shortlist.output().contains("Shortlist: suitable=0, needs_review=1"), shortlist.output());
+            assertTrue(shortlist.output().contains("https://jobs.example.org/roles/role-001"), shortlist.output());
+            assertTrue(shortlist.output().contains("WORK_ELIGIBILITY_UNCONFIRMED"), shortlist.output());
+            assertFalse(shortlist.output().contains(PASSWORD));
+            assertFalse(shortlist.output().contains(profile.toString()));
+            Files.writeString(profile, Files.readString(profile).replace("Backend Engineer", "Senior Java"));
+            Result changed = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
+                    "--mode=evaluate-rules", "--profile-file=" + profile);
+            assertNotEquals(0, changed.exitCode());
+            try (var connection = java.sql.DriverManager.getConnection(postgres.getJdbcUrl(),
+                    postgres.getUsername(), PASSWORD);
+                 var statement = connection.createStatement();
+                 var rows = statement.executeQuery("SELECT count(*) FROM vacancy_evaluations")) {
+                assertTrue(rows.next());
+                assertEquals(1, rows.getInt(1));
+            }
+        } finally {
+            Files.deleteIfExists(profile);
         }
     }
 

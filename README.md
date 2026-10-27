@@ -22,7 +22,7 @@ docker compose up -d --wait
 java -jar target/job-agent-0.1.0-SNAPSHOT.jar
 ```
 
-The batch process prints the `agent_runs` row count and exits. Flyway applies and validates eight migrations, then the connection pool closes. `DB_URL` defaults to `jdbc:postgresql://localhost:5432/job_agent`; set it when changing `DB_NAME` or `DB_PORT`. `DB_USER` and `DB_PASSWORD` come from the environment. Do not commit `.env`.
+The batch process prints the `agent_runs` row count and exits. Flyway applies and validates nine migrations, then the connection pool closes. `DB_URL` defaults to `jdbc:postgresql://localhost:5432/job_agent`; set it when changing `DB_NAME` or `DB_PORT`. `DB_USER` and `DB_PASSWORD` come from the environment. Do not commit `.env`.
 
 ```sh
 ./mvnw -B clean verify        # isolated PostgreSQL tests and fresh JaCoCo coverage
@@ -146,6 +146,22 @@ docker compose --project-name jobagent-source-e2e --env-file /tmp/job-agent-sour
 
 The project name and file path above are examples; the actual disposable project was `jobagent-source-e2e-20261027` with `/tmp/job-agent-source-e2e-20261027-b.env`. Create a fresh private env file and choose an unused localhost port; never reuse the development database or commit the env file. SQL aggregate counts were checked before and after each stage. The local exercise establishes this one source association and replay behavior, not role suitability, Germany work eligibility, ATS completeness, event delivery, broad discovery or production operation.
 
+## Deterministic rule evaluation (Phase 4A, local review)
+
+Phase 4A adds an explicit, offline rule evaluation and explained shortlist. It does not assess personal skill fit or call an LLM. Copy the fictional [profile example](docs/examples/search-profile.synthetic.json) to a private path outside Git, then edit only that external copy for a real search. Its ID/version, work country, preferred/reserve title terms, explicit exclusions, acceptable hybrid locations, EU-remote preference and optional soft salary preference form the versioned criteria. Do not commit a real profile, salary target or redirected report output. With the local database environment from **Local run** already set, a synthetic demonstration is:
+
+```sh
+cp docs/examples/search-profile.synthetic.json /tmp/job-agent-fictional-profile.json
+chmod 600 /tmp/job-agent-fictional-profile.json
+java -jar target/job-agent-0.1.0-SNAPSHOT.jar --mode=synthetic
+java -jar target/job-agent-0.1.0-SNAPSHOT.jar --mode=evaluate-rules --profile-file=/tmp/job-agent-fictional-profile.json
+java -jar target/job-agent-0.1.0-SNAPSHOT.jar --mode=shortlist --profile-file=/tmp/job-agent-fictional-profile.json --limit=20
+```
+
+The existing synthetic fixture says only `Remote`, so its expected result is `NEEDS_REVIEW` with `WORK_ELIGIBILITY_UNCONFIRMED`, not confirmed country eligibility. The private profile file is required for both commands. A batch evaluates at most 500 vacancies with pages of 100; use `--limit=100` (1–500) and the printed `last_vacancy_id` as the next `--after-id=` cursor while `more_available=true`. Shortlist output is capped at 50 entries; `--limit=20` is the default. Results are grouped as `SUITABLE` and `NEEDS_REVIEW`, with original URL, reasons, unknowns and bounded source evidence. `EXCLUDED` entries stay in evaluation history but do not appear in the shortlist. Each group orders by working-arrangement rank (country remote, EU remote, acceptable hybrid), then preferred before reserve role, then vacancy ID. The rank is an ordinal preference, not a probability. Lever's `on-site` label is normalized to `ONSITE` for configured exclusions; unknown labels remain unknown, and normalization never confirms country eligibility. Missing salary never rejects a listing; currency or period mismatches remain unknown.
+
+V9 stores a profile ID/version/hash and append-only vacancy evaluations with a source-snapshot reference. Reusing a profile version with changed criteria fails; increment the version. Evaluation identity also contains the current vacancy/source revision and policy version (`rules-v1`). An unchanged rerun adds no evaluation, while a changed vacancy, source snapshot or version retains earlier history. Shortlist reads only current revisions for the requested profile and policy. Source statements remain untrusted: Greenhouse/Lever `remote` labels or country mentions do not establish permanent work-country permission. Positive confirmed-eligibility examples use synthetic structured evidence only. Evaluation is explicit; automatic outbox consumption, trusted live eligibility extraction, LLM assessment and cloud execution remain future work. See [ADR 0005](docs/adr/0005-rule-evaluation-baseline.md) and the [Phase 4 task](docs/PHASE_4_TASK.md).
+
 ## Local outbox dispatch (Phase 2B)
 
 With the same database environment, explicitly run:
@@ -190,6 +206,7 @@ Proposed remote checks: start with Sonar's built-in **Sonar way** gate for new c
 - [Phase 1 task](docs/PHASE_1_TASK.md): scope and acceptance criteria for the implementation chat.
 - [Phase 2 task](docs/PHASE_2_TASK.md): merged synthetic persistence and local outbox/dispatcher.
 - [Phase 3 task](docs/PHASE_3_TASK.md): Greenhouse and Lever source contracts, limits and test evidence.
+- [Phase 4 task](docs/PHASE_4_TASK.md): deterministic evaluation baseline and remaining scope.
 - [CAREER_EVIDENCE.md](CAREER_EVIDENCE.md): verified public-safe evidence; not a replacement for the existing AI Career Board.
 - [FIRST_INCREMENT.md](FIRST_INCREMENT.md) and [PROJECT_PLAN.md](PROJECT_PLAN.md): historical supporting plans; the master plan takes precedence.
 
