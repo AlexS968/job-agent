@@ -34,14 +34,16 @@ class ProfileFileServiceTest {
     @Test
     void missingInvalidAndRepositoryLocalFilesFailSafely() throws Exception {
         assertThrows(IllegalArgumentException.class, () -> profiles.load(null));
-        assertThrows(IllegalArgumentException.class, () -> profiles.load(directory.resolve("absent.json").toString()));
+        String absent = directory.resolve("absent.json").toString();
+        assertThrows(IllegalArgumentException.class, () -> profiles.load(absent));
         Path bad = directory.resolve("bad.json");
         Files.writeString(bad, "{private-broken}");
-        var failure = assertThrows(IllegalArgumentException.class, () -> profiles.load(bad.toString()));
+        String badFile = bad.toString();
+        var failure = assertThrows(IllegalArgumentException.class, () -> profiles.load(badFile));
         assertFalse(failure.getMessage().contains("private-broken"));
         assertThrows(IllegalArgumentException.class,
                 () -> profiles.load("src/main/resources/synthetic/source-item.json"));
         Files.writeString(bad, "{\"profileId\":\"x\",\"version\":\"v1\",\"workCountry\":\"Germany\"}");
-        assertThrows(IllegalArgumentException.class, () -> profiles.load(bad.toString()));
+        assertThrows(IllegalArgumentException.class, () -> profiles.load(badFile));
     }
 }

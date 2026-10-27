@@ -18,10 +18,10 @@ public class VacancyReadService {
     }
 
     public VacancyReadDTO read(long id) {
-        return repository.readForEvaluation(id, false);
+        return repository.readForEvaluation(id);
     }
 
     public VacancyReadDTO lock(long id) {
-        return repository.readForEvaluation(id, true);
+        return repository.lockForEvaluation(id);
     }
 }

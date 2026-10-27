@@ -26,10 +26,10 @@ public class EvaluationRepository {
     }
 
     public void requireProfile(LoadedProfileDTO loaded) {
-        String stored = jdbc.query("SELECT criteria_hash FROM evaluation_profiles WHERE profile_id = ? "
-                        + "AND profile_version = ?", rs -> rs.next() ? rs.getString(1) : null,
+        List<String> stored = jdbc.queryForList("SELECT criteria_hash FROM evaluation_profiles WHERE profile_id = ? "
+                        + "AND profile_version = ?", String.class,
                 loaded.profile().profileId(), loaded.profile().version());
-        if (stored != null && !stored.equals(loaded.criteriaHash())) {
+        if (!stored.isEmpty() && !stored.getFirst().equals(loaded.criteriaHash())) {
             throw new IllegalArgumentException("Profile version has different criteria; use a new version");
         }
     }

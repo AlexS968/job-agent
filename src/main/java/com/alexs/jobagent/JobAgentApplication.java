@@ -39,6 +39,8 @@ import tools.jackson.databind.json.JsonMapper;
 @SpringBootApplication
 public class JobAgentApplication {
     private static final Logger LOGGER = LoggerFactory.getLogger(JobAgentApplication.class);
+    private static final String PROFILE_FILE_OPTION = "--profile-file=";
+    private static final String LIMIT_OPTION = "--limit=";
 
     public static void main(String[] args) {
         try (ConfigurableApplicationContext context = SpringApplication.run(JobAgentApplication.class, args)) {
@@ -160,10 +162,10 @@ public class JobAgentApplication {
         if (args.length < 2 || args.length > 4) {
             throw new IllegalArgumentException("Evaluation requires a profile file and optional cursor/limit");
         }
-        requireOnlyOptions(args, "--mode=evaluate-rules", "--profile-file=", "--after-id=", "--limit=");
-        var profile = profiles.load(option(args, "--profile-file="));
+        requireOnlyOptions(args, "--mode=evaluate-rules", PROFILE_FILE_OPTION, "--after-id=", LIMIT_OPTION);
+        var profile = profiles.load(option(args, PROFILE_FILE_OPTION));
         long after = optionalLong(args, "--after-id=", 0);
-        int limit = Math.toIntExact(optionalLong(args, "--limit=", 100));
+        int limit = Math.toIntExact(optionalLong(args, LIMIT_OPTION, 100));
         var result = evaluations.evaluate(profile, after, limit, RuleEvaluationPolicy.VERSION);
         LOGGER.info("Rule evaluation: examined={}, created={}, already_current={}, last_vacancy_id={}, more_available={}",
                 result.examined(), result.created(), result.alreadyCurrent(), result.lastVacancyId(),
@@ -174,9 +176,9 @@ public class JobAgentApplication {
         if (args.length < 2 || args.length > 3) {
             throw new IllegalArgumentException("Shortlist requires a profile file and optional limit");
         }
-        requireOnlyOptions(args, "--mode=shortlist", "--profile-file=", "--limit=");
-        var profile = profiles.load(option(args, "--profile-file="));
-        int limit = Math.toIntExact(optionalLong(args, "--limit=", 20));
+        requireOnlyOptions(args, "--mode=shortlist", PROFILE_FILE_OPTION, LIMIT_OPTION);
+        var profile = profiles.load(option(args, PROFILE_FILE_OPTION));
+        int limit = Math.toIntExact(optionalLong(args, LIMIT_OPTION, 20));
         var report = evaluations.shortlist(profile, limit, RuleEvaluationPolicy.VERSION);
         LOGGER.info("Shortlist: suitable={}, needs_review={}", report.suitable().size(), report.needsReview().size());
         report.suitable().forEach(item -> logEvaluation("SUITABLE", item));
@@ -184,9 +186,11 @@ public class JobAgentApplication {
     }
 
     private void logEvaluation(String group, VacancyEvaluationDTO item) {
-        LOGGER.info("{} vacancy: id={}, rank={}, url={}, reasons={}, unknowns={}, evidence={}",
-                group, item.vacancyId(), item.preferenceRank(), safeSourceUrl(item.originalUrl()),
-                item.reasons(), item.unknowns(), item.evidence());
+        if (LOGGER.isInfoEnabled()) {
+            LOGGER.info("{} vacancy: id={}, rank={}, url={}, reasons={}, unknowns={}, evidence={}",
+                    group, item.vacancyId(), item.preferenceRank(), safeSourceUrl(item.originalUrl()),
+                    item.reasons(), item.unknowns(), item.evidence());
+        }
     }
 
     private static String safeSourceUrl(String url) {

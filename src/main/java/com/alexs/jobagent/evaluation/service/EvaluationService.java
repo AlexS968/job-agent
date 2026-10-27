@@ -88,10 +88,12 @@ public class EvaluationService {
             }
             for (long id : ids) {
                 VacancyEvaluationDTO current = transaction.execute(status -> current(id, profile, policyVersion));
-                if (current != null && "SUITABLE".equals(current.decision())) {
-                    addBounded(suitable, current, limit);
-                } else if (current != null && "NEEDS_REVIEW".equals(current.decision())) {
-                    addBounded(review, current, limit);
+                if (current != null) {
+                    if ("SUITABLE".equals(current.decision())) {
+                        addBounded(suitable, current, limit);
+                    } else if ("NEEDS_REVIEW".equals(current.decision())) {
+                        addBounded(review, current, limit);
+                    }
                 }
             }
             cursor = ids.getLast();

@@ -16,6 +16,9 @@ import tools.jackson.databind.json.JsonMapper;
 @Service
 public class RuleEvaluationPolicy {
     public static final String VERSION = "rules-v1";
+    private static final String REMOTE = "REMOTE";
+    private static final String UNMATCHED = "UNMATCHED";
+    private static final String CONFLICTING_COUNTRY_ELIGIBILITY = "CONFLICTING_COUNTRY_ELIGIBILITY";
     private final JsonMapper json;
 
     public RuleEvaluationPolicy(JsonMapper json) {
@@ -35,78 +38,115 @@ public class RuleEvaluationPolicy {
         JsonNode raw = json.readTree(source.rawPayload());
         JsonNode asserted = vacancy.sourceNamespace().startsWith("synthetic-") && raw != null
                 ? raw.get("evaluationEvidence") : null;
-        String title = vacancy.title().toLowerCase(Locale.ROOT);
-        boolean excludedTitle = matching(profile.excludedTitleTerms(), title) != null;
-        String role = matching(profile.preferredRoleTerms(), title);
-        boolean reserve = false;
-        if (role == null) {
-            role = matching(profile.reserveRoleTerms(), title);
-            reserve = role != null;
-        }
-        if (excludedTitle) {
-            reasons.add("EXPLICIT_TITLE_EXCLUSION");
-        } else if (role == null) {
-            unknowns.add("ROLE_NOT_ESTABLISHED");
-        } else {
-            reasons.add(reserve ? "RESERVE_ROLE" : "PREFERRED_ROLE");
-            evidence.add("matched title term: " + excerpt(role));
-        }
-
-        String arrangement = normalizeArrangement(field(asserted, "arrangement"));
-        if (arrangement == null && raw != null) {
-            String sourceLabel = field(raw, "workplaceType");
-            arrangement = normalizeArrangement(sourceLabel);
-            if (sourceLabel != null) {
-                evidence.add("source workplace label: " + excerpt(sourceLabel));
-            }
-        }
-        int rank = 9;
-        boolean explicitCountryExclusion = false;
-        if (asserted != null && asserted.isObject()) {
-            String scope = field(asserted, "remoteScope");
-            String hybridLocation = field(asserted, "hybridLocation");
-            explicitCountryExclusion = contains(asserted.get("excludedCountries"), profile.workCountry());
-            boolean countryAllowed = contains(asserted.get("eligibleCountries"), profile.workCountry());
-            if (explicitCountryExclusion && countryAllowed) {
-                unknowns.add("CONFLICTING_COUNTRY_ELIGIBILITY");
-            } else if (explicitCountryExclusion) {
-                reasons.add("EXPLICIT_COUNTRY_EXCLUSION");
-            } else if ("REMOTE".equals(arrangement) && countryAllowed && "COUNTRY".equals(scope)) {
-                rank = 1;
-                reasons.add("CONFIRMED_COUNTRY_REMOTE");
-                evidence.add("synthetic eligibility: country remote");
-            } else if ("REMOTE".equals(arrangement) && countryAllowed && "EU".equals(scope)
-                    && profile.allowEuRemote()) {
-                rank = 2;
-                reasons.add("CONFIRMED_EU_REMOTE");
-                evidence.add("synthetic eligibility: EU remote with work-country permission");
-            } else if ("HYBRID".equals(arrangement) && hybridLocation != null
-                    && profile.allowedHybridLocations().stream().anyMatch(hybridLocation::equalsIgnoreCase)) {
-                rank = 3;
-                reasons.add("ACCEPTABLE_HYBRID_LOCATION");
-                evidence.add("synthetic hybrid location: " + excerpt(hybridLocation));
-            } else {
-                unknowns.add("WORK_ELIGIBILITY_UNCONFIRMED");
-            }
-            salary(asserted.get("salary"), profile.salaryPreference(), reasons, unknowns);
-        } else {
-            unknowns.add("WORK_ELIGIBILITY_UNCONFIRMED");
-            unknowns.add("SALARY_UNKNOWN");
-        }
+        RoleAssessment role = assessRole(profile, vacancy.title(), reasons, unknowns, evidence);
+        String arrangement = arrangement(asserted, raw, evidence);
+        WorkAssessment work = assessWork(profile, asserted, arrangement, reasons, unknowns, evidence);
+        salary(asserted == null ? null : asserted.get("salary"), profile.salaryPreference(), reasons, unknowns);
         boolean arrangementExcluded = arrangement != null
                 && profile.excludedArrangements().contains(arrangement);
         if (arrangementExcluded) {
             reasons.add("EXPLICIT_ARRANGEMENT_EXCLUSION");
         }
-        String decision = excludedTitle || arrangementExcluded || explicitCountryExclusion && !unknowns.contains(
-                "CONFLICTING_COUNTRY_ELIGIBILITY") ? "EXCLUDED"
-                : role != null && rank < 9 && !unknowns.contains("CONFLICTING_COUNTRY_ELIGIBILITY")
-                ? "SUITABLE" : "NEEDS_REVIEW";
-        String roleClassification = role == null ? "UNMATCHED" : reserve ? "RESERVE" : "PREFERRED";
-        return new VacancyEvaluationDTO(vacancy.id(), source.sourceItemId(), revision, decision, rank,
-                roleClassification, List.copyOf(reasons),
+        String decision = decision(role, work, arrangementExcluded);
+        return new VacancyEvaluationDTO(vacancy.id(), source.sourceItemId(), revision, decision, work.rank(),
+                role.classification(), List.copyOf(reasons),
                 List.copyOf(unknowns), List.copyOf(evidence), source.originalUrl());
     }
+
+    private static RoleAssessment assessRole(SearchProfileDTO profile, String title, List<String> reasons,
+                                             List<String> unknowns, List<String> evidence) {
+        String lowered = title.toLowerCase(Locale.ROOT);
+        boolean excluded = matching(profile.excludedTitleTerms(), lowered) != null;
+        String preferred = matching(profile.preferredRoleTerms(), lowered);
+        String reserve = preferred == null ? matching(profile.reserveRoleTerms(), lowered) : null;
+        String classification;
+        if (preferred != null) {
+            classification = "PREFERRED";
+        } else if (reserve != null) {
+            classification = "RESERVE";
+        } else {
+            classification = UNMATCHED;
+        }
+        if (excluded) {
+            reasons.add("EXPLICIT_TITLE_EXCLUSION");
+        } else if (UNMATCHED.equals(classification)) {
+            unknowns.add("ROLE_NOT_ESTABLISHED");
+        } else {
+            reasons.add(classification + "_ROLE");
+            evidence.add("matched title term: " + excerpt(preferred != null ? preferred : reserve));
+        }
+        return new RoleAssessment(classification, excluded);
+    }
+
+    private static String arrangement(JsonNode asserted, JsonNode raw, List<String> evidence) {
+        String normalized = normalizeArrangement(field(asserted, "arrangement"));
+        if (normalized != null || raw == null) {
+            return normalized;
+        }
+        String label = field(raw, "workplaceType");
+        if (label != null) {
+            evidence.add("source workplace label: " + excerpt(label));
+        }
+        return normalizeArrangement(label);
+    }
+
+    private static WorkAssessment assessWork(SearchProfileDTO profile, JsonNode asserted, String arrangement,
+                                             List<String> reasons, List<String> unknowns, List<String> evidence) {
+        if (asserted == null || !asserted.isObject()) {
+            unknowns.add("WORK_ELIGIBILITY_UNCONFIRMED");
+            return new WorkAssessment(9, false, false);
+        }
+        boolean excluded = contains(asserted.get("excludedCountries"), profile.workCountry());
+        boolean allowed = contains(asserted.get("eligibleCountries"), profile.workCountry());
+        if (excluded && allowed) {
+            unknowns.add(CONFLICTING_COUNTRY_ELIGIBILITY);
+            return new WorkAssessment(9, true, true);
+        }
+        if (excluded) {
+            reasons.add("EXPLICIT_COUNTRY_EXCLUSION");
+            return new WorkAssessment(9, true, false);
+        }
+        return new WorkAssessment(confirmedWorkRank(profile, asserted, arrangement, allowed,
+                reasons, unknowns, evidence), false, false);
+    }
+
+    private static int confirmedWorkRank(SearchProfileDTO profile, JsonNode asserted, String arrangement,
+                                         boolean countryAllowed, List<String> reasons, List<String> unknowns,
+                                         List<String> evidence) {
+        String scope = field(asserted, "remoteScope");
+        String hybridLocation = field(asserted, "hybridLocation");
+        if (REMOTE.equals(arrangement) && countryAllowed && "COUNTRY".equals(scope)) {
+            reasons.add("CONFIRMED_COUNTRY_REMOTE");
+            evidence.add("synthetic eligibility: country remote");
+            return 1;
+        }
+        if (REMOTE.equals(arrangement) && countryAllowed && "EU".equals(scope) && profile.allowEuRemote()) {
+            reasons.add("CONFIRMED_EU_REMOTE");
+            evidence.add("synthetic eligibility: EU remote with work-country permission");
+            return 2;
+        }
+        if ("HYBRID".equals(arrangement) && hybridLocation != null
+                && profile.allowedHybridLocations().stream().anyMatch(hybridLocation::equalsIgnoreCase)) {
+            reasons.add("ACCEPTABLE_HYBRID_LOCATION");
+            evidence.add("synthetic hybrid location: " + excerpt(hybridLocation));
+            return 3;
+        }
+        unknowns.add("WORK_ELIGIBILITY_UNCONFIRMED");
+        return 9;
+    }
+
+    private static String decision(RoleAssessment role, WorkAssessment work, boolean arrangementExcluded) {
+        if (role.excluded() || arrangementExcluded || work.countryExcluded() && !work.conflicting()) {
+            return "EXCLUDED";
+        }
+        if (!UNMATCHED.equals(role.classification()) && work.rank() < 9 && !work.conflicting()) {
+            return "SUITABLE";
+        }
+        return "NEEDS_REVIEW";
+    }
+
+    private record RoleAssessment(String classification, boolean excluded) { }
+    private record WorkAssessment(int rank, boolean countryExcluded, boolean conflicting) { }
 
     private static String normalizeArrangement(String value) {
         if (value == null) {

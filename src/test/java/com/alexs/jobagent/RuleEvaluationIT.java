@@ -70,8 +70,9 @@ class RuleEvaluationIT {
         assertEquals(1, evaluation.evaluate(v1, 0, 100, RuleEvaluationPolicy.VERSION).created());
         assertEquals(0, evaluation.evaluate(v1, 0, 100, RuleEvaluationPolicy.VERSION).created());
         assertEquals(1, count("vacancy_evaluations"));
+        LoadedProfileDTO conflictingProfile = profile("v1", "Senior Java");
         assertThrows(IllegalArgumentException.class,
-                () -> evaluation.evaluate(profile("v1", "Senior Java"), 0, 100, RuleEvaluationPolicy.VERSION));
+                () -> evaluation.evaluate(conflictingProfile, 0, 100, RuleEvaluationPolicy.VERSION));
         assertEquals(1, count("vacancy_evaluations"));
         assertEquals(1, evaluation.evaluate(profile("v2", "Backend Engineer"), 0, 100,
                 RuleEvaluationPolicy.VERSION).created());
@@ -178,8 +179,9 @@ class RuleEvaluationIT {
         assertTrue(all.suitable().getFirst().reasons().contains("CONFIRMED_COUNTRY_REMOTE"));
         assertTrue(all.needsReview().getFirst().unknowns().contains("WORK_ELIGIBILITY_UNCONFIRMED"));
         assertThrows(IllegalArgumentException.class, () -> evaluation.shortlist(profile, 51, RuleEvaluationPolicy.VERSION));
-        assertThrows(IllegalArgumentException.class, () -> evaluation.shortlist(
-                profile("v2", "Backend Engineer"), 10, RuleEvaluationPolicy.VERSION));
+        LoadedProfileDTO unevaluatedProfile = profile("v2", "Backend Engineer");
+        assertThrows(IllegalArgumentException.class,
+                () -> evaluation.shortlist(unevaluatedProfile, 10, RuleEvaluationPolicy.VERSION));
     }
 
     @Test
@@ -205,8 +207,7 @@ class RuleEvaluationIT {
             insert("Backend Engineer", COUNTRY_REMOTE);
         }
         LoadedProfileDTO profile = profile("v1", "Backend Engineer");
-        assertThrows(IllegalStateException.class, () -> new TransactionTemplate(manager).execute(
-                status -> evaluation.evaluate(profile, 0, 100, RuleEvaluationPolicy.VERSION)));
+        assertThrows(IllegalStateException.class, () -> evaluateInAmbientTransaction(profile));
         assertEquals(0, count("vacancy_evaluations"));
         var first = evaluation.evaluate(profile, 0, 100, RuleEvaluationPolicy.VERSION);
         assertEquals(100, first.created());
@@ -225,6 +226,11 @@ class RuleEvaluationIT {
             Thread.currentThread().interrupt();
             throw new IllegalStateException(interrupted);
         }
+    }
+
+    private void evaluateInAmbientTransaction(LoadedProfileDTO profile) {
+        new TransactionTemplate(manager).execute(status ->
+                evaluation.evaluate(profile, 0, 100, RuleEvaluationPolicy.VERSION));
     }
 
     private LoadedProfileDTO profile(String version, String role) throws Exception {
