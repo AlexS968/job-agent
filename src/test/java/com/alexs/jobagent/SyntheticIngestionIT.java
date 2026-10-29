@@ -56,7 +56,7 @@ class SyntheticIngestionIT {
 
     @Test
     void emptyDatabaseMigratesAndStoresSourceAndVacancy() throws Exception {
-        assertEquals(10, count("flyway_schema_history"));
+        assertEquals(11, count("flyway_schema_history"));
         IngestionResultDTO result = service.ingest(fixture());
         assertTrue(result.sourceCreated());
         assertTrue(result.vacancyCreated());

@@ -9,6 +9,7 @@ import com.alexs.jobagent.evaluation.dto.ExtractionResultDTO;
 import com.alexs.jobagent.evaluation.dto.ExtractionUsageDTO;
 import com.alexs.jobagent.evaluation.dto.ExtractionWorkIdentityDTO;
 import com.alexs.jobagent.evaluation.exception.ExtractionFailureException;
+import com.alexs.jobagent.evaluation.exception.ExtractionValidationException;
 import com.alexs.jobagent.evaluation.repository.ExtractionRepository;
 import java.time.Clock;
 import java.util.UUID;
@@ -170,10 +171,16 @@ public class ExtractionPilotService {
         if (interrupted) {
             Thread.interrupted();
         }
+        ExtractionGatewayResponseDTO returnedResponse = response;
         try {
-            transactions.executeWithoutResult(status -> repository.finish(new ExtractionCompletionDTO(
-                    reservation.workId(), reservation.token(), state, null, outcome, usage,
-                    reservation.amount())));
+            transactions.executeWithoutResult(status -> {
+                repository.finish(new ExtractionCompletionDTO(reservation.workId(), reservation.token(),
+                        state, null, outcome, usage, reservation.amount()));
+                if (returnedResponse != null && original instanceof ExtractionValidationException validation) {
+                    repository.recordRejectedOutput(reservation.workId(), reservation.token(),
+                            validation.claimIndex(), validation.category(), returnedResponse.content());
+                }
+            });
         } catch (RuntimeException trackingFailure) {
             original.addSuppressed(trackingFailure);
         } finally {

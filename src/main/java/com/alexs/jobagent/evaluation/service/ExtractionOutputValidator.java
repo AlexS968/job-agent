@@ -3,6 +3,7 @@ package com.alexs.jobagent.evaluation.service;
 import com.alexs.jobagent.evaluation.dto.ExtractionClaimDTO;
 import com.alexs.jobagent.evaluation.dto.ExtractionInputDTO;
 import com.alexs.jobagent.evaluation.dto.ExtractionOutputDTO;
+import com.alexs.jobagent.evaluation.exception.ExtractionValidationException;
 import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -34,33 +35,42 @@ public class ExtractionOutputValidator {
         try {
             root = json.readTree(content);
         } catch (RuntimeException exception) {
-            throw new IllegalArgumentException("Invalid extraction JSON");
+            throw new ExtractionValidationException(-1, "INVALID_JSON");
         }
         if (root == null || !root.isObject() || root.size() != 1 || !root.path(CLAIMS_FIELD).isArray()
                 || root.path(CLAIMS_FIELD).size() > 24) {
-            throw new IllegalArgumentException("Invalid extraction shape or claim count");
+            throw new ExtractionValidationException(-1, "INVALID_ROOT_SHAPE_OR_COUNT");
         }
         List<ExtractionClaimDTO> claims = new ArrayList<>();
         for (JsonNode node : root.path(CLAIMS_FIELD)) {
-            claims.add(validateClaim(node, input));
+            claims.add(validateClaim(node, input, claims.size()));
         }
         return markConflicts(claims);
     }
 
-    private static ExtractionClaimDTO validateClaim(JsonNode node, ExtractionInputDTO input) {
+    private static ExtractionClaimDTO validateClaim(JsonNode node, ExtractionInputDTO input, int index) {
         if (!node.isObject() || node.size() != 5) {
-            throw new IllegalArgumentException("Invalid extraction claim shape");
+            throw new ExtractionValidationException(index, "INVALID_CLAIM_SHAPE");
         }
-        String fact = bounded(node, "fact", 40);
-        String value = bounded(node, "value", 120);
-        String field = bounded(node, "sourceField", 40);
-        String quote = bounded(node, "quote", 160);
-        String uncertainty = bounded(node, "uncertainty", 20);
-        if (!FACTS.contains(fact) || !UNCERTAINTIES.contains(uncertainty)
-                || !input.sourceFields().containsKey(field)
-                || !normalize(input.sourceFields().get(field)).contains(normalize(quote))
-                || !validValue(fact, value)) {
-            throw new IllegalArgumentException("Extraction claim lacks supplied evidence");
+        String fact = bounded(node, "fact", 40, index);
+        String value = bounded(node, "value", 120, index);
+        String field = bounded(node, "sourceField", 40, index);
+        String quote = bounded(node, "quote", 160, index);
+        String uncertainty = bounded(node, "uncertainty", 20, index);
+        if (!FACTS.contains(fact)) {
+            throw new ExtractionValidationException(index, "UNSUPPORTED_FACT");
+        }
+        if (!UNCERTAINTIES.contains(uncertainty)) {
+            throw new ExtractionValidationException(index, "UNSUPPORTED_UNCERTAINTY");
+        }
+        if (!input.sourceFields().containsKey(field)) {
+            throw new ExtractionValidationException(index, "SOURCE_FIELD_UNAVAILABLE");
+        }
+        if (!normalize(input.sourceFields().get(field)).contains(normalize(quote))) {
+            throw new ExtractionValidationException(index, "QUOTE_NOT_IN_SOURCE_FIELD");
+        }
+        if (!validValue(fact, value)) {
+            throw new ExtractionValidationException(index, "INVALID_FACT_VALUE");
         }
         // A generic remote label, country mention or office address cannot prove permission.
         if (COUNTRY_PERMISSION.equals(fact) && "STATED".equals(uncertainty)
@@ -101,10 +111,10 @@ public class ExtractionOutputValidator {
                 || (COUNTRY_RESTRICTION.equals(first.fact()) && COUNTRY_PERMISSION.equals(second.fact())));
     }
 
-    private static String bounded(JsonNode node, String key, int max) {
+    private static String bounded(JsonNode node, String key, int max, int index) {
         JsonNode value = node.get(key);
         if (value == null || !value.isString() || value.asText().isBlank() || value.asText().length() > max) {
-            throw new IllegalArgumentException("Invalid extraction claim field");
+            throw new ExtractionValidationException(index, "INVALID_" + key.toUpperCase(Locale.ROOT) + "_FIELD");
         }
         return value.asText();
     }

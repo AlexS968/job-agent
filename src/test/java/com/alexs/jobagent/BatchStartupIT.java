@@ -31,7 +31,7 @@ class BatchStartupIT {
                  var statement = connection.createStatement();
                  var rows = statement.executeQuery("SELECT COUNT(*) FROM flyway_schema_history WHERE success")) {
                 assertTrue(rows.next());
-                assertEquals(10, rows.getInt(1));
+                assertEquals(11, rows.getInt(1));
             }
         }
     }
@@ -40,7 +40,7 @@ class BatchStartupIT {
     void unavailableDatabaseExitsWithErrorWithoutPassword() throws Exception {
         Result result = run("jdbc:postgresql://127.0.0.1:1/unavailable", "test_user", PASSWORD);
         assertNotEquals(0, result.exitCode());
-        assertTrue(result.output().contains("Job Agent startup failed"), result.output());
+        assertTrue(result.output().contains("Job Agent run failed"), result.output());
         assertFalse(result.output().contains(PASSWORD), result.output());
     }
 
@@ -78,7 +78,7 @@ class BatchStartupIT {
                     + "observed_micro_usd=0, active_work=null, halted_reason=null, attempts=0"));
             Result live = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
                     "--mode=extract-primary", "--vacancy-id=1", "--live-confirm=no",
-                    "--pricing-reviewed-on=2026-10-28");
+                    "--pricing-reviewed-on=2026-10-29");
             assertNotEquals(0, live.exitCode());
             assertFalse(live.output().contains(PASSWORD));
             try (var connection = java.sql.DriverManager.getConnection(postgres.getJdbcUrl(),
@@ -131,7 +131,7 @@ class BatchStartupIT {
             assertFalse(unownedRecovery.output().contains(PASSWORD));
             Result comparisonWithoutConsent = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
                     "--mode=extract-compare", "--vacancy-id=1", "--live-confirm=no",
-                    "--pricing-reviewed-on=2026-10-28");
+                    "--pricing-reviewed-on=2026-10-29");
             assertNotEquals(0, comparisonWithoutConsent.exitCode());
             try (var connection = java.sql.DriverManager.getConnection(postgres.getJdbcUrl(),
                     postgres.getUsername(), PASSWORD);
@@ -307,7 +307,7 @@ class BatchStartupIT {
             }
             Result failed = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD, "--mode=synthetic");
             assertNotEquals(0, failed.exitCode());
-            assertTrue(failed.output().contains("Job Agent startup failed"), failed.output());
+            assertTrue(failed.output().contains("Job Agent run failed"), failed.output());
             assertFalse(failed.output().contains(PASSWORD), failed.output());
             try (var connection = java.sql.DriverManager.getConnection(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD);
                  var statement = connection.createStatement();
@@ -364,13 +364,13 @@ class BatchStartupIT {
             assertEquals(0, run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD).exitCode());
             Result missing = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD, "--mode=greenhouse");
             assertNotEquals(0, missing.exitCode());
-            assertTrue(missing.output().contains("Job Agent startup failed"));
+            assertTrue(missing.output().contains("Job Agent run failed"));
             assertFalse(missing.output().contains(PASSWORD));
             Result invalid = runWithBoards(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
                     "https://invalid.example/board|Synthetic Employer", "--mode=greenhouse");
             assertNotEquals(0, invalid.exitCode());
             assertTrue(invalid.output().contains("failed=1"), invalid.output());
-            assertTrue(invalid.output().contains("Job Agent startup failed"), invalid.output());
+            assertTrue(invalid.output().contains("Job Agent run failed"), invalid.output());
             assertFalse(invalid.output().contains(PASSWORD));
             try (var connection = java.sql.DriverManager.getConnection(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD);
                  var statement = connection.createStatement();
@@ -391,11 +391,11 @@ class BatchStartupIT {
             assertEquals(0, run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD).exitCode());
             Result missing = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD, "--mode=lever");
             assertNotEquals(0, missing.exitCode());
-            assertTrue(missing.output().contains("Job Agent startup failed"));
+            assertTrue(missing.output().contains("Job Agent run failed"));
             Result invalid = runWithSites(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
                     "global|https://invalid.example|Synthetic Employer", "--mode=lever");
             assertNotEquals(0, invalid.exitCode());
-            assertTrue(invalid.output().contains("Job Agent startup failed"));
+            assertTrue(invalid.output().contains("Job Agent run failed"));
             assertFalse(invalid.output().contains(PASSWORD));
             try (var connection = java.sql.DriverManager.getConnection(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD);
                  var statement = connection.createStatement();

@@ -20,6 +20,7 @@ import com.alexs.jobagent.evaluation.service.ProfileFileService;
 import com.alexs.jobagent.evaluation.service.RuleEvaluationPolicy;
 import com.alexs.jobagent.evaluation.service.ExtractionPilotService;
 import com.alexs.jobagent.evaluation.service.ExtractionPolicy;
+import com.alexs.jobagent.evaluation.exception.ExtractionValidationException;
 import com.alexs.jobagent.evaluation.dto.VacancyEvaluationDTO;
 import java.io.IOException;
 import java.io.InputStream;
@@ -50,9 +51,24 @@ public class JobAgentApplication {
         try (ConfigurableApplicationContext context = SpringApplication.run(JobAgentApplication.class, args)) {
             // Closing the context releases the connection pool before the batch process exits.
         } catch (Exception exception) {
-            LOGGER.error("Job Agent startup failed; check database availability and configuration.");
+            ExtractionValidationException validation = validationFailure(exception);
+            if (validation != null) {
+                LOGGER.error("Job Agent extraction validation failed: claim_index={}, category={}",
+                        validation.claimIndex(), validation.category());
+            } else {
+                LOGGER.error("Job Agent run failed; inspect preceding diagnostics and configuration.");
+            }
             System.exit(1);
         }
+    }
+
+    private static ExtractionValidationException validationFailure(Throwable exception) {
+        for (Throwable cause = exception; cause != null; cause = cause.getCause()) {
+            if (cause instanceof ExtractionValidationException validation) {
+                return validation;
+            }
+        }
+        return null;
     }
 
     @Bean

@@ -3,6 +3,7 @@ package com.alexs.jobagent.evaluation.service;
 import static org.junit.jupiter.api.Assertions.*;
 
 import com.alexs.jobagent.evaluation.dto.ExtractionInputDTO;
+import com.alexs.jobagent.evaluation.exception.ExtractionValidationException;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.json.JsonMapper;
@@ -37,6 +38,25 @@ class ExtractionOutputValidatorTest {
                 {"claims":[{"fact":"ARRANGEMENT","value":"MAGIC","sourceField":"description",
                 "quote":"Remote in Europe","uncertainty":"STATED"}]}
                 """, input));
+    }
+
+    @Test
+    void diagnosticIdentifiesClaimAndExactFailureWithoutEchoingSourceText() {
+        ExtractionInputDTO escaped = new ExtractionInputDTO(1, 2, "a".repeat(64), Map.of(
+                "title", "Backend Engineer", "description", "We&#39;re building backend systems."));
+        String content = """
+                {"claims":[{"fact":"TITLE","value":"Backend Engineer","sourceField":"title",
+                "quote":"Backend Engineer","uncertainty":"STATED"},
+                {"fact":"REQUIRED_SKILL","value":"backend","sourceField":"description",
+                "quote":"We're building backend systems","uncertainty":"STATED"}]}
+                """;
+        ExtractionValidationException failure = assertThrows(ExtractionValidationException.class,
+                () -> validator.validate(content, escaped));
+        assertEquals(1, failure.claimIndex());
+        assertEquals("QUOTE_NOT_IN_SOURCE_FIELD", failure.category());
+        assertFalse(failure.getMessage().contains("We're"));
+        assertEquals(2, validator.validate(content.replace("We're", "We&#39;re"), escaped)
+                .claims().size());
     }
 
     @Test
