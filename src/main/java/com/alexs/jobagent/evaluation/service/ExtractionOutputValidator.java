@@ -11,6 +11,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.springframework.stereotype.Service;
 import tools.jackson.databind.JsonNode;
@@ -25,6 +26,8 @@ public class ExtractionOutputValidator {
             "ARRANGEMENT", COUNTRY_PERMISSION, COUNTRY_RESTRICTION,
             "SALARY_MIN", "SALARY_MAX", "SALARY_CURRENCY", "SALARY_PERIOD");
     private static final Set<String> UNCERTAINTIES = Set.of("STATED", "UNCERTAIN", "CONFLICTING");
+    private static final Pattern HEADING = Pattern.compile(
+            "(?s)(?:&lt;|<)h[1-6][^>]*?(?:&gt;|>)(.*?)(?:&lt;|<)/h[1-6](?:&gt;|>)");
     private final JsonMapper json;
 
     public ExtractionOutputValidator(JsonMapper json) {
@@ -111,7 +114,8 @@ public class ExtractionOutputValidator {
                 throw new ExtractionValidationException(index, "SKILL_SECTION_NOT_SUPPORTED");
             }
             int sectionPosition = normalizedSource.lastIndexOf(normalizedSection, claimPosition);
-            if (sectionPosition < 0 || claimPosition - sectionPosition > 1_200
+            if (sectionPosition < 0 || (claimPosition - sectionPosition > 1_200
+                    && !withinHeading(normalizedSource, sectionPosition, normalizedSection.length(), claimPosition))
                     || normalizedSource.substring(sectionPosition + normalizedSection.length(), claimPosition)
                     .matches("(?s).*(&lt;h[1-6]|<h[1-6]).*")) {
                 throw new ExtractionValidationException(index, "SKILL_SECTION_NOT_SUPPORTED");
@@ -125,6 +129,17 @@ public class ExtractionOutputValidator {
             throw new ExtractionValidationException(index, "SKILL_STRENGTH_NOT_SUPPORTED");
         }
         return new SkillEvidenceDTO(kind, strength, section, strengthQuote);
+    }
+
+    private static boolean withinHeading(String source, int sectionPosition, int sectionLength, int claimPosition) {
+        Matcher matcher = HEADING.matcher(source);
+        while (matcher.find()) {
+            if (sectionPosition >= matcher.start(1) && sectionPosition + sectionLength <= matcher.end(1)
+                    && matcher.end() <= claimPosition) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static boolean explicitStrength(String strength, String evidence, String source,

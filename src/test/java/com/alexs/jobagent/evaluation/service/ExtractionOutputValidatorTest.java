@@ -322,6 +322,28 @@ class ExtractionOutputValidatorTest {
                 .category());
     }
 
+    @Test
+    void longHtmlSectionRemainsTraceableButParaphrasedSkillValueIsRejected() {
+        String heading = "&lt;h4&gt;We&#39;d love to see&lt;/h4&gt;";
+        String filler = "&lt;li&gt;Experience with distributed systems.&lt;/li&gt;".repeat(30);
+        String sentence = "The ability to drive cross-functional initiatives while balancing priorities.";
+        ExtractionInputDTO source = skillInput(heading + filler + "&lt;li&gt;" + sentence + "&lt;/li&gt;");
+        String exact = skill("drive cross-functional initiatives", sentence, "COMPETENCY", "UNKNOWN",
+                "We&#39;d love to see", "We&#39;d love to see");
+        assertEquals(1, validator.validate("{\"claims\":[" + exact + "],\"truncated\":false}", source)
+                .claims().size());
+        String paraphrased = skill("driving cross-functional initiatives", sentence, "COMPETENCY", "UNKNOWN",
+                "We&#39;d love to see", "We&#39;d love to see");
+        assertEquals("SKILL_VALUE_NOT_IN_QUOTE", assertThrows(ExtractionValidationException.class,
+                () -> validator.validate("{\"claims\":[" + paraphrased + "],\"truncated\":false}", source))
+                .category());
+        ExtractionInputDTO changedSection = skillInput(heading + filler + "&lt;h4&gt;Other&lt;/h4&gt;"
+                + "&lt;li&gt;" + sentence + "&lt;/li&gt;");
+        assertEquals("SKILL_SECTION_NOT_SUPPORTED", assertThrows(ExtractionValidationException.class,
+                () -> validator.validate("{\"claims\":[" + exact + "],\"truncated\":false}", changedSection))
+                .category());
+    }
+
     private static ExtractionInputDTO skillInput(String description) {
         return new ExtractionInputDTO(1, 2, "a".repeat(64), Map.of("description", description));
     }
