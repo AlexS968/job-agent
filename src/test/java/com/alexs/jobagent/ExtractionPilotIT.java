@@ -49,7 +49,7 @@ class ExtractionPilotIT {
             .withDatabaseName("job_agent_extraction_test").withUsername("test_user")
             .withPassword("synthetic_test_secret_123");
     private static final String RESPONSE = """
-            {"claims":[{"fact":"TITLE","value":"Backend Engineer","sourceField":"title",
+            {"truncated":false,"claims":[{"fact":"TITLE","value":"Backend Engineer","sourceField":"title",
             "quote":"Backend Engineer","uncertainty":"STATED"}]}
             """;
     static { POSTGRES.start(); }
@@ -562,7 +562,7 @@ class ExtractionPilotIT {
         long first = insert();
         long second = insertSecond();
         String rejected = """
-                        {"claims":[{"fact":"TITLE","value":"Invented title","sourceField":"title",
+                        {"truncated":false,"claims":[{"fact":"TITLE","value":"Invented title","sourceField":"title",
                         "quote":"Invented title","uncertainty":"STATED"}]}
                         """;
         when(gateway.extract(any(), anyString(), anyString()))
@@ -663,7 +663,7 @@ class ExtractionPilotIT {
     }
 
     private static ExtractionCompletionDTO completion(long workId, UUID token) {
-        return new ExtractionCompletionDTO(workId, token, "SUCCEEDED", "{\"claims\":[]}", "SUCCEEDED",
+        return new ExtractionCompletionDTO(workId, token, "SUCCEEDED", "{\"truncated\":false,\"claims\":[]}", "SUCCEEDED",
                 new ExtractionUsageDTO(1, 0, 0, 1, 1L, null),
                 syntheticReservation(ExtractionPolicy.PRIMARY_MODEL));
     }

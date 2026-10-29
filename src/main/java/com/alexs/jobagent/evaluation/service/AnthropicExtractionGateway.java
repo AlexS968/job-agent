@@ -35,6 +35,18 @@ public class AnthropicExtractionGateway {
             + "For SALARY_MIN and SALARY_MAX use plain decimal digits without currency symbols or thousands "
             + "separators; for SALARY_CURRENCY use a three-letter ISO code. A remote label, country mention or "
             + "office address does not establish work-country permission. Never assess a candidate or legal eligibility.";
+    private static final String SKILL_PROMPT = " For each distinct employer-stated skill or competency in relevant "
+            + "qualification sections, emit SKILL with a value copied as an exact substring of its quote, "
+            + "kind TECHNOLOGY or COMPETENCY and requirementStrength "
+            + "REQUIRED, PREFERRED or UNKNOWN. Preserve alternatives such as Java or Golang in one claim; "
+            + "never turn OR into two mandatory skills. Include an exact supporting quote, the exact preceding "
+            + "section heading as sectionQuote when available, and exact strength wording as strengthQuote. "
+            + "Use empty strings when section or strength wording is absent. Only explicit must have, required "
+            + "or mandatory wording establishes REQUIRED; only explicit nice to have, optional or preferred "
+            + "establishes PREFERRED when the full statement is unconditional. Negated, conditional or shortened "
+            + "strength wording is UNKNOWN. We'd love to see is ambiguous: use UNKNOWN. If contradictory, use UNKNOWN. "
+            + "Extract distinct supported skills and competencies within the limits; if limits prevent complete "
+            + "reporting, set truncated true rather than implying completeness. Otherwise set truncated false.";
     private final HttpClient client;
     private final URI endpoint;
     private final JsonMapper json;
@@ -57,7 +69,7 @@ public class AnthropicExtractionGateway {
         this.endpoint = endpoint;
         this.json = json;
         this.requestTimeout = requestTimeout;
-        try (InputStream stream = getClass().getResourceAsStream("/extraction/schema-v2.json")) {
+        try (InputStream stream = getClass().getResourceAsStream("/extraction/schema-v3.json")) {
             if (stream == null) {
                 throw new IllegalStateException("Extraction schema unavailable");
             }
@@ -118,7 +130,7 @@ public class AnthropicExtractionGateway {
                 "model", model,
                 "max_tokens", ExtractionPolicy.MAX_OUTPUT_TOKENS,
                 "thinking", Map.of("type", "claude-haiku-5-5".equals(model) ? "disabled" : "between_tools"),
-                "system", SYSTEM_PROMPT,
+                "system", SYSTEM_PROMPT + SKILL_PROMPT,
                 "messages", List.of(Map.of("role", "user", CONTENT_FIELD,
                         json.writeValueAsString(input.sourceFields()))),
                 "output_config", Map.of("format", Map.of("type", "json_schema", "schema", schema)));

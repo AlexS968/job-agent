@@ -3,6 +3,7 @@ package com.alexs.jobagent.evaluation.service;
 import com.alexs.jobagent.evaluation.dto.ExtractionClaimDTO;
 import com.alexs.jobagent.evaluation.dto.ExtractionInputDTO;
 import com.alexs.jobagent.evaluation.dto.ExtractionOutputDTO;
+import com.alexs.jobagent.evaluation.dto.SkillEvidenceDTO;
 import com.alexs.jobagent.evaluation.exception.ExtractionValidationException;
 import java.text.Normalizer;
 import java.util.ArrayList;
@@ -20,8 +21,8 @@ public class ExtractionOutputValidator {
     private static final String CLAIMS_FIELD = "claims";
     private static final String COUNTRY_PERMISSION = "COUNTRY_PERMISSION";
     private static final String COUNTRY_RESTRICTION = "COUNTRY_RESTRICTION";
-    private static final Set<String> FACTS = Set.of("TITLE", "FAMILY", "SENIORITY", "REQUIRED_SKILL",
-            "PREFERRED_SKILL", "ARRANGEMENT", COUNTRY_PERMISSION, COUNTRY_RESTRICTION,
+    private static final Set<String> FACTS = Set.of("TITLE", "FAMILY", "SENIORITY", "SKILL",
+            "ARRANGEMENT", COUNTRY_PERMISSION, COUNTRY_RESTRICTION,
             "SALARY_MIN", "SALARY_MAX", "SALARY_CURRENCY", "SALARY_PERIOD");
     private static final Set<String> UNCERTAINTIES = Set.of("STATED", "UNCERTAIN", "CONFLICTING");
     private final JsonMapper json;
@@ -37,8 +38,9 @@ public class ExtractionOutputValidator {
         } catch (RuntimeException exception) {
             throw new ExtractionValidationException(-1, "INVALID_JSON");
         }
-        if (root == null || !root.isObject() || root.size() != 1 || !root.path(CLAIMS_FIELD).isArray()
-                || root.path(CLAIMS_FIELD).size() > 24) {
+        if (root == null || !root.isObject() || root.size() != 2
+                || !root.path("truncated").isBoolean() || !root.path(CLAIMS_FIELD).isArray()
+                || root.path(CLAIMS_FIELD).size() >= 24 || root.path("truncated").asBoolean()) {
             throw new ExtractionValidationException(-1, "INVALID_ROOT_SHAPE_OR_COUNT");
         }
         List<ExtractionClaimDTO> claims = new ArrayList<>();
@@ -49,7 +51,8 @@ public class ExtractionOutputValidator {
     }
 
     private static ExtractionClaimDTO validateClaim(JsonNode node, ExtractionInputDTO input, int index) {
-        if (!node.isObject() || node.size() != 5) {
+        boolean skill = "SKILL".equals(node.path("fact").asText());
+        if (!node.isObject() || node.size() != (skill ? 6 : 5)) {
             throw new ExtractionValidationException(index, "INVALID_CLAIM_SHAPE");
         }
         String fact = bounded(node, "fact", 40, index);
@@ -69,6 +72,9 @@ public class ExtractionOutputValidator {
         if (!normalize(input.sourceFields().get(field)).contains(normalize(quote))) {
             throw new ExtractionValidationException(index, "QUOTE_NOT_IN_SOURCE_FIELD");
         }
+        if (skill && (!input.sourceFields().get(field).contains(quote) || !quote.contains(value))) {
+            throw new ExtractionValidationException(index, "SKILL_VALUE_NOT_IN_QUOTE");
+        }
         value = canonicalValue(fact, value, quote);
         if (!validValue(fact, value)) {
             throw new ExtractionValidationException(index, "INVALID_FACT_VALUE");
@@ -78,7 +84,90 @@ public class ExtractionOutputValidator {
                 && !explicitPermission(quote, value, input.sourceFields().get(field))) {
             uncertainty = "UNCERTAIN";
         }
-        return new ExtractionClaimDTO(fact, value, field, quote, uncertainty);
+        SkillEvidenceDTO evidence = skill ? validateSkillEvidence(node.path("skillEvidence"),
+                input.sourceFields().get(field), value, quote, index) : null;
+        return new ExtractionClaimDTO(fact, value, field, quote, uncertainty, evidence);
+    }
+
+    private static SkillEvidenceDTO validateSkillEvidence(JsonNode node, String source, String value,
+                                                          String quote, int index) {
+        if (!node.isObject() || node.size() != 4) {
+            throw new ExtractionValidationException(index, "INVALID_SKILL_EVIDENCE");
+        }
+        String kind = bounded(node, "kind", 20, index);
+        String strength = bounded(node, "requirementStrength", 20, index);
+        String section = optionalBounded(node, "sectionQuote", 160, index);
+        String strengthQuote = optionalBounded(node, "strengthQuote", 160, index);
+        if (!Set.of("TECHNOLOGY", "COMPETENCY").contains(kind)
+                || !Set.of("REQUIRED", "PREFERRED", "UNKNOWN").contains(strength)) {
+            throw new ExtractionValidationException(index, "INVALID_SKILL_EVIDENCE");
+        }
+        String normalizedSource = normalize(source);
+        String normalizedQuote = normalize(quote);
+        String normalizedSection = normalize(section);
+        int claimPosition = normalizedSource.indexOf(normalizedQuote);
+        if (!section.isEmpty()) {
+            if (!source.contains(section)) {
+                throw new ExtractionValidationException(index, "SKILL_SECTION_NOT_SUPPORTED");
+            }
+            int sectionPosition = normalizedSource.lastIndexOf(normalizedSection, claimPosition);
+            if (sectionPosition < 0 || claimPosition - sectionPosition > 1_200
+                    || normalizedSource.substring(sectionPosition + normalizedSection.length(), claimPosition)
+                    .matches("(?s).*(&lt;h[1-6]|<h[1-6]).*")) {
+                throw new ExtractionValidationException(index, "SKILL_SECTION_NOT_SUPPORTED");
+            }
+        }
+        if (!strengthQuote.isEmpty() && !source.contains(strengthQuote)) {
+            throw new ExtractionValidationException(index, "SKILL_STRENGTH_QUOTE_NOT_SUPPORTED");
+        }
+        if (!"UNKNOWN".equals(strength)
+                && !explicitStrength(strength, strengthQuote, source, value, quote, section)) {
+            throw new ExtractionValidationException(index, "SKILL_STRENGTH_NOT_SUPPORTED");
+        }
+        return new SkillEvidenceDTO(kind, strength, section, strengthQuote);
+    }
+
+    private static boolean explicitStrength(String strength, String evidence, String source,
+                                            String value, String quote, String section) {
+        String wording = normalize(evidence);
+        if (wording.isEmpty() || !(normalize(quote).contains(wording)
+                || normalize(section).contains(wording))) {
+            return false;
+        }
+        String statement = surroundingSentence(source, quote);
+        String skill = Pattern.quote(normalize(value));
+        if ("REQUIRED".equals(strength)) {
+            return statement.matches("(?:must have |required: )" + skill)
+                    || statement.matches("experience with " + skill + " required")
+                    || statement.matches(skill + "(?: is)? (?:required|mandatory)")
+                    || (normalize(section).matches("(?:required qualifications|must have)")
+                    && statement.equals(normalize(value)));
+        }
+        return statement.matches("(?:nice to have |optional: )" + skill)
+                || statement.matches(skill + "(?: is)? preferred")
+                || (normalize(section).matches("(?:preferred qualifications|nice to have|optional skills)")
+                && statement.equals(normalize(value)));
+    }
+
+    private static String surroundingSentence(String source, String quote) {
+        int position = source.indexOf(quote);
+        int start = position;
+        while (start > 0 && ".!?".indexOf(source.charAt(start - 1)) < 0) {
+            start--;
+        }
+        int end = position + quote.length();
+        while (end < source.length() && ".!?".indexOf(source.charAt(end)) < 0) {
+            end++;
+        }
+        return normalize(source.substring(start, end));
+    }
+
+    private static String optionalBounded(JsonNode node, String key, int max, int index) {
+        JsonNode value = node.get(key);
+        if (value == null || !value.isString() || value.asText().length() > max) {
+            throw new ExtractionValidationException(index, "INVALID_SKILL_EVIDENCE");
+        }
+        return value.asText();
     }
 
     private static ExtractionOutputDTO markConflicts(List<ExtractionClaimDTO> claims) {
@@ -98,12 +187,12 @@ public class ExtractionOutputValidator {
         }
         return new ExtractionOutputDTO(claims.stream().map(claim -> conflicts.contains(claim.fact())
                 ? new ExtractionClaimDTO(claim.fact(), claim.value(), claim.sourceField(), claim.quote(),
-                "CONFLICTING") : claim).toList());
+                "CONFLICTING", claim.skillEvidence()) : claim).toList());
     }
 
     private static boolean differentSingleValuedFacts(ExtractionClaimDTO first, ExtractionClaimDTO second) {
         return first.fact().equals(second.fact()) && !first.value().equalsIgnoreCase(second.value())
-                && !first.fact().endsWith("SKILL");
+                && !"SKILL".equals(first.fact());
     }
 
     private static boolean contradictoryCountryClaims(ExtractionClaimDTO first, ExtractionClaimDTO second) {

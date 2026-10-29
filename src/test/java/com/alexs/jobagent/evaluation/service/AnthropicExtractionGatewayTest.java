@@ -31,12 +31,12 @@ class AnthropicExtractionGatewayTest {
     void successfulStructuredResponseUsesPinnedSchemaAndBoundedUsage() throws Exception {
         AtomicInteger requests = new AtomicInteger();
         try (LocalServer server = new LocalServer(200, """
-                {"stop_reason":"end_turn","content":[{"type":"text","text":"{\\"claims\\":[]}"}],
+                {"stop_reason":"end_turn","content":[{"type":"text","text":"{\\"truncated\\":false,\\"claims\\":[]}"}],
                 "usage":{"input_tokens":100,"output_tokens":20}}
                 """, requests)) {
             var response = gateway(server).extract(input, ExtractionPolicy.PRIMARY_MODEL, "synthetic-key");
             assertEquals(100, response.inputTokens());
-            assertEquals("{\"claims\":[]}", response.content());
+            assertEquals("{\"truncated\":false,\"claims\":[]}", response.content());
             assertEquals(1, requests.get());
             JsonNode request = json.readTree(server.requestBody());
             assertEquals(ExtractionPolicy.PRIMARY_MODEL, request.path("model").asText());
@@ -45,12 +45,25 @@ class AnthropicExtractionGatewayTest {
             assertTrue(request.path("system").asText().contains("annual gross means YEAR"));
             JsonNode alternatives = request.path("output_config").path("format").path("schema")
                     .path("properties").path("claims").path("items").path("anyOf");
-            assertEquals(3, alternatives.size());
+            assertEquals(4, alternatives.size());
             assertEquals("SALARY_PERIOD", alternatives.get(1).path("properties").path("fact")
                     .path("enum").get(0).asText());
             assertEquals("YEAR", alternatives.get(1).path("properties").path("value")
                     .path("enum").get(0).asText());
+            assertEquals("SKILL", alternatives.get(3).path("properties").path("fact")
+                    .path("enum").get(0).asText());
+            assertTrue(request.path("system").asText().contains("We'd love to see is ambiguous"));
         }
+    }
+
+    @Test
+    void syntheticLongDescriptionStillFitsUnchangedRequestBound() {
+        ExtractionInputDTO longInput = new ExtractionInputDTO(1, 2, "a".repeat(64),
+                Map.of("title", "Senior Backend Engineer", "description",
+                        "&lt;p&gt;Java or Golang. &lt;/p&gt;".repeat(180)));
+        AnthropicExtractionGateway gateway = new AnthropicExtractionGateway(json);
+        assertTrue(gateway.requestBody(longInput, ExtractionPolicy.PRIMARY_MODEL).length
+                <= ExtractionPolicy.MAX_REQUEST_BYTES);
     }
 
     @Test
@@ -102,7 +115,7 @@ class AnthropicExtractionGatewayTest {
     @Test
     void cacheUsageIsReturnedForConservativeAccounting() throws Exception {
         try (LocalServer server = new LocalServer(200, """
-                {"stop_reason":"end_turn","content":[{"type":"text","text":"{\\"claims\\":[]}"}],
+                {"stop_reason":"end_turn","content":[{"type":"text","text":"{\\"truncated\\":false,\\"claims\\":[]}"}],
                 "usage":{"input_tokens":100,"cache_creation_input_tokens":20,
                 "cache_read_input_tokens":30,"output_tokens":40}}
                 """, new AtomicInteger())) {
