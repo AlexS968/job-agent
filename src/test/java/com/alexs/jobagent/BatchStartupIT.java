@@ -31,7 +31,7 @@ class BatchStartupIT {
                  var statement = connection.createStatement();
                  var rows = statement.executeQuery("SELECT COUNT(*) FROM flyway_schema_history WHERE success")) {
                 assertTrue(rows.next());
-                assertEquals(9, rows.getInt(1));
+                assertEquals(10, rows.getInt(1));
             }
         }
     }
@@ -59,6 +59,32 @@ class BatchStartupIT {
                     postgres.getUsername(), PASSWORD);
                  var statement = connection.createStatement();
                  var rows = statement.executeQuery("SELECT reserved_attempts FROM search_pilot_budget")) {
+                assertTrue(rows.next());
+                assertEquals(0, rows.getInt(1));
+            }
+        }
+    }
+
+    @Test
+    void extractionStatusIsOfflineAndLiveModeFailsClosedBeforeReservation() throws Exception {
+        try (PostgreSQLContainer postgres = new PostgreSQLContainer("postgres:17.11-alpine")
+                .withDatabaseName("job_agent_extraction_batch_test").withUsername("test_user")
+                .withPassword(PASSWORD)) {
+            postgres.start();
+            Result status = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
+                    "--mode=extract-status");
+            assertEquals(0, status.exitCode(), status.output());
+            assertTrue(status.output().contains("Extraction pilot: accounted_micro_usd=0, "
+                    + "observed_micro_usd=0, active_work=null, halted_reason=null, attempts=0"));
+            Result live = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
+                    "--mode=extract-primary", "--vacancy-id=1", "--live-confirm=no",
+                    "--pricing-reviewed-on=2026-10-28");
+            assertNotEquals(0, live.exitCode());
+            assertFalse(live.output().contains(PASSWORD));
+            try (var connection = java.sql.DriverManager.getConnection(postgres.getJdbcUrl(),
+                    postgres.getUsername(), PASSWORD);
+                 var statement = connection.createStatement();
+                 var rows = statement.executeQuery("SELECT attempts FROM extraction_pilot_budget WHERE id = 1")) {
                 assertTrue(rows.next());
                 assertEquals(0, rows.getInt(1));
             }
