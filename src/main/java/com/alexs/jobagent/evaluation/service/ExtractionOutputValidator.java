@@ -69,6 +69,7 @@ public class ExtractionOutputValidator {
         if (!normalize(input.sourceFields().get(field)).contains(normalize(quote))) {
             throw new ExtractionValidationException(index, "QUOTE_NOT_IN_SOURCE_FIELD");
         }
+        value = canonicalValue(fact, value, quote);
         if (!validValue(fact, value)) {
             throw new ExtractionValidationException(index, "INVALID_FACT_VALUE");
         }
@@ -159,5 +160,13 @@ public class ExtractionOutputValidator {
             case "SALARY_PERIOD" -> Set.of("YEAR", "MONTH", "DAY", "HOUR").contains(value);
             default -> true;
         };
+    }
+
+    private static String canonicalValue(String fact, String value, String quote) {
+        if ("SALARY_PERIOD".equals(fact) && "annual gross".equals(normalize(value))
+                && normalize(quote).contains("annual gross")) {
+            return "YEAR";
+        }
+        return value;
     }
 }

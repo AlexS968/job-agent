@@ -6,9 +6,9 @@ public final class ExtractionPolicy {
     public static final String PROVIDER = "ANTHROPIC";
     public static final String PRIMARY_MODEL = "claude-haiku-5-5";
     public static final String COMPARISON_MODEL = "claude-sonnet-5-5";
-    public static final String PROMPT_VERSION = "evidence-v1";
-    public static final String SCHEMA_VERSION = "schema-v1";
-    public static final String POLICY_VERSION = "pilot-v1";
+    public static final String PROMPT_VERSION = "evidence-v2";
+    public static final String SCHEMA_VERSION = "schema-v2";
+    public static final String POLICY_VERSION = "pilot-v2";
     public static final LocalDate PRICE_REVIEW_DATE = LocalDate.of(2026, 10, 29);
     public static final int MAX_REQUEST_BYTES = 12_000;
     public static final int MAX_OUTPUT_TOKENS = 2_048;
