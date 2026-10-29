@@ -57,7 +57,7 @@ class AnthropicExtractionGatewayTest {
     }
 
     @Test
-    void syntheticLongDescriptionStillFitsUnchangedRequestBound() {
+    void syntheticLongDescriptionFitsRequestBound() {
         ExtractionInputDTO longInput = new ExtractionInputDTO(1, 2, "a".repeat(64),
                 Map.of("title", "Senior Backend Engineer", "description",
                         "&lt;p&gt;Java or Golang. &lt;/p&gt;".repeat(180)));
@@ -100,7 +100,7 @@ class AnthropicExtractionGatewayTest {
         try (LocalServer server = new LocalServer(200, "x".repeat(100_001), requests)) {
             var gateway = gateway(server);
             var oversized = new ExtractionInputDTO(1, 2, "a".repeat(64),
-                    Map.of("description", "x".repeat(12_000)));
+                    Map.of("description", "x".repeat(ExtractionPolicy.MAX_REQUEST_BYTES)));
             assertEquals("INVALID", assertThrows(ExtractionFailureException.class,
                     () -> gateway.extract(oversized, ExtractionPolicy.PRIMARY_MODEL, "synthetic-key"))
                     .outcome());
