@@ -8,7 +8,7 @@ public final class ExtractionPolicy {
     public static final String COMPARISON_MODEL = "claude-sonnet-5-5";
     public static final String PROMPT_VERSION = "evidence-v3";
     public static final String SCHEMA_VERSION = "schema-v3";
-    public static final String POLICY_VERSION = "pilot-v3";
+    public static final String POLICY_VERSION = "pilot-v4";
     public static final LocalDate PRICE_REVIEW_DATE = LocalDate.of(2026, 10, 29);
     public static final int MAX_REQUEST_BYTES = 12_000;
     public static final int MAX_OUTPUT_TOKENS = 2_048;

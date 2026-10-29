@@ -322,6 +322,78 @@ class ExtractionOutputValidatorTest {
                 .category());
     }
 
+    @Test
+    void longHtmlSectionRemainsTraceableButParaphrasedSkillValueIsRejected() {
+        String heading = "&lt;h4&gt;We&#39;d love to see&lt;/h4&gt;";
+        String filler = "&lt;li&gt;Experience with distributed systems.&lt;/li&gt;".repeat(30);
+        String sentence = "The ability to drive cross-functional initiatives while balancing priorities.";
+        ExtractionInputDTO source = skillInput(heading + filler + "&lt;li&gt;" + sentence + "&lt;/li&gt;");
+        String exact = skill("drive cross-functional initiatives", sentence, "COMPETENCY", "UNKNOWN",
+                "We&#39;d love to see", "We&#39;d love to see");
+        assertEquals(1, validator.validate("{\"claims\":[" + exact + "],\"truncated\":false}", source)
+                .claims().size());
+        String paraphrased = skill("driving cross-functional initiatives", sentence, "COMPETENCY", "UNKNOWN",
+                "We&#39;d love to see", "We&#39;d love to see");
+        assertEquals("SKILL_VALUE_NOT_IN_QUOTE", assertThrows(ExtractionValidationException.class,
+                () -> validator.validate("{\"claims\":[" + paraphrased + "],\"truncated\":false}", source))
+                .category());
+        ExtractionInputDTO changedSection = skillInput(heading + filler + "&lt;h4&gt;Other&lt;/h4&gt;"
+                + "&lt;li&gt;" + sentence + "&lt;/li&gt;");
+        assertEquals("SKILL_SECTION_NOT_SUPPORTED", assertThrows(ExtractionValidationException.class,
+                () -> validator.validate("{\"claims\":[" + exact + "],\"truncated\":false}", changedSection))
+                .category());
+    }
+
+    @Test
+    void rawHtmlHeadingWithAttributesSupportsLongSectionUntilNextHeading() {
+        String section = "<h4 class=\"requirements\">Nice to see</h4>";
+        String skillText = "Java or Golang";
+        String claim = skill(skillText, skillText, "TECHNOLOGY", "UNKNOWN", "Nice to see", "");
+        ExtractionInputDTO sameSection = skillInput(section + "<li>" + "experience ".repeat(130)
+                + "</li><li>" + skillText + "</li>");
+        assertEquals(1, validator.validate("{\"truncated\":false,\"claims\":[" + claim + "]}",
+                sameSection).claims().size());
+        ExtractionInputDTO interrupted = skillInput(section + "<li>" + "experience ".repeat(130)
+                + "</li><h4>Other</h4><li>" + skillText + "</li>");
+        assertEquals("SKILL_SECTION_NOT_SUPPORTED", assertThrows(ExtractionValidationException.class,
+                () -> validator.validate("{\"truncated\":false,\"claims\":[" + claim + "]}",
+                        interrupted)).category());
+    }
+
+    @Test
+    void headingScannerSkipsUnrelatedAndHeadingLikeTags() {
+        String sourceText = "&lt;hr&gt;<hr><h3>Earlier section</h3><h4>Relevant section</h4>"
+                + "<li>" + "experience ".repeat(130) + "</li><li>Java or Golang</li>";
+        ExtractionInputDTO source = skillInput(sourceText);
+        String claim = skill("Java or Golang", "Java or Golang", "TECHNOLOGY", "UNKNOWN",
+                "Relevant section", "");
+        assertEquals(1, validator.validate("{\"truncated\":false,\"claims\":[" + claim + "]}", source)
+                .claims().size());
+    }
+
+    @Test
+    void unstructuredSectionKeepsExactDistanceBoundAndRejectsUnsupportedReferences() {
+        String heading = "Qualifications.";
+        String claim = skill("Java", "Java", "TECHNOLOGY", "UNKNOWN", "Qualifications", "");
+        String output = "{\"truncated\":false,\"claims\":[" + claim + "]}";
+        ExtractionInputDTO atBoundary = skillInput(heading + "x".repeat(1_200 - heading.length()) + "Java");
+        assertEquals(1, validator.validate(output, atBoundary).claims().size());
+        ExtractionInputDTO beyondBoundary = skillInput(heading + "x".repeat(1_201 - heading.length()) + "Java");
+        assertEquals("SKILL_SECTION_NOT_SUPPORTED", assertThrows(ExtractionValidationException.class,
+                () -> validator.validate(output, beyondBoundary)).category());
+        String absentSection = skill("Java", "Java", "TECHNOLOGY", "UNKNOWN", "Mandatory", "");
+        assertEquals("SKILL_SECTION_NOT_SUPPORTED", assertThrows(ExtractionValidationException.class,
+                () -> validator.validate("{\"truncated\":false,\"claims\":[" + absentSection + "]}",
+                        atBoundary)).category());
+        ExtractionInputDTO malformedHeading = skillInput("<h4>Qualifications" + "x".repeat(1_201) + "Java");
+        assertEquals("SKILL_SECTION_NOT_SUPPORTED", assertThrows(ExtractionValidationException.class,
+                () -> validator.validate(output, malformedHeading)).category());
+        ExtractionInputDTO malformedOpening = skillInput("<h4 Qualifications" + "x".repeat(1_201)
+                + "Java");
+        assertEquals("SKILL_SECTION_NOT_SUPPORTED", assertThrows(ExtractionValidationException.class,
+                () -> validator.validate(output, malformedOpening)).category());
+    }
+
     private static ExtractionInputDTO skillInput(String description) {
         return new ExtractionInputDTO(1, 2, "a".repeat(64), Map.of("description", description));
     }
