@@ -11,7 +11,6 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.springframework.stereotype.Service;
 import tools.jackson.databind.JsonNode;
@@ -26,8 +25,6 @@ public class ExtractionOutputValidator {
             "ARRANGEMENT", COUNTRY_PERMISSION, COUNTRY_RESTRICTION,
             "SALARY_MIN", "SALARY_MAX", "SALARY_CURRENCY", "SALARY_PERIOD");
     private static final Set<String> UNCERTAINTIES = Set.of("STATED", "UNCERTAIN", "CONFLICTING");
-    private static final Pattern HEADING = Pattern.compile(
-            "(?s)(?:&lt;|<)h[1-6][^>]*?(?:&gt;|>)(.*?)(?:&lt;|<)/h[1-6](?:&gt;|>)");
     private final JsonMapper json;
 
     public ExtractionOutputValidator(JsonMapper json) {
@@ -105,22 +102,7 @@ public class ExtractionOutputValidator {
                 || !Set.of("REQUIRED", "PREFERRED", "UNKNOWN").contains(strength)) {
             throw new ExtractionValidationException(index, "INVALID_SKILL_EVIDENCE");
         }
-        String normalizedSource = normalize(source);
-        String normalizedQuote = normalize(quote);
-        String normalizedSection = normalize(section);
-        int claimPosition = normalizedSource.indexOf(normalizedQuote);
-        if (!section.isEmpty()) {
-            if (!source.contains(section)) {
-                throw new ExtractionValidationException(index, "SKILL_SECTION_NOT_SUPPORTED");
-            }
-            int sectionPosition = normalizedSource.lastIndexOf(normalizedSection, claimPosition);
-            if (sectionPosition < 0 || (claimPosition - sectionPosition > 1_200
-                    && !withinHeading(normalizedSource, sectionPosition, normalizedSection.length(), claimPosition))
-                    || normalizedSource.substring(sectionPosition + normalizedSection.length(), claimPosition)
-                    .matches("(?s).*(&lt;h[1-6]|<h[1-6]).*")) {
-                throw new ExtractionValidationException(index, "SKILL_SECTION_NOT_SUPPORTED");
-            }
-        }
+        validateSectionContext(source, quote, section, index);
         if (!strengthQuote.isEmpty() && !source.contains(strengthQuote)) {
             throw new ExtractionValidationException(index, "SKILL_STRENGTH_QUOTE_NOT_SUPPORTED");
         }
@@ -131,15 +113,70 @@ public class ExtractionOutputValidator {
         return new SkillEvidenceDTO(kind, strength, section, strengthQuote);
     }
 
+    private static void validateSectionContext(String source, String quote, String section, int index) {
+        if (section.isEmpty()) {
+            return;
+        }
+        String normalizedSource = normalize(source);
+        String normalizedSection = normalize(section);
+        int claimPosition = normalizedSource.indexOf(normalize(quote));
+        int sectionPosition = normalizedSource.lastIndexOf(normalizedSection, claimPosition);
+        if (!source.contains(section) || sectionPosition < 0
+                || hasHeadingBetween(normalizedSource, sectionPosition + normalizedSection.length(), claimPosition)
+                || (claimPosition - sectionPosition > 1_200
+                && !withinHeading(normalizedSource, sectionPosition, normalizedSection.length(), claimPosition))) {
+            throw new ExtractionValidationException(index, "SKILL_SECTION_NOT_SUPPORTED");
+        }
+    }
+
     private static boolean withinHeading(String source, int sectionPosition, int sectionLength, int claimPosition) {
-        Matcher matcher = HEADING.matcher(source);
-        while (matcher.find()) {
-            if (sectionPosition >= matcher.start(1) && sectionPosition + sectionLength <= matcher.end(1)
-                    && matcher.end() <= claimPosition) {
+        for (int from = 0; from < claimPosition;) {
+            int start = nextHeadingStart(source, from);
+            if (start < 0) {
+                return false;
+            }
+            boolean escaped = source.startsWith("&lt;", start);
+            int levelAt = start + (escaped ? 5 : 2);
+            char level = source.charAt(levelAt);
+            String endMarker = escaped ? "&gt;" : ">";
+            int contentStart = source.indexOf(endMarker, levelAt + 1);
+            if (contentStart < 0) {
+                return false;
+            }
+            contentStart += endMarker.length();
+            String closeTag = escaped ? "&lt;/h" + level + "&gt;" : "</h" + level + ">";
+            int contentEnd = source.indexOf(closeTag, contentStart);
+            if (contentEnd < 0) {
+                return false;
+            }
+            if (sectionPosition >= contentStart && sectionPosition + sectionLength <= contentEnd
+                    && contentEnd + closeTag.length() <= claimPosition) {
                 return true;
             }
+            from = contentEnd + closeTag.length();
         }
         return false;
+    }
+
+    private static boolean hasHeadingBetween(String source, int sectionEnd, int claimPosition) {
+        int next = nextHeadingStart(source, sectionEnd);
+        return next >= 0 && next < claimPosition;
+    }
+
+    private static int nextHeadingStart(String source, int from) {
+        int escaped = source.indexOf("&lt;h", from);
+        int raw = source.indexOf("<h", from);
+        int candidate = escaped < 0 ? raw : raw < 0 ? escaped : Math.min(escaped, raw);
+        while (candidate >= 0) {
+            int levelAt = candidate + (source.startsWith("&lt;", candidate) ? 5 : 2);
+            if (levelAt < source.length() && source.charAt(levelAt) >= '1' && source.charAt(levelAt) <= '6') {
+                return candidate;
+            }
+            escaped = source.indexOf("&lt;h", candidate + 2);
+            raw = source.indexOf("<h", candidate + 2);
+            candidate = escaped < 0 ? raw : raw < 0 ? escaped : Math.min(escaped, raw);
+        }
+        return -1;
     }
 
     private static boolean explicitStrength(String strength, String evidence, String source,
