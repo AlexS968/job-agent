@@ -18,6 +18,8 @@ import com.alexs.jobagent.outbox.service.OutboxService;
 import com.alexs.jobagent.evaluation.service.EvaluationService;
 import com.alexs.jobagent.evaluation.service.ProfileFileService;
 import com.alexs.jobagent.evaluation.service.RuleEvaluationPolicy;
+import com.alexs.jobagent.evaluation.service.ExtractionPilotService;
+import com.alexs.jobagent.evaluation.service.ExtractionPolicy;
 import com.alexs.jobagent.evaluation.dto.VacancyEvaluationDTO;
 import java.io.IOException;
 import java.io.InputStream;
@@ -41,6 +43,8 @@ public class JobAgentApplication {
     private static final Logger LOGGER = LoggerFactory.getLogger(JobAgentApplication.class);
     private static final String PROFILE_FILE_OPTION = "--profile-file=";
     private static final String LIMIT_OPTION = "--limit=";
+    private static final String VACANCY_ID_OPTION = "--vacancy-id=";
+    private static final String COMPARISON_OPTION = "--comparison=";
 
     public static void main(String[] args) {
         try (ConfigurableApplicationContext context = SpringApplication.run(JobAgentApplication.class, args)) {
@@ -61,13 +65,14 @@ public class JobAgentApplication {
                                      @Value("${LEVER_SITES:}") String leverSites,
                                      SearchPilotService searchPilot,
                                      SourceVerificationService verifier, SourceRegistryService registry,
-                                     ProfileFileService profiles, EvaluationService evaluations) {
+                                     ProfileFileService profiles, EvaluationService evaluations,
+                                     ExtractionPilotService extraction) {
         return args -> {
             flyway.validate();
             Integer count = jdbc.queryForObject("SELECT COUNT(*) FROM agent_runs", Integer.class);
             LOGGER.info("Database ready; agent_runs rows: {}", count);
             executeMode(args, ingestion, json, dispatcher, outbox, greenhouse, boards, lever, leverSites,
-                    searchPilot, verifier, registry, profiles, evaluations);
+                    searchPilot, verifier, registry, profiles, evaluations, extraction);
         };
     }
 
@@ -76,7 +81,8 @@ public class JobAgentApplication {
                              GreenhouseBatchService greenhouse, String boards,
                              LeverBatchService lever, String leverSites, SearchPilotService searchPilot,
                              SourceVerificationService verifier, SourceRegistryService registry,
-                             ProfileFileService profiles, EvaluationService evaluations) throws IOException {
+                             ProfileFileService profiles, EvaluationService evaluations,
+                             ExtractionPilotService extraction) throws IOException {
         String[] modes = Arrays.stream(args).filter(arg -> arg.startsWith("--mode=")).toArray(String[]::new);
         if (modes.length == 0) {
             return;
@@ -98,8 +104,89 @@ public class JobAgentApplication {
             case "--mode=import-active-sources" -> runImportActiveSources(args, registry);
             case "--mode=evaluate-rules" -> runEvaluateRules(args, profiles, evaluations);
             case "--mode=shortlist" -> runShortlist(args, profiles, evaluations);
+            case "--mode=extract-plan" -> runExtractionPlan(args, extraction);
+            case "--mode=extract-status" -> runExtractionStatus(args, extraction);
+            case "--mode=extract-recover" -> runExtractionRecovery(args, extraction);
+            case "--mode=extract-primary" -> runExtraction(args, extraction, false);
+            case "--mode=extract-compare" -> runExtraction(args, extraction, true);
             default -> throw new IllegalArgumentException("Unsupported batch mode");
         }
+    }
+
+    private void runExtractionPlan(String[] args, ExtractionPilotService extraction) {
+        requireOnlyOptions(args, "--mode=extract-plan", VACANCY_ID_OPTION, COMPARISON_OPTION);
+        long id = Long.parseLong(option(args, VACANCY_ID_OPTION));
+        boolean comparison = comparisonOption(args);
+        if (args.length != 3) {
+            throw new IllegalArgumentException("Invalid extraction planning arguments");
+        }
+        var input = extraction.plan(id, comparison);
+        LOGGER.info("Extraction plan: vacancy={}, source={}, revision={}, model={}, fields={}", id,
+                input.sourceItemId(), input.revision(), comparison ? ExtractionPolicy.COMPARISON_MODEL
+                        : ExtractionPolicy.PRIMARY_MODEL, input.sourceFields().keySet());
+    }
+
+    private void runExtractionStatus(String[] args, ExtractionPilotService extraction) {
+        if (args.length != 1 && args.length != 3) {
+            throw new IllegalArgumentException("Invalid extraction status arguments");
+        }
+        requireOnlyOptions(args, "--mode=extract-status", VACANCY_ID_OPTION, COMPARISON_OPTION);
+        var budget = extraction.budget();
+        LOGGER.info("Extraction pilot: accounted_micro_usd={}, observed_micro_usd={}, active_work={}, "
+                + "halted_reason={}, attempts={}, primary_distinct={}, comparison_distinct={}, "
+                + "claimed={}, succeeded={}, failed={}, uncertain={}, expired_claims={}",
+                budget.reservedMicroUsd(), budget.observedMicroUsd(), budget.activeWorkId(),
+                budget.haltedReason(), budget.attempts(), budget.primaryDistinct(),
+                budget.comparisonDistinct(), budget.claimed(), budget.succeeded(), budget.failed(),
+                budget.uncertain(), budget.expiredClaims());
+        if (args.length == 3) {
+            long id = Long.parseLong(option(args, VACANCY_ID_OPTION));
+            boolean comparison = comparisonOption(args);
+            var work = extraction.current(id, comparison);
+            if (work == null) {
+                LOGGER.info("Extraction work: vacancy={}, status=NOT_FOUND", id);
+            } else {
+                LOGGER.info("Extraction work: vacancy={}, work={}, status={}, source={}, revision={}, claims={}",
+                        id, work.workId(), work.status(), work.sourceItemId(), work.revision(),
+                        work.output() == null ? 0 : work.output().claims().size());
+            }
+        }
+    }
+
+    private void runExtractionRecovery(String[] args, ExtractionPilotService extraction) {
+        requireOnlyOptions(args, "--mode=extract-recover", "--work-id=", "--confirm-no-inflight=",
+                "--billing-reviewed=");
+        if (args.length != 4) {
+            throw new IllegalArgumentException("Invalid extraction recovery arguments");
+        }
+        long workId = Long.parseLong(option(args, "--work-id="));
+        extraction.recoverGlobalClaim(workId, "yes".equals(option(args, "--confirm-no-inflight=")),
+                "yes".equals(option(args, "--billing-reviewed=")));
+        LOGGER.info("Extraction global claim recovered for work={}; reservation retained", workId);
+    }
+
+    private void runExtraction(String[] args, ExtractionPilotService extraction, boolean comparison) {
+        String mode = comparison ? "--mode=extract-compare" : "--mode=extract-primary";
+        requireOnlyOptions(args, mode, VACANCY_ID_OPTION, "--live-confirm=", "--pricing-reviewed-on=",
+                "--replay-uncertain=");
+        if (args.length < 4 || args.length > 5) {
+            throw new IllegalArgumentException("Invalid live extraction arguments");
+        }
+        boolean live = "yes".equals(option(args, "--live-confirm="));
+        boolean replay = Arrays.stream(args).anyMatch("--replay-uncertain=yes"::equals);
+        var result = extraction.extract(Long.parseLong(option(args, VACANCY_ID_OPTION)), comparison,
+                replay, live, option(args, "--pricing-reviewed-on="));
+        LOGGER.info("Extraction: work={}, status={}, model={}, source={}, revision={}, reused={}, claims={}",
+                result.workId(), result.status(), result.model(), result.sourceItemId(), result.revision(),
+                result.reused(), result.output().claims().size());
+    }
+
+    private boolean comparisonOption(String[] args) {
+        String value = option(args, COMPARISON_OPTION);
+        if (!"true".equals(value) && !"false".equals(value)) {
+            throw new IllegalArgumentException("Comparison option must be true or false");
+        }
+        return Boolean.parseBoolean(value);
     }
 
     private void runVerifySource(String[] args, SourceVerificationService verifier) {

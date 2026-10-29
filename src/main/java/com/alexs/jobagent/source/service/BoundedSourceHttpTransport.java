@@ -1,13 +1,11 @@
 package com.alexs.jobagent.source.service;
 
+import com.alexs.jobagent.http.BoundedBodySubscriber;
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.net.http.HttpResponse.BodySubscriber;
-import java.io.ByteArrayOutputStream;
-import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
@@ -15,9 +13,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Flow;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import org.springframework.stereotype.Component;
@@ -52,7 +48,8 @@ public class BoundedSourceHttpTransport {
     }
 
     private Response send(HttpRequest request) throws IOException {
-        CompletableFuture<HttpResponse<byte[]>> call = sender.send(request, info -> new LimitedBodySubscriber());
+        CompletableFuture<HttpResponse<byte[]>> call = sender.send(request,
+                info -> new BoundedBodySubscriber(MAX_BYTES, ResponseTooLargeException::new));
         try {
             HttpResponse<byte[]> response = call.get(completionTimeout.toMillis(), TimeUnit.MILLISECONDS);
             return new Response(response.statusCode(), response.body(), response.headers().map());
@@ -123,45 +120,4 @@ public class BoundedSourceHttpTransport {
         CompletableFuture<HttpResponse<byte[]>> send(HttpRequest request, HttpResponse.BodyHandler<byte[]> handler);
     }
 
-    private static final class LimitedBodySubscriber implements BodySubscriber<byte[]> {
-        private final CompletableFuture<byte[]> body = new CompletableFuture<>();
-        private final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-        private Flow.Subscription subscription;
-
-        @Override
-        public CompletionStage<byte[]> getBody() {
-            return body;
-        }
-
-        @Override
-        public void onSubscribe(Flow.Subscription subscription) {
-            this.subscription = subscription;
-            subscription.request(1);
-        }
-
-        @Override
-        public void onNext(List<ByteBuffer> buffers) {
-            for (ByteBuffer buffer : buffers) {
-                if (buffer.remaining() > MAX_BYTES - bytes.size()) {
-                    subscription.cancel();
-                    body.completeExceptionally(new ResponseTooLargeException());
-                    return;
-                }
-                byte[] chunk = new byte[buffer.remaining()];
-                buffer.get(chunk);
-                bytes.writeBytes(chunk);
-            }
-            subscription.request(1);
-        }
-
-        @Override
-        public void onError(Throwable error) {
-            body.completeExceptionally(error);
-        }
-
-        @Override
-        public void onComplete() {
-            body.complete(bytes.toByteArray());
-        }
-    }
 }
