@@ -146,6 +146,42 @@ class ExtractionPilotIT {
     }
 
     @Test
+    void largerRequestEstimateStillCannotExceedSharedPilotTarget() {
+        long vacancy = insert();
+        when(gateway.requestBody(any(), eq(ExtractionPolicy.PRIMARY_MODEL))).thenReturn(new byte[20_000]);
+        long estimate = ExtractionPolicy.cost(ExtractionPolicy.PRIMARY_MODEL, 20_000 * 2 + 8_192,
+                ExtractionPolicy.MAX_OUTPUT_TOKENS);
+        jdbc.update("UPDATE extraction_pilot_budget SET reserved_micro_usd = ? WHERE id = 1",
+                ExtractionPolicy.TARGET_MICRO_USD - estimate + 1);
+        ExtractionPilotService estimated = new ExtractionPilotService(inputs, validator, gateway, repository,
+                json, manager, Clock.fixed(Instant.parse("2026-10-29T12:00:00Z"), ZoneOffset.UTC),
+                () -> "synthetic-key", new ConservativeExtractionCostEstimator(gateway),
+                new ExtractionCancellationGuard());
+        assertThrows(IllegalStateException.class,
+                () -> estimated.extract(vacancy, false, false, true, "2026-10-29"));
+        assertEquals(0, repository.budget().attempts());
+        assertEquals(ExtractionPolicy.TARGET_MICRO_USD - estimate + 1,
+                repository.budget().reservedMicroUsd());
+        verify(gateway, never()).extract(any(), anyString(), anyString());
+    }
+
+    @Test
+    void oversizedCompleteRequestCannotCreateWorkOrSpendBudget() {
+        long vacancy = insert();
+        when(gateway.requestBody(any(), eq(ExtractionPolicy.PRIMARY_MODEL)))
+                .thenReturn(new byte[ExtractionPolicy.MAX_REQUEST_BYTES + 1]);
+        ExtractionPilotService estimated = new ExtractionPilotService(inputs, validator, gateway, repository,
+                json, manager, Clock.fixed(Instant.parse("2026-10-29T12:00:00Z"), ZoneOffset.UTC),
+                () -> "synthetic-key", new ConservativeExtractionCostEstimator(gateway),
+                new ExtractionCancellationGuard());
+        assertThrows(IllegalArgumentException.class,
+                () -> estimated.extract(vacancy, false, false, true, "2026-10-29"));
+        assertEquals(0, repository.budget().attempts());
+        assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM extraction_work", Integer.class));
+        verify(gateway, never()).extract(any(), anyString(), anyString());
+    }
+
+    @Test
     void planningKeepsSelectedSalaryEvidenceAndRejectsMissingVacancy() {
         long vacancy = insert();
         jdbc.update("UPDATE source_items SET raw_payload = CAST(? AS jsonb)",
