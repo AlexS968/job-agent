@@ -9,6 +9,7 @@ import com.alexs.jobagent.evaluation.dto.ExtractionCompletionDTO;
 import com.alexs.jobagent.evaluation.dto.ExtractionUsageDTO;
 import com.alexs.jobagent.evaluation.dto.ExtractionWorkIdentityDTO;
 import com.alexs.jobagent.evaluation.exception.ExtractionFailureException;
+import com.alexs.jobagent.evaluation.exception.ExtractionValidationException;
 import com.alexs.jobagent.evaluation.repository.ExtractionRepository;
 import com.alexs.jobagent.evaluation.service.AnthropicExtractionGateway;
 import com.alexs.jobagent.evaluation.service.ExtractionInputService;
@@ -86,7 +87,7 @@ class ExtractionPilotIT {
         gateway = mock(AnthropicExtractionGateway.class);
         when(gateway.requestBody(any(), anyString())).thenReturn(new byte[100]);
         service = new ExtractionPilotService(inputs, validator, gateway, repository, json, manager,
-                Clock.fixed(Instant.parse("2026-10-28T12:00:00Z"), ZoneOffset.UTC), () -> "synthetic-key",
+                Clock.fixed(Instant.parse("2026-10-29T12:00:00Z"), ZoneOffset.UTC), () -> "synthetic-key",
                 syntheticEstimator, new ExtractionCancellationGuard());
     }
 
@@ -115,12 +116,12 @@ class ExtractionPilotIT {
     void estimatedProductionCostIncludesCompleteRequestAndMargin() {
         long vacancy = insert();
         ExtractionPilotService estimated = new ExtractionPilotService(inputs, validator, gateway, repository,
-                json, manager, Clock.fixed(Instant.parse("2026-10-28T12:00:00Z"), ZoneOffset.UTC),
+                json, manager, Clock.fixed(Instant.parse("2026-10-29T12:00:00Z"), ZoneOffset.UTC),
                 () -> "synthetic-key", new ConservativeExtractionCostEstimator(gateway),
                 new ExtractionCancellationGuard());
         when(gateway.extract(any(), anyString(), anyString()))
                 .thenReturn(new ExtractionGatewayResponseDTO(RESPONSE, 100, 50, "req-one"));
-        estimated.extract(vacancy, false, false, true, "2026-10-28");
+        estimated.extract(vacancy, false, false, true, "2026-10-29");
         assertEquals(ExtractionPolicy.cost(ExtractionPolicy.PRIMARY_MODEL, 8_392,
                 ExtractionPolicy.MAX_OUTPUT_TOKENS), jdbc.queryForObject(
                 "SELECT reserved_micro_usd FROM extraction_attempts", Long.class));
@@ -175,11 +176,11 @@ class ExtractionPilotIT {
             }
         };
         ExtractionPilotService cancelled = new ExtractionPilotService(inputs, validator, gateway, repository,
-                json, manager, Clock.fixed(Instant.parse("2026-10-28T12:00:00Z"), ZoneOffset.UTC),
+                json, manager, Clock.fixed(Instant.parse("2026-10-29T12:00:00Z"), ZoneOffset.UTC),
                 () -> "synthetic-key", syntheticEstimator, guard);
         try {
             ExtractionFailureException failure = assertThrows(ExtractionFailureException.class,
-                    () -> cancelled.extract(vacancy, false, false, true, "2026-10-28"));
+                    () -> cancelled.extract(vacancy, false, false, true, "2026-10-29"));
             assertEquals("CANCELLED", failure.outcome());
             assertTrue(Thread.currentThread().isInterrupted());
         } finally {
@@ -299,13 +300,13 @@ class ExtractionPilotIT {
             assertThrows(ExtractionFailureException.class, () -> run(vacancy, false, replay));
         }
         ExtractionPilotService restarted = new ExtractionPilotService(inputs, validator, gateway, repository,
-                json, manager, Clock.fixed(Instant.parse("2026-10-28T12:00:00Z"), ZoneOffset.UTC),
+                json, manager, Clock.fixed(Instant.parse("2026-10-29T12:00:00Z"), ZoneOffset.UTC),
                 () -> "synthetic-key", syntheticEstimator, new ExtractionCancellationGuard());
         assertEquals(3, restarted.budget().attempts());
         assertEquals(3 * syntheticReservation(ExtractionPolicy.PRIMARY_MODEL),
                 restarted.budget().reservedMicroUsd());
         assertThrows(IllegalStateException.class,
-                () -> restarted.extract(vacancy, false, true, true, "2026-10-28"));
+                () -> restarted.extract(vacancy, false, true, true, "2026-10-29"));
         verify(gateway, times(3)).extract(any(), anyString(), anyString());
     }
 
@@ -355,7 +356,7 @@ class ExtractionPilotIT {
             AnthropicExtractionGateway localGateway = new AnthropicExtractionGateway(client,
                     URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/v1/messages"), json);
             service = new ExtractionPilotService(inputs, validator, localGateway, repository, json, manager,
-                    Clock.fixed(Instant.parse("2026-10-28T12:00:00Z"), ZoneOffset.UTC),
+                    Clock.fixed(Instant.parse("2026-10-29T12:00:00Z"), ZoneOffset.UTC),
                     () -> "synthetic-key", syntheticEstimator, new ExtractionCancellationGuard());
             ExtractionFailureException failure = assertThrows(ExtractionFailureException.class,
                     () -> run(first, false, false));
@@ -542,13 +543,23 @@ class ExtractionPilotIT {
     void invalidClaimsWithReportedUsageAreChargedAndDoNotBlockOtherWork() {
         long first = insert();
         long second = insertSecond();
-        when(gateway.extract(any(), anyString(), anyString()))
-                .thenReturn(new ExtractionGatewayResponseDTO("""
+        String rejected = """
                         {"claims":[{"fact":"TITLE","value":"Invented title","sourceField":"title",
                         "quote":"Invented title","uncertainty":"STATED"}]}
-                        """, 120, 30, "req-invalid"))
+                        """;
+        when(gateway.extract(any(), anyString(), anyString()))
+                .thenReturn(new ExtractionGatewayResponseDTO(rejected, 120, 30, "req-invalid"))
                 .thenReturn(new ExtractionGatewayResponseDTO(RESPONSE, 100, 50, "req-valid"));
-        assertThrows(IllegalArgumentException.class, () -> run(first, false, false));
+        ExtractionValidationException failure = assertThrows(ExtractionValidationException.class,
+                () -> run(first, false, false));
+        assertEquals(0, failure.claimIndex());
+        assertEquals("QUOTE_NOT_IN_SOURCE_FIELD", failure.category());
+        assertEquals(rejected, jdbc.queryForObject("SELECT rejected_output FROM extraction_attempts WHERE work_id = 1",
+                String.class));
+        assertEquals("QUOTE_NOT_IN_SOURCE_FIELD", jdbc.queryForObject(
+                "SELECT validation_category FROM extraction_attempts WHERE work_id = 1", String.class));
+        assertNull(jdbc.queryForObject("SELECT result_json::text FROM extraction_work WHERE id = 1",
+                String.class));
         long observed = ExtractionPolicy.cost(ExtractionPolicy.PRIMARY_MODEL, 120, 30);
         assertEquals(observed, repository.budget().observedMicroUsd());
         assertEquals(observed, repository.budget().reservedMicroUsd());
@@ -560,6 +571,22 @@ class ExtractionPilotIT {
     }
 
     @Test
+    void oversizedRejectedArtifactStoresOnlyBoundedDiagnostic() {
+        long vacancy = insert();
+        String rejected = "x".repeat(17_000);
+        when(gateway.extract(any(), anyString(), anyString()))
+                .thenReturn(new ExtractionGatewayResponseDTO(rejected, 120, 30, "req-invalid"));
+        ExtractionValidationException failure = assertThrows(ExtractionValidationException.class,
+                () -> run(vacancy, false, false));
+        assertEquals("INVALID_JSON", failure.category());
+        assertNull(jdbc.queryForObject("SELECT rejected_output FROM extraction_attempts", String.class));
+        assertEquals(-1, jdbc.queryForObject("SELECT validation_claim_index FROM extraction_attempts",
+                Integer.class));
+        assertEquals(1, repository.budget().failed());
+        assertEquals(1, repository.budget().attempts());
+    }
+
+    @Test
     void changedVacancyBetweenPlanningAndReservationCannotSpendOrSend() {
         long vacancy = insert();
         ExtractionCostEstimator changingEstimator = (input, model) -> {
@@ -567,10 +594,10 @@ class ExtractionPilotIT {
             return syntheticReservation(model);
         };
         ExtractionPilotService changed = new ExtractionPilotService(inputs, validator, gateway, repository,
-                json, manager, Clock.fixed(Instant.parse("2026-10-28T12:00:00Z"), ZoneOffset.UTC),
+                json, manager, Clock.fixed(Instant.parse("2026-10-29T12:00:00Z"), ZoneOffset.UTC),
                 () -> "synthetic-key", changingEstimator, new ExtractionCancellationGuard());
         assertThrows(IllegalStateException.class,
-                () -> changed.extract(vacancy, false, false, true, "2026-10-28"));
+                () -> changed.extract(vacancy, false, false, true, "2026-10-29"));
         assertEquals(0, repository.budget().attempts());
         verify(gateway, never()).extract(any(), anyString(), anyString());
     }
@@ -580,16 +607,16 @@ class ExtractionPilotIT {
         long vacancy = insert();
         for (long estimate : new long[] {0, ExtractionPolicy.TARGET_MICRO_USD + 1}) {
             ExtractionPilotService refused = new ExtractionPilotService(inputs, validator, gateway, repository,
-                    json, manager, Clock.fixed(Instant.parse("2026-10-28T12:00:00Z"), ZoneOffset.UTC),
+                    json, manager, Clock.fixed(Instant.parse("2026-10-29T12:00:00Z"), ZoneOffset.UTC),
                     () -> "synthetic-key", (input, model) -> estimate, new ExtractionCancellationGuard());
             assertThrows(IllegalStateException.class,
-                    () -> refused.extract(vacancy, false, false, true, "2026-10-28"));
+                    () -> refused.extract(vacancy, false, false, true, "2026-10-29"));
         }
         ExtractionPilotService noCredential = new ExtractionPilotService(inputs, validator, gateway, repository,
-                json, manager, Clock.fixed(Instant.parse("2026-10-28T12:00:00Z"), ZoneOffset.UTC),
+                json, manager, Clock.fixed(Instant.parse("2026-10-29T12:00:00Z"), ZoneOffset.UTC),
                 () -> null, syntheticEstimator, new ExtractionCancellationGuard());
         assertThrows(IllegalStateException.class,
-                () -> noCredential.extract(vacancy, false, false, true, "2026-10-28"));
+                () -> noCredential.extract(vacancy, false, false, true, "2026-10-29"));
         assertEquals(0, repository.budget().attempts());
         verify(gateway, never()).extract(any(), anyString(), anyString());
     }
@@ -614,7 +641,7 @@ class ExtractionPilotIT {
 
     private com.alexs.jobagent.evaluation.dto.ExtractionResultDTO run(long vacancy, boolean comparison,
                                                                           boolean replay) {
-        return service.extract(vacancy, comparison, replay, true, "2026-10-28");
+        return service.extract(vacancy, comparison, replay, true, "2026-10-29");
     }
 
     private static ExtractionCompletionDTO completion(long workId, UUID token) {

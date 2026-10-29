@@ -5,12 +5,14 @@ import com.alexs.jobagent.evaluation.dto.ExtractionCompletionDTO;
 import com.alexs.jobagent.evaluation.dto.ExtractionWorkIdentityDTO;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.nio.charset.StandardCharsets;
 import java.util.UUID;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
 @Repository
 public class ExtractionRepository {
+    private static final int MAX_REJECTED_OUTPUT_BYTES = 16_384;
     private final JdbcTemplate jdbc;
 
     public ExtractionRepository(JdbcTemplate jdbc) {
@@ -114,6 +116,17 @@ public class ExtractionRepository {
                 uncertain, uncertain, uncertain, workId, token);
         if (budgetChanged != 1) {
             throw new IllegalStateException("Global extraction claim changed before completion");
+        }
+    }
+
+    public void recordRejectedOutput(long workId, UUID token, int claimIndex, String category, String content) {
+        String retained = content.getBytes(StandardCharsets.UTF_8).length <= MAX_REJECTED_OUTPUT_BYTES
+                ? content : null;
+        int changed = jdbc.update("UPDATE extraction_attempts SET validation_claim_index = ?, "
+                + "validation_category = ?, rejected_output = ? WHERE work_id = ? AND claim_token = ? "
+                + "AND outcome = 'INVALID'", claimIndex, category, retained, workId, token);
+        if (changed != 1) {
+            throw new IllegalStateException("Extraction diagnostic claim changed before completion");
         }
     }
 

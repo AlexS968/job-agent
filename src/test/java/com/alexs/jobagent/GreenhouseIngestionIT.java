@@ -66,7 +66,7 @@ class GreenhouseIngestionIT {
 
     @Test
     void firstListingStoresDescriptionProvenanceAndAtomicDiscovery() {
-        assertEquals(10, count("flyway_schema_history"));
+        assertEquals(11, count("flyway_schema_history"));
         var result = service.ingest(BOARD, listing("1", "Engineer", "2026-10-21T10:00:00Z"), FETCHED);
         assertEquals(VacancyChangeDTO.CREATED, result.change());
         assertEquals(1, count("source_items"));
