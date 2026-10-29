@@ -16,8 +16,11 @@ import tools.jackson.databind.json.JsonMapper;
 
 @Service
 public class ExtractionOutputValidator {
+    private static final String CLAIMS_FIELD = "claims";
+    private static final String COUNTRY_PERMISSION = "COUNTRY_PERMISSION";
+    private static final String COUNTRY_RESTRICTION = "COUNTRY_RESTRICTION";
     private static final Set<String> FACTS = Set.of("TITLE", "FAMILY", "SENIORITY", "REQUIRED_SKILL",
-            "PREFERRED_SKILL", "ARRANGEMENT", "COUNTRY_PERMISSION", "COUNTRY_RESTRICTION",
+            "PREFERRED_SKILL", "ARRANGEMENT", COUNTRY_PERMISSION, COUNTRY_RESTRICTION,
             "SALARY_MIN", "SALARY_MAX", "SALARY_CURRENCY", "SALARY_PERIOD");
     private static final Set<String> UNCERTAINTIES = Set.of("STATED", "UNCERTAIN", "CONFLICTING");
     private final JsonMapper json;
@@ -33,45 +36,50 @@ public class ExtractionOutputValidator {
         } catch (RuntimeException exception) {
             throw new IllegalArgumentException("Invalid extraction JSON");
         }
-        if (root == null || !root.isObject() || root.size() != 1 || !root.path("claims").isArray()
-                || root.path("claims").size() > 24) {
+        if (root == null || !root.isObject() || root.size() != 1 || !root.path(CLAIMS_FIELD).isArray()
+                || root.path(CLAIMS_FIELD).size() > 24) {
             throw new IllegalArgumentException("Invalid extraction shape or claim count");
         }
         List<ExtractionClaimDTO> claims = new ArrayList<>();
-        for (JsonNode node : root.path("claims")) {
-            if (!node.isObject() || node.size() != 5) {
-                throw new IllegalArgumentException("Invalid extraction claim shape");
-            }
-            String fact = bounded(node, "fact", 40);
-            String value = bounded(node, "value", 120);
-            String field = bounded(node, "sourceField", 40);
-            String quote = bounded(node, "quote", 160);
-            String uncertainty = bounded(node, "uncertainty", 20);
-            if (!FACTS.contains(fact) || !UNCERTAINTIES.contains(uncertainty)
-                    || !input.sourceFields().containsKey(field)
-                    || !normalize(input.sourceFields().get(field)).contains(normalize(quote))
-                    || !validValue(fact, value)) {
-                throw new IllegalArgumentException("Extraction claim lacks supplied evidence");
-            }
-            // A generic remote label, country mention or office address cannot prove permission.
-            if ("COUNTRY_PERMISSION".equals(fact) && "STATED".equals(uncertainty)
-                    && !explicitPermission(quote, value, input.sourceFields().get(field))) {
-                uncertainty = "UNCERTAIN";
-            }
-            claims.add(new ExtractionClaimDTO(fact, value, field, quote, uncertainty));
+        for (JsonNode node : root.path(CLAIMS_FIELD)) {
+            claims.add(validateClaim(node, input));
         }
+        return markConflicts(claims);
+    }
+
+    private static ExtractionClaimDTO validateClaim(JsonNode node, ExtractionInputDTO input) {
+        if (!node.isObject() || node.size() != 5) {
+            throw new IllegalArgumentException("Invalid extraction claim shape");
+        }
+        String fact = bounded(node, "fact", 40);
+        String value = bounded(node, "value", 120);
+        String field = bounded(node, "sourceField", 40);
+        String quote = bounded(node, "quote", 160);
+        String uncertainty = bounded(node, "uncertainty", 20);
+        if (!FACTS.contains(fact) || !UNCERTAINTIES.contains(uncertainty)
+                || !input.sourceFields().containsKey(field)
+                || !normalize(input.sourceFields().get(field)).contains(normalize(quote))
+                || !validValue(fact, value)) {
+            throw new IllegalArgumentException("Extraction claim lacks supplied evidence");
+        }
+        // A generic remote label, country mention or office address cannot prove permission.
+        if (COUNTRY_PERMISSION.equals(fact) && "STATED".equals(uncertainty)
+                && !explicitPermission(quote, value, input.sourceFields().get(field))) {
+            uncertainty = "UNCERTAIN";
+        }
+        return new ExtractionClaimDTO(fact, value, field, quote, uncertainty);
+    }
+
+    private static ExtractionOutputDTO markConflicts(List<ExtractionClaimDTO> claims) {
         Set<String> conflicts = new HashSet<>();
         for (int i = 0; i < claims.size(); i++) {
             ExtractionClaimDTO first = claims.get(i);
             for (int j = i + 1; j < claims.size(); j++) {
                 ExtractionClaimDTO second = claims.get(j);
-                if (first.fact().equals(second.fact()) && !first.value().equalsIgnoreCase(second.value())
-                        && !first.fact().endsWith("SKILL")) {
+                if (differentSingleValuedFacts(first, second)) {
                     conflicts.add(first.fact());
                 }
-                if (first.value().equalsIgnoreCase(second.value())
-                        && (("COUNTRY_PERMISSION".equals(first.fact()) && "COUNTRY_RESTRICTION".equals(second.fact()))
-                        || ("COUNTRY_RESTRICTION".equals(first.fact()) && "COUNTRY_PERMISSION".equals(second.fact())))) {
+                if (contradictoryCountryClaims(first, second)) {
                     conflicts.add(first.fact());
                     conflicts.add(second.fact());
                 }
@@ -80,6 +88,17 @@ public class ExtractionOutputValidator {
         return new ExtractionOutputDTO(claims.stream().map(claim -> conflicts.contains(claim.fact())
                 ? new ExtractionClaimDTO(claim.fact(), claim.value(), claim.sourceField(), claim.quote(),
                 "CONFLICTING") : claim).toList());
+    }
+
+    private static boolean differentSingleValuedFacts(ExtractionClaimDTO first, ExtractionClaimDTO second) {
+        return first.fact().equals(second.fact()) && !first.value().equalsIgnoreCase(second.value())
+                && !first.fact().endsWith("SKILL");
+    }
+
+    private static boolean contradictoryCountryClaims(ExtractionClaimDTO first, ExtractionClaimDTO second) {
+        return first.value().equalsIgnoreCase(second.value())
+                && ((COUNTRY_PERMISSION.equals(first.fact()) && COUNTRY_RESTRICTION.equals(second.fact()))
+                || (COUNTRY_RESTRICTION.equals(first.fact()) && COUNTRY_PERMISSION.equals(second.fact())));
     }
 
     private static String bounded(JsonNode node, String key, int max) {
@@ -96,7 +115,7 @@ public class ExtractionOutputValidator {
     }
 
     private static boolean explicitPermission(String quote, String country, String sourceField) {
-        String sentence = normalize(quote).replaceAll("[.!?]+$", "");
+        String sentence = stripTrailingPunctuation(normalize(quote));
         String normalizedCountry = Pattern.quote(normalize(country));
         String workFrom = "work(?: remotely)? from " + normalizedCountry;
         boolean clearStatement = sentence.matches(workFrom + " is (?:allowed|permitted)")
@@ -114,10 +133,18 @@ public class ExtractionOutputValidator {
         return false;
     }
 
+    private static String stripTrailingPunctuation(String sentence) {
+        int end = sentence.length();
+        while (end > 0 && ".!?".indexOf(sentence.charAt(end - 1)) >= 0) {
+            end--;
+        }
+        return sentence.substring(0, end);
+    }
+
     private static boolean validValue(String fact, String value) {
         return switch (fact) {
             case "ARRANGEMENT" -> Set.of("REMOTE", "HYBRID", "ONSITE").contains(value);
-            case "SALARY_MIN", "SALARY_MAX" -> value.matches("[0-9]{1,9}(\\.[0-9]{1,2})?");
+            case "SALARY_MIN", "SALARY_MAX" -> value.matches("\\d{1,9}(\\.\\d{1,2})?");
             case "SALARY_CURRENCY" -> value.matches("[A-Z]{3}");
             case "SALARY_PERIOD" -> Set.of("YEAR", "MONTH", "DAY", "HOUR").contains(value);
             default -> true;

@@ -92,6 +92,58 @@ class BatchStartupIT {
     }
 
     @Test
+    void extractionPlanningStatusAndRecoveryCommandsRemainOffline() throws Exception {
+        try (PostgreSQLContainer postgres = new PostgreSQLContainer("postgres:17.11-alpine")
+                .withDatabaseName("job_agent_extraction_commands_test").withUsername("test_user")
+                .withPassword(PASSWORD)) {
+            postgres.start();
+            assertEquals(0, run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
+                    "--mode=synthetic").exitCode());
+            Result plan = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
+                    "--mode=extract-plan", "--vacancy-id=1", "--comparison=false");
+            assertEquals(0, plan.exitCode(), plan.output());
+            assertTrue(plan.output().contains("Extraction plan: vacancy=1, source=1"), plan.output());
+            assertFalse(plan.output().contains("Backend Engineer"), plan.output());
+            Result comparisonPlan = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
+                    "--mode=extract-plan", "--vacancy-id=1", "--comparison=true");
+            assertEquals(0, comparisonPlan.exitCode(), comparisonPlan.output());
+            assertTrue(comparisonPlan.output().contains("model=claude-sonnet-5-5"), comparisonPlan.output());
+            Result status = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
+                    "--mode=extract-status", "--vacancy-id=1", "--comparison=false");
+            assertEquals(0, status.exitCode(), status.output());
+            assertTrue(status.output().contains("Extraction work: vacancy=1, status=NOT_FOUND"), status.output());
+            Result comparisonStatus = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
+                    "--mode=extract-status", "--vacancy-id=1", "--comparison=true");
+            assertEquals(0, comparisonStatus.exitCode(), comparisonStatus.output());
+            assertTrue(comparisonStatus.output().contains("Extraction work: vacancy=1, status=NOT_FOUND"),
+                    comparisonStatus.output());
+            Result malformedStatus = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
+                    "--mode=extract-status", "--vacancy-id=1");
+            assertNotEquals(0, malformedStatus.exitCode());
+            Result invalidRecovery = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
+                    "--mode=extract-recover", "--work-id=1", "--confirm-no-inflight=no",
+                    "--billing-reviewed=yes");
+            assertNotEquals(0, invalidRecovery.exitCode());
+            Result unownedRecovery = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
+                    "--mode=extract-recover", "--work-id=1", "--confirm-no-inflight=yes",
+                    "--billing-reviewed=yes");
+            assertNotEquals(0, unownedRecovery.exitCode());
+            assertFalse(unownedRecovery.output().contains(PASSWORD));
+            Result comparisonWithoutConsent = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
+                    "--mode=extract-compare", "--vacancy-id=1", "--live-confirm=no",
+                    "--pricing-reviewed-on=2026-10-28");
+            assertNotEquals(0, comparisonWithoutConsent.exitCode());
+            try (var connection = java.sql.DriverManager.getConnection(postgres.getJdbcUrl(),
+                    postgres.getUsername(), PASSWORD);
+                 var statement = connection.createStatement();
+                 var rows = statement.executeQuery("SELECT attempts FROM extraction_pilot_budget WHERE id = 1")) {
+                assertTrue(rows.next());
+                assertEquals(0, rows.getInt(1));
+            }
+        }
+    }
+
+    @Test
     void untrustedCandidateNeverFetchesOrActivatesAndExitsSafely() throws Exception {
         try (PostgreSQLContainer postgres = new PostgreSQLContainer("postgres:17.11-alpine")
                 .withDatabaseName("job_agent_verification_batch_test").withUsername("test_user").withPassword(PASSWORD)) {

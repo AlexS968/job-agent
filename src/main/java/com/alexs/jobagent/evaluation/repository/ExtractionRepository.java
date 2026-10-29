@@ -1,6 +1,8 @@
 package com.alexs.jobagent.evaluation.repository;
 
 import com.alexs.jobagent.evaluation.dto.ExtractionBudgetDTO;
+import com.alexs.jobagent.evaluation.dto.ExtractionCompletionDTO;
+import com.alexs.jobagent.evaluation.dto.ExtractionWorkIdentityDTO;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.UUID;
@@ -23,36 +25,33 @@ public class ExtractionRepository {
                 rs.getObject(6, Long.class), rs.getObject(7, UUID.class), rs.getString(8)));
     }
 
-    public WorkRow find(long vacancyId, long sourceItemId, String revision, String model,
-                        String promptVersion, String schemaVersion, String policyVersion) {
+    public WorkRow find(ExtractionWorkIdentityDTO identity) {
         return jdbc.query("SELECT id, status, result_json::text, claim_token, lease_until < CURRENT_TIMESTAMP, "
                 + "input_json::text "
                 + "FROM extraction_work WHERE vacancy_id = ? AND source_item_id = ? AND vacancy_revision = ? "
                 + "AND provider = 'ANTHROPIC' AND model = ? AND prompt_version = ? AND schema_version = ? "
-                + "AND policy_version = ? FOR UPDATE", (rs, row) -> work(rs), vacancyId, sourceItemId,
-                revision, model, promptVersion, schemaVersion, policyVersion).stream().findFirst().orElse(null);
+                + "AND policy_version = ? FOR UPDATE", (rs, row) -> work(rs), identity.vacancyId(),
+                identity.sourceItemId(), identity.revision(), identity.model(), identity.promptVersion(),
+                identity.schemaVersion(), identity.policyVersion()).stream().findFirst().orElse(null);
     }
 
-    public boolean primarySucceeded(long vacancyId, long sourceItemId, String revision, String model,
-                                    String promptVersion, String schemaVersion, String policyVersion,
-                                    String inputJson) {
+    public boolean primarySucceeded(ExtractionWorkIdentityDTO identity, String inputJson) {
         return Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM extraction_work "
                 + "WHERE vacancy_id = ? AND source_item_id = ? AND vacancy_revision = ? AND model = ? "
                 + "AND prompt_version = ? AND schema_version = ? AND policy_version = ? "
                 + "AND input_json = CAST(? AS jsonb) AND kind = 'PRIMARY' AND status = 'SUCCEEDED')",
-                Boolean.class, vacancyId, sourceItemId, revision, model, promptVersion, schemaVersion,
-                policyVersion, inputJson));
+                Boolean.class, identity.vacancyId(), identity.sourceItemId(), identity.revision(),
+                identity.model(), identity.promptVersion(), identity.schemaVersion(), identity.policyVersion(), inputJson));
     }
 
-    public long insertWork(long vacancyId, long sourceItemId, String revision, String model,
-                           String promptVersion, String schemaVersion, String policyVersion,
-                           String kind, String inputJson, UUID token) {
+    public long insertWork(ExtractionWorkIdentityDTO identity, String kind, String inputJson, UUID token) {
         return jdbc.queryForObject("INSERT INTO extraction_work (vacancy_id, source_item_id, vacancy_revision, "
                 + "provider, model, prompt_version, schema_version, policy_version, input_json, kind, status, claim_token, lease_until) "
                 + "VALUES (?, ?, ?, 'ANTHROPIC', ?, ?, ?, ?, CAST(? AS jsonb), ?, 'CLAIMED', ?, "
                 + "CURRENT_TIMESTAMP + INTERVAL '60 seconds') "
-                + "RETURNING id", Long.class, vacancyId, sourceItemId, revision, model,
-                promptVersion, schemaVersion, policyVersion, inputJson, kind, token);
+                + "RETURNING id", Long.class, identity.vacancyId(), identity.sourceItemId(),
+                identity.revision(), identity.model(), identity.promptVersion(), identity.schemaVersion(),
+                identity.policyVersion(), inputJson, kind, token);
     }
 
     public void claimAgain(long workId, UUID token) {
@@ -79,27 +78,30 @@ public class ExtractionRepository {
                 + "VALUES (?, ?, ?, 'RESERVED')", workId, token, amount);
     }
 
-    public void finish(long workId, UUID token, String status, String resultJson, String outcome,
-                       Integer inputTokens, Integer cacheCreationTokens, Integer cacheReadTokens,
-                       Integer outputTokens, Long observedCost, String requestId, long reservedAmount) {
+    public void finish(ExtractionCompletionDTO completion) {
+        long workId = completion.workId();
+        UUID token = completion.claimToken();
+        var usage = completion.usage();
+        Long observedCost = usage.observedCostMicroUsd();
         int changed = jdbc.update("UPDATE extraction_work SET status = ?, result_json = CAST(? AS jsonb), "
                 + "claim_token = NULL, lease_until = NULL, updated_at = CURRENT_TIMESTAMP "
                 + "WHERE id = ? AND claim_token = ? AND status = 'CLAIMED' "
-                + "AND lease_until >= CURRENT_TIMESTAMP", status, resultJson, workId, token);
+                + "AND lease_until >= CURRENT_TIMESTAMP", completion.status(), completion.resultJson(), workId, token);
         if (changed != 1) {
             throw new IllegalStateException("Extraction claim changed before completion");
         }
         int attemptsChanged = jdbc.update("UPDATE extraction_attempts SET outcome = ?, input_tokens = ?, "
                 + "cache_creation_input_tokens = ?, cache_read_input_tokens = ?, output_tokens = ?, "
                 + "observed_cost_micro_usd = ?, provider_request_id = ?, finished_at = CURRENT_TIMESTAMP "
-                + "WHERE work_id = ? AND claim_token = ?", outcome, inputTokens, cacheCreationTokens,
-                cacheReadTokens, outputTokens, observedCost, requestId, workId, token);
+                + "WHERE work_id = ? AND claim_token = ?", completion.outcome(), usage.inputTokens(),
+                usage.cacheCreationTokens(), usage.cacheReadTokens(), usage.outputTokens(), observedCost,
+                usage.requestId(), workId, token);
         if (attemptsChanged != 1) {
             throw new IllegalStateException("Extraction attempt changed before completion");
         }
-        boolean uncertain = "UNCERTAIN".equals(status);
-        boolean overEstimate = observedCost != null && observedCost > reservedAmount;
-        long delta = observedCost == null ? 0 : observedCost - reservedAmount;
+        boolean uncertain = "UNCERTAIN".equals(completion.status());
+        boolean overEstimate = observedCost != null && observedCost > completion.reservedMicroUsd();
+        long delta = observedCost == null ? 0 : observedCost - completion.reservedMicroUsd();
         int budgetChanged = jdbc.update("UPDATE extraction_pilot_budget SET "
                 + "reserved_micro_usd = reserved_micro_usd + ?, "
                 + "observed_micro_usd = observed_micro_usd + ?, "

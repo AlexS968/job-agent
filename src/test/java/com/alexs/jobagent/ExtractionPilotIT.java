@@ -5,6 +5,9 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 import com.alexs.jobagent.evaluation.dto.ExtractionGatewayResponseDTO;
+import com.alexs.jobagent.evaluation.dto.ExtractionCompletionDTO;
+import com.alexs.jobagent.evaluation.dto.ExtractionUsageDTO;
+import com.alexs.jobagent.evaluation.dto.ExtractionWorkIdentityDTO;
 import com.alexs.jobagent.evaluation.exception.ExtractionFailureException;
 import com.alexs.jobagent.evaluation.repository.ExtractionRepository;
 import com.alexs.jobagent.evaluation.service.AnthropicExtractionGateway;
@@ -121,6 +124,24 @@ class ExtractionPilotIT {
         assertEquals(ExtractionPolicy.cost(ExtractionPolicy.PRIMARY_MODEL, 8_392,
                 ExtractionPolicy.MAX_OUTPUT_TOKENS), jdbc.queryForObject(
                 "SELECT reserved_micro_usd FROM extraction_attempts", Long.class));
+    }
+
+    @Test
+    void planningKeepsSelectedSalaryEvidenceAndRejectsMissingVacancy() {
+        long vacancy = insert();
+        jdbc.update("UPDATE source_items SET raw_payload = CAST(? AS jsonb)",
+                "{\"workplaceType\":\"hybrid\",\"salary\":{\"min\":70000,\"currency\":\"EUR\"}}");
+        var objectSalary = inputs.load(vacancy);
+        assertEquals("hybrid", objectSalary.sourceFields().get("workplaceType"));
+        assertTrue(objectSalary.sourceFields().get("salary").contains("EUR"));
+        jdbc.update("UPDATE source_items SET raw_payload = CAST(? AS jsonb)",
+                "{\"workplaceType\":17,\"salary\":\"70000 EUR yearly\"}");
+        var stringSalary = inputs.load(vacancy);
+        assertFalse(stringSalary.sourceFields().containsKey("workplaceType"));
+        assertEquals("70000 EUR yearly", stringSalary.sourceFields().get("salary"));
+        assertNotEquals(objectSalary.revision(), stringSalary.revision());
+        assertThrows(IllegalArgumentException.class, () -> inputs.load(Long.MAX_VALUE));
+        verify(gateway, never()).extract(any(), anyString(), anyString());
     }
 
     @Test
@@ -330,8 +351,8 @@ class ExtractionPilotIT {
             }
         });
         server.start();
-        try {
-            AnthropicExtractionGateway localGateway = new AnthropicExtractionGateway(HttpClient.newHttpClient(),
+        try (HttpClient client = HttpClient.newHttpClient()) {
+            AnthropicExtractionGateway localGateway = new AnthropicExtractionGateway(client,
                     URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/v1/messages"), json);
             service = new ExtractionPilotService(inputs, validator, localGateway, repository, json, manager,
                     Clock.fixed(Instant.parse("2026-10-28T12:00:00Z"), ZoneOffset.UTC),
@@ -390,8 +411,14 @@ class ExtractionPilotIT {
         assertThrows(ExtractionFailureException.class, () -> run(vacancy, false, false));
         long active = repository.budget().activeWorkId();
         assertThrows(IllegalArgumentException.class, () -> service.recoverGlobalClaim(active, true, false));
+        TransactionTemplate transaction = new TransactionTemplate(manager);
+        assertThrows(IllegalStateException.class, () -> transaction.execute(status -> {
+            service.recoverGlobalClaim(active, true, true);
+            return null;
+        }));
         assertThrows(IllegalStateException.class, () -> service.recoverGlobalClaim(active, true, true));
         assertEquals(active, repository.budget().activeWorkId());
+        assertThrows(IllegalStateException.class, () -> service.recoverGlobalClaim(active + 1, true, true));
         recoverActive();
         assertNull(repository.budget().activeWorkId());
         assertEquals(syntheticReservation(ExtractionPolicy.PRIMARY_MODEL),
@@ -437,9 +464,10 @@ class ExtractionPilotIT {
         long workId = jdbc.queryForObject("SELECT id FROM extraction_work", Long.class);
         recoverActive();
         assertThrows(ExtractionFailureException.class, () -> run(vacancy, false, true));
-        assertThrows(IllegalStateException.class, () -> new TransactionTemplate(manager).execute(status -> {
-            repository.finish(workId, oldToken, "SUCCEEDED", "{\"claims\":[]}", "SUCCEEDED",
-                    1, 0, 0, 1, 1L, null, syntheticReservation(ExtractionPolicy.PRIMARY_MODEL));
+        TransactionTemplate transaction = new TransactionTemplate(manager);
+        ExtractionCompletionDTO completion = completion(workId, oldToken);
+        assertThrows(IllegalStateException.class, () -> transaction.execute(status -> {
+            repository.finish(completion);
             return null;
         }));
         assertEquals("UNCERTAIN", jdbc.queryForObject("SELECT status FROM extraction_work WHERE id = ?",
@@ -451,17 +479,18 @@ class ExtractionPilotIT {
         long vacancy = insert();
         var input = inputs.load(vacancy);
         UUID oldToken = UUID.randomUUID();
-        long workId = repository.insertWork(vacancy, input.sourceItemId(), input.revision(),
+        var identity = new ExtractionWorkIdentityDTO(vacancy, input.sourceItemId(), input.revision(),
                 ExtractionPolicy.PRIMARY_MODEL, ExtractionPolicy.PROMPT_VERSION,
-                ExtractionPolicy.SCHEMA_VERSION, ExtractionPolicy.POLICY_VERSION, "PRIMARY",
-                json.writeValueAsString(input.sourceFields()), oldToken);
+                ExtractionPolicy.SCHEMA_VERSION, ExtractionPolicy.POLICY_VERSION);
+        long workId = repository.insertWork(identity, "PRIMARY", json.writeValueAsString(input.sourceFields()), oldToken);
         repository.reserve(workId, oldToken, syntheticReservation(ExtractionPolicy.PRIMARY_MODEL),
                 true, true);
         jdbc.update("UPDATE extraction_work SET lease_until = CURRENT_TIMESTAMP - INTERVAL '1 second' "
                 + "WHERE id = ?", workId);
-        assertThrows(IllegalStateException.class, () -> new TransactionTemplate(manager).execute(status -> {
-            repository.finish(workId, oldToken, "SUCCEEDED", "{\"claims\":[]}", "SUCCEEDED",
-                    1, 0, 0, 1, 1L, null, syntheticReservation(ExtractionPolicy.PRIMARY_MODEL));
+        TransactionTemplate transaction = new TransactionTemplate(manager);
+        ExtractionCompletionDTO completion = completion(workId, oldToken);
+        assertThrows(IllegalStateException.class, () -> transaction.execute(status -> {
+            repository.finish(completion);
             return null;
         }));
         assertThrows(IllegalStateException.class, () -> run(vacancy, false, false));
@@ -510,6 +539,62 @@ class ExtractionPilotIT {
     }
 
     @Test
+    void invalidClaimsWithReportedUsageAreChargedAndDoNotBlockOtherWork() {
+        long first = insert();
+        long second = insertSecond();
+        when(gateway.extract(any(), anyString(), anyString()))
+                .thenReturn(new ExtractionGatewayResponseDTO("""
+                        {"claims":[{"fact":"TITLE","value":"Invented title","sourceField":"title",
+                        "quote":"Invented title","uncertainty":"STATED"}]}
+                        """, 120, 30, "req-invalid"))
+                .thenReturn(new ExtractionGatewayResponseDTO(RESPONSE, 100, 50, "req-valid"));
+        assertThrows(IllegalArgumentException.class, () -> run(first, false, false));
+        long observed = ExtractionPolicy.cost(ExtractionPolicy.PRIMARY_MODEL, 120, 30);
+        assertEquals(observed, repository.budget().observedMicroUsd());
+        assertEquals(observed, repository.budget().reservedMicroUsd());
+        assertNull(repository.budget().activeWorkId());
+        assertEquals(1, repository.budget().failed());
+        assertFalse(run(second, false, false).reused());
+        assertEquals(2, repository.budget().attempts());
+        verify(gateway, times(2)).extract(any(), anyString(), anyString());
+    }
+
+    @Test
+    void changedVacancyBetweenPlanningAndReservationCannotSpendOrSend() {
+        long vacancy = insert();
+        ExtractionCostEstimator changingEstimator = (input, model) -> {
+            jdbc.update("UPDATE vacancies SET location = 'Berlin' WHERE id = ?", vacancy);
+            return syntheticReservation(model);
+        };
+        ExtractionPilotService changed = new ExtractionPilotService(inputs, validator, gateway, repository,
+                json, manager, Clock.fixed(Instant.parse("2026-10-28T12:00:00Z"), ZoneOffset.UTC),
+                () -> "synthetic-key", changingEstimator, new ExtractionCancellationGuard());
+        assertThrows(IllegalStateException.class,
+                () -> changed.extract(vacancy, false, false, true, "2026-10-28"));
+        assertEquals(0, repository.budget().attempts());
+        verify(gateway, never()).extract(any(), anyString(), anyString());
+    }
+
+    @Test
+    void invalidCostEstimateAndMissingCredentialStopBeforeReservation() {
+        long vacancy = insert();
+        for (long estimate : new long[] {0, ExtractionPolicy.TARGET_MICRO_USD + 1}) {
+            ExtractionPilotService refused = new ExtractionPilotService(inputs, validator, gateway, repository,
+                    json, manager, Clock.fixed(Instant.parse("2026-10-28T12:00:00Z"), ZoneOffset.UTC),
+                    () -> "synthetic-key", (input, model) -> estimate, new ExtractionCancellationGuard());
+            assertThrows(IllegalStateException.class,
+                    () -> refused.extract(vacancy, false, false, true, "2026-10-28"));
+        }
+        ExtractionPilotService noCredential = new ExtractionPilotService(inputs, validator, gateway, repository,
+                json, manager, Clock.fixed(Instant.parse("2026-10-28T12:00:00Z"), ZoneOffset.UTC),
+                () -> null, syntheticEstimator, new ExtractionCancellationGuard());
+        assertThrows(IllegalStateException.class,
+                () -> noCredential.extract(vacancy, false, false, true, "2026-10-28"));
+        assertEquals(0, repository.budget().attempts());
+        verify(gateway, never()).extract(any(), anyString(), anyString());
+    }
+
+    @Test
     void lostSuccessAcknowledgementLeavesClaimUncertainForRecovery() {
         long vacancy = insert();
         jdbc.execute("ALTER TABLE extraction_work ADD CONSTRAINT extraction_test_reject_success "
@@ -530,6 +615,12 @@ class ExtractionPilotIT {
     private com.alexs.jobagent.evaluation.dto.ExtractionResultDTO run(long vacancy, boolean comparison,
                                                                           boolean replay) {
         return service.extract(vacancy, comparison, replay, true, "2026-10-28");
+    }
+
+    private static ExtractionCompletionDTO completion(long workId, UUID token) {
+        return new ExtractionCompletionDTO(workId, token, "SUCCEEDED", "{\"claims\":[]}", "SUCCEEDED",
+                new ExtractionUsageDTO(1, 0, 0, 1, 1L, null),
+                syntheticReservation(ExtractionPolicy.PRIMARY_MODEL));
     }
 
     private void recoverActive() {

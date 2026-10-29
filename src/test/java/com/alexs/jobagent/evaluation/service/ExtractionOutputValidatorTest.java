@@ -96,6 +96,56 @@ class ExtractionOutputValidatorTest {
         assertEquals("CONFLICTING", claims.getLast().uncertainty());
     }
 
+    @Test
+    void malformedClaimFieldsAndExcessiveClaimCountAreRejected() {
+        assertThrows(IllegalArgumentException.class,
+                () -> validator.validate("{\"claims\":[17]}", input));
+        assertThrows(IllegalArgumentException.class,
+                () -> validator.validate("{\"claims\":[{\"fact\":\"TITLE\"}]}", input));
+        String longValue = "x".repeat(121);
+        String claim = "{\"fact\":\"TITLE\",\"value\":\"" + longValue
+                + "\",\"sourceField\":\"title\",\"quote\":\"Senior Java Engineer\","
+                + "\"uncertainty\":\"STATED\"}";
+        String excessive = "{\"claims\":[" + String.join(",", java.util.Collections.nCopies(25,
+                "{\"fact\":\"TITLE\",\"value\":\"Senior Java Engineer\","
+                        + "\"sourceField\":\"title\",\"quote\":\"Senior Java Engineer\","
+                        + "\"uncertainty\":\"STATED\"}")) + "]}";
+        assertThrows(IllegalArgumentException.class,
+                () -> validator.validate("{\"claims\":[" + claim + "]}", input));
+        assertThrows(IllegalArgumentException.class, () -> validator.validate(excessive, input));
+    }
+
+    @Test
+    void salaryFormatsAreValidatedAgainstBoundedValuesAndSourceQuotes() {
+        String valid = """
+                {"claims":[{"fact":"SALARY_MIN","value":"70000.50","sourceField":"description",
+                "quote":"Remote in Europe","uncertainty":"STATED"},
+                {"fact":"SALARY_CURRENCY","value":"EUR","sourceField":"description",
+                "quote":"Remote in Europe","uncertainty":"STATED"},
+                {"fact":"SALARY_PERIOD","value":"YEAR","sourceField":"description",
+                "quote":"Remote in Europe","uncertainty":"STATED"}]}
+                """;
+        assertEquals(3, validator.validate(valid, input).claims().size());
+        for (String invalid : new String[] {"70000.123", "-10", "1000000000"}) {
+            String content = valid.replace("70000.50", invalid);
+            assertThrows(IllegalArgumentException.class, () -> validator.validate(content, input));
+        }
+        assertThrows(IllegalArgumentException.class,
+                () -> validator.validate(valid.replace("\"EUR\"", "\"EURO\""), input));
+    }
+
+    @Test
+    void restrictionFirstStillMarksContradictoryPermissionAsConflicting() {
+        var claims = validator.validate("""
+                {"claims":[{"fact":"COUNTRY_RESTRICTION","value":"Germany","sourceField":"description",
+                "quote":"Work from Germany is allowed","uncertainty":"STATED"},
+                {"fact":"COUNTRY_PERMISSION","value":"Germany","sourceField":"description",
+                "quote":"Work from Germany is allowed","uncertainty":"STATED"}]}
+                """, input).claims();
+        assertEquals("CONFLICTING", claims.getFirst().uncertainty());
+        assertEquals("CONFLICTING", claims.getLast().uncertainty());
+    }
+
     private String permission(String source, String quote) {
         ExtractionInputDTO evidence = new ExtractionInputDTO(1, 2, "a".repeat(64),
                 Map.of("description", source));

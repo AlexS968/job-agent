@@ -43,6 +43,8 @@ public class JobAgentApplication {
     private static final Logger LOGGER = LoggerFactory.getLogger(JobAgentApplication.class);
     private static final String PROFILE_FILE_OPTION = "--profile-file=";
     private static final String LIMIT_OPTION = "--limit=";
+    private static final String VACANCY_ID_OPTION = "--vacancy-id=";
+    private static final String COMPARISON_OPTION = "--comparison=";
 
     public static void main(String[] args) {
         try (ConfigurableApplicationContext context = SpringApplication.run(JobAgentApplication.class, args)) {
@@ -112,8 +114,8 @@ public class JobAgentApplication {
     }
 
     private void runExtractionPlan(String[] args, ExtractionPilotService extraction) {
-        requireOnlyOptions(args, "--mode=extract-plan", "--vacancy-id=", "--comparison=");
-        long id = Long.parseLong(option(args, "--vacancy-id="));
+        requireOnlyOptions(args, "--mode=extract-plan", VACANCY_ID_OPTION, COMPARISON_OPTION);
+        long id = Long.parseLong(option(args, VACANCY_ID_OPTION));
         boolean comparison = comparisonOption(args);
         if (args.length != 3) {
             throw new IllegalArgumentException("Invalid extraction planning arguments");
@@ -128,7 +130,7 @@ public class JobAgentApplication {
         if (args.length != 1 && args.length != 3) {
             throw new IllegalArgumentException("Invalid extraction status arguments");
         }
-        requireOnlyOptions(args, "--mode=extract-status", "--vacancy-id=", "--comparison=");
+        requireOnlyOptions(args, "--mode=extract-status", VACANCY_ID_OPTION, COMPARISON_OPTION);
         var budget = extraction.budget();
         LOGGER.info("Extraction pilot: accounted_micro_usd={}, observed_micro_usd={}, active_work={}, "
                 + "halted_reason={}, attempts={}, primary_distinct={}, comparison_distinct={}, "
@@ -138,7 +140,7 @@ public class JobAgentApplication {
                 budget.comparisonDistinct(), budget.claimed(), budget.succeeded(), budget.failed(),
                 budget.uncertain(), budget.expiredClaims());
         if (args.length == 3) {
-            long id = Long.parseLong(option(args, "--vacancy-id="));
+            long id = Long.parseLong(option(args, VACANCY_ID_OPTION));
             boolean comparison = comparisonOption(args);
             var work = extraction.current(id, comparison);
             if (work == null) {
@@ -165,14 +167,14 @@ public class JobAgentApplication {
 
     private void runExtraction(String[] args, ExtractionPilotService extraction, boolean comparison) {
         String mode = comparison ? "--mode=extract-compare" : "--mode=extract-primary";
-        requireOnlyOptions(args, mode, "--vacancy-id=", "--live-confirm=", "--pricing-reviewed-on=",
+        requireOnlyOptions(args, mode, VACANCY_ID_OPTION, "--live-confirm=", "--pricing-reviewed-on=",
                 "--replay-uncertain=");
         if (args.length < 4 || args.length > 5) {
             throw new IllegalArgumentException("Invalid live extraction arguments");
         }
         boolean live = "yes".equals(option(args, "--live-confirm="));
         boolean replay = Arrays.stream(args).anyMatch("--replay-uncertain=yes"::equals);
-        var result = extraction.extract(Long.parseLong(option(args, "--vacancy-id=")), comparison,
+        var result = extraction.extract(Long.parseLong(option(args, VACANCY_ID_OPTION)), comparison,
                 replay, live, option(args, "--pricing-reviewed-on="));
         LOGGER.info("Extraction: work={}, status={}, model={}, source={}, revision={}, reused={}, claims={}",
                 result.workId(), result.status(), result.model(), result.sourceItemId(), result.revision(),
@@ -180,7 +182,7 @@ public class JobAgentApplication {
     }
 
     private boolean comparisonOption(String[] args) {
-        String value = option(args, "--comparison=");
+        String value = option(args, COMPARISON_OPTION);
         if (!"true".equals(value) && !"false".equals(value)) {
             throw new IllegalArgumentException("Comparison option must be true or false");
         }

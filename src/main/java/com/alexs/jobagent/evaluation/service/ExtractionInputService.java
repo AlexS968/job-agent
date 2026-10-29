@@ -13,6 +13,7 @@ import tools.jackson.databind.json.JsonMapper;
 
 @Service
 public class ExtractionInputService {
+    private static final String WORKPLACE_TYPE_FIELD = "workplaceType";
     private final VacancyReadService vacancies;
     private final SourceEvidenceService sources;
     private final RuleEvaluationPolicy revisions;
@@ -45,8 +46,8 @@ public class ExtractionInputService {
         put(fields, "description", vacancy.description());
         JsonNode raw = json.readTree(source.rawPayload());
         if (raw != null && raw.isObject()) {
-            put(fields, "workplaceType", raw.path("workplaceType").isString()
-                    ? raw.path("workplaceType").asText() : null);
+            put(fields, WORKPLACE_TYPE_FIELD, raw.path(WORKPLACE_TYPE_FIELD).isString()
+                    ? raw.path(WORKPLACE_TYPE_FIELD).asText() : null);
             JsonNode salary = raw.get("salary");
             if (salary != null && !salary.isNull()) {
                 put(fields, "salary", salary.isString() ? salary.asText() : json.writeValueAsString(salary));

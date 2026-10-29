@@ -49,8 +49,9 @@ class AnthropicExtractionGatewayTest {
     void authRateLimitAndServerErrorsExposeOnlySafeStatus() throws Exception {
         for (int code : new int[] {401, 429, 529}) {
             try (LocalServer server = new LocalServer(code, "secret provider body", new AtomicInteger())) {
+                AnthropicExtractionGateway client = gateway(server);
                 ExtractionFailureException failure = assertThrows(ExtractionFailureException.class,
-                        () -> gateway(server).extract(input, ExtractionPolicy.PRIMARY_MODEL, "synthetic-key"));
+                        () -> client.extract(input, ExtractionPolicy.PRIMARY_MODEL, "synthetic-key"));
                 assertFalse(failure.getMessage().contains("secret"));
                 assertEquals(code == 401 ? "AUTH" : "UNCERTAIN", failure.outcome());
             }
@@ -64,8 +65,9 @@ class AnthropicExtractionGatewayTest {
                 "{\"stop_reason\":\"max_tokens\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}",
                 "not-json"}) {
             try (LocalServer server = new LocalServer(200, response, new AtomicInteger())) {
+                AnthropicExtractionGateway client = gateway(server);
                 assertEquals("INVALID", assertThrows(ExtractionFailureException.class,
-                        () -> gateway(server).extract(input, ExtractionPolicy.PRIMARY_MODEL, "synthetic-key"))
+                        () -> client.extract(input, ExtractionPolicy.PRIMARY_MODEL, "synthetic-key"))
                         .outcome());
             }
         }
@@ -100,6 +102,30 @@ class AnthropicExtractionGatewayTest {
             assertEquals(20, response.cacheCreationTokens());
             assertEquals(30, response.cacheReadTokens());
             assertEquals(40, response.outputTokens());
+        }
+    }
+
+    @Test
+    void malformedUsageAndContentAreRejectedWithoutInventingBillableTokens() throws Exception {
+        for (String response : new String[] {
+                """
+                {"stop_reason":"end_turn","content":[{"type":"text","text":"{}"}],
+                "usage":{"input_tokens":-1,"output_tokens":20}}
+                """,
+                """
+                {"stop_reason":"end_turn","content":[{"type":"text","text":"{}"}],
+                "usage":{"input_tokens":100,"cache_creation_input_tokens":-2,"output_tokens":20}}
+                """,
+                """
+                {"stop_reason":"end_turn","content":[],
+                "usage":{"input_tokens":100,"output_tokens":20}}
+                """}) {
+            try (LocalServer server = new LocalServer(200, response, new AtomicInteger())) {
+                AnthropicExtractionGateway client = gateway(server);
+                ExtractionFailureException failure = assertThrows(ExtractionFailureException.class,
+                        () -> client.extract(input, ExtractionPolicy.PRIMARY_MODEL, "synthetic-key"));
+                assertEquals("INVALID", failure.outcome());
+            }
         }
     }
 
@@ -142,9 +168,8 @@ class AnthropicExtractionGatewayTest {
             }
         });
         server.start();
-        try {
+        try (HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(1)).build()) {
             URI endpoint = URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/v1/messages");
-            var client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(1)).build();
             var timeoutGateway = new AnthropicExtractionGateway(client, endpoint, json, Duration.ofMillis(100));
             assertEquals("UNCERTAIN", assertThrows(ExtractionFailureException.class,
                     () -> timeoutGateway.extract(input, ExtractionPolicy.PRIMARY_MODEL, "synthetic-key"))
