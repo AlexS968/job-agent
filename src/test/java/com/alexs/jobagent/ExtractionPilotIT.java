@@ -113,6 +113,24 @@ class ExtractionPilotIT {
     }
 
     @Test
+    void previousPromptAndSchemaVersionCannotBeReusedAsCurrentWork() {
+        long vacancy = insert();
+        var input = inputs.load(vacancy);
+        jdbc.update("INSERT INTO extraction_work (vacancy_id, source_item_id, vacancy_revision, provider, "
+                + "model, prompt_version, schema_version, policy_version, input_json, kind, status, result_json) "
+                + "VALUES (?, ?, ?, 'ANTHROPIC', ?, 'evidence-v1', 'schema-v1', 'pilot-v1', "
+                + "CAST(? AS jsonb), 'PRIMARY', 'SUCCEEDED', '{\"claims\":[]}'::jsonb)",
+                vacancy, input.sourceItemId(), input.revision(), ExtractionPolicy.PRIMARY_MODEL,
+                json.writeValueAsString(input.sourceFields()));
+        assertNull(service.current(vacancy, false));
+        when(gateway.extract(any(), anyString(), anyString()))
+                .thenReturn(new ExtractionGatewayResponseDTO(RESPONSE, 100, 50, "req-new-contract"));
+        assertFalse(run(vacancy, false, false).reused());
+        assertEquals(2, jdbc.queryForObject("SELECT count(*) FROM extraction_work", Integer.class));
+        assertEquals(1, repository.budget().attempts());
+    }
+
+    @Test
     void estimatedProductionCostIncludesCompleteRequestAndMargin() {
         long vacancy = insert();
         ExtractionPilotService estimated = new ExtractionPilotService(inputs, validator, gateway, repository,

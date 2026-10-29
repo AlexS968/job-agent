@@ -155,6 +155,25 @@ class ExtractionOutputValidatorTest {
     }
 
     @Test
+    void annualGrossPeriodIsCanonicalOnlyWithMatchingSourceEvidence() {
+        ExtractionInputDTO salary = new ExtractionInputDTO(1, 2, "a".repeat(64), Map.of(
+                "description", "The annual gross salary range for this position is: €80.000 - €95.000 EUR. "
+                        + "The role is based in Berlin."));
+        String annual = """
+                {"claims":[{"fact":"SALARY_PERIOD","value":"annual gross","sourceField":"description",
+                "quote":"The annual gross salary range for this position is:","uncertainty":"STATED"}]}
+                """;
+        assertEquals("YEAR", validator.validate(annual, salary).claims().getFirst().value());
+        String unsupported = annual.replace("\"value\":\"annual gross\"", "\"value\":\"annual-ish\"");
+        assertEquals("INVALID_FACT_VALUE", assertThrows(ExtractionValidationException.class,
+                () -> validator.validate(unsupported, salary)).category());
+        String unrelatedQuote = annual.replace("The annual gross salary range for this position is:",
+                "The role is based in Berlin.");
+        assertEquals("INVALID_FACT_VALUE", assertThrows(ExtractionValidationException.class,
+                () -> validator.validate(unrelatedQuote, salary)).category());
+    }
+
+    @Test
     void restrictionFirstStillMarksContradictoryPermissionAsConflicting() {
         var claims = validator.validate("""
                 {"claims":[{"fact":"COUNTRY_RESTRICTION","value":"Germany","sourceField":"description",

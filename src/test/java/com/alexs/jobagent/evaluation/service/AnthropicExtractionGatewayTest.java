@@ -42,6 +42,14 @@ class AnthropicExtractionGatewayTest {
             assertEquals(ExtractionPolicy.PRIMARY_MODEL, request.path("model").asText());
             assertEquals("json_schema", request.path("output_config").path("format").path("type").asText());
             assertEquals("disabled", request.path("thinking").path("type").asText());
+            assertTrue(request.path("system").asText().contains("annual gross means YEAR"));
+            JsonNode alternatives = request.path("output_config").path("format").path("schema")
+                    .path("properties").path("claims").path("items").path("anyOf");
+            assertEquals(3, alternatives.size());
+            assertEquals("SALARY_PERIOD", alternatives.get(1).path("properties").path("fact")
+                    .path("enum").get(0).asText());
+            assertEquals("YEAR", alternatives.get(1).path("properties").path("value")
+                    .path("enum").get(0).asText());
         }
     }
 

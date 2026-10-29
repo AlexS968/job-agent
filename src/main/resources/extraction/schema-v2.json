@@ -1,0 +1,168 @@
+{
+  "type": "object",
+  "properties": {
+    "claims": {
+      "type": "array",
+      "items": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "fact": {
+                "type": "string",
+                "enum": [
+                  "ARRANGEMENT"
+                ]
+              },
+              "value": {
+                "type": "string",
+                "enum": [
+                  "REMOTE",
+                  "HYBRID",
+                  "ONSITE"
+                ]
+              },
+              "sourceField": {
+                "type": "string",
+                "enum": [
+                  "title",
+                  "location",
+                  "description",
+                  "workplaceType",
+                  "salary"
+                ]
+              },
+              "quote": {
+                "type": "string"
+              },
+              "uncertainty": {
+                "type": "string",
+                "enum": [
+                  "STATED",
+                  "UNCERTAIN",
+                  "CONFLICTING"
+                ]
+              }
+            },
+            "required": [
+              "fact",
+              "value",
+              "sourceField",
+              "quote",
+              "uncertainty"
+            ],
+            "additionalProperties": false,
+            "description": "Use an arrangement only when the supplied source explicitly supports it."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "fact": {
+                "type": "string",
+                "enum": [
+                  "SALARY_PERIOD"
+                ]
+              },
+              "value": {
+                "type": "string",
+                "enum": [
+                  "YEAR",
+                  "MONTH",
+                  "DAY",
+                  "HOUR"
+                ]
+              },
+              "sourceField": {
+                "type": "string",
+                "enum": [
+                  "title",
+                  "location",
+                  "description",
+                  "workplaceType",
+                  "salary"
+                ]
+              },
+              "quote": {
+                "type": "string"
+              },
+              "uncertainty": {
+                "type": "string",
+                "enum": [
+                  "STATED",
+                  "UNCERTAIN",
+                  "CONFLICTING"
+                ]
+              }
+            },
+            "required": [
+              "fact",
+              "value",
+              "sourceField",
+              "quote",
+              "uncertainty"
+            ],
+            "additionalProperties": false,
+            "description": "Use YEAR for annual or annual gross salary; omit an unsupported or ambiguous period."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "fact": {
+                "type": "string",
+                "enum": [
+                  "TITLE",
+                  "FAMILY",
+                  "SENIORITY",
+                  "REQUIRED_SKILL",
+                  "PREFERRED_SKILL",
+                  "COUNTRY_PERMISSION",
+                  "COUNTRY_RESTRICTION",
+                  "SALARY_MIN",
+                  "SALARY_MAX",
+                  "SALARY_CURRENCY"
+                ]
+              },
+              "value": {
+                "type": "string"
+              },
+              "sourceField": {
+                "type": "string",
+                "enum": [
+                  "title",
+                  "location",
+                  "description",
+                  "workplaceType",
+                  "salary"
+                ]
+              },
+              "quote": {
+                "type": "string"
+              },
+              "uncertainty": {
+                "type": "string",
+                "enum": [
+                  "STATED",
+                  "UNCERTAIN",
+                  "CONFLICTING"
+                ]
+              }
+            },
+            "required": [
+              "fact",
+              "value",
+              "sourceField",
+              "quote",
+              "uncertainty"
+            ],
+            "additionalProperties": false,
+            "description": "For salary amounts use plain decimal digits; for currency use a three-letter ISO code. Application validation enforces these formats."
+          }
+        ]
+      }
+    }
+  },
+  "required": [
+    "claims"
+  ],
+  "additionalProperties": false
+}
