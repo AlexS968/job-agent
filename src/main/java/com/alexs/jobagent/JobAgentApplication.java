@@ -20,6 +20,7 @@ import com.alexs.jobagent.evaluation.service.ProfileFileService;
 import com.alexs.jobagent.evaluation.service.RuleEvaluationPolicy;
 import com.alexs.jobagent.evaluation.service.ExtractionPilotService;
 import com.alexs.jobagent.evaluation.service.ExtractionPolicy;
+import com.alexs.jobagent.evaluation.service.ExtractionAwareEvaluationPolicy;
 import com.alexs.jobagent.evaluation.exception.ExtractionValidationException;
 import com.alexs.jobagent.evaluation.exception.PartialExtractionException;
 import com.alexs.jobagent.evaluation.dto.VacancyEvaluationDTO;
@@ -138,6 +139,8 @@ public class JobAgentApplication {
             case "--mode=import-active-sources" -> runImportActiveSources(args, registry);
             case "--mode=evaluate-rules" -> runEvaluateRules(args, profiles, evaluations);
             case "--mode=shortlist" -> runShortlist(args, profiles, evaluations);
+            case "--mode=evaluate-extraction" -> runEvaluateExtraction(args, profiles, evaluations);
+            case "--mode=shortlist-extraction" -> runShortlistExtraction(args, profiles, evaluations);
             case "--mode=extract-plan" -> runExtractionPlan(args, extraction);
             case "--mode=extract-status" -> runExtractionStatus(args, extraction);
             case "--mode=extract-recover" -> runExtractionRecovery(args, extraction);
@@ -288,36 +291,60 @@ public class JobAgentApplication {
     }
 
     private void runEvaluateRules(String[] args, ProfileFileService profiles, EvaluationService evaluations) {
+        runEvaluation(args, profiles, evaluations, "--mode=evaluate-rules", RuleEvaluationPolicy.VERSION);
+    }
+
+    private void runEvaluateExtraction(String[] args, ProfileFileService profiles, EvaluationService evaluations) {
+        runEvaluation(args, profiles, evaluations, "--mode=evaluate-extraction",
+                ExtractionAwareEvaluationPolicy.VERSION);
+    }
+
+    private void runEvaluation(String[] args, ProfileFileService profiles, EvaluationService evaluations,
+                               String mode, String version) {
         if (args.length < 2 || args.length > 4) {
             throw new IllegalArgumentException("Evaluation requires a profile file and optional cursor/limit");
         }
-        requireOnlyOptions(args, "--mode=evaluate-rules", PROFILE_FILE_OPTION, "--after-id=", LIMIT_OPTION);
+        requireOnlyOptions(args, mode, PROFILE_FILE_OPTION, "--after-id=", LIMIT_OPTION);
         var profile = profiles.load(option(args, PROFILE_FILE_OPTION));
         long after = optionalLong(args, "--after-id=", 0);
         int limit = Math.toIntExact(optionalLong(args, LIMIT_OPTION, 100));
-        var result = evaluations.evaluate(profile, after, limit, RuleEvaluationPolicy.VERSION);
-        LOGGER.info("Rule evaluation: examined={}, created={}, already_current={}, last_vacancy_id={}, more_available={}",
+        var result = evaluations.evaluate(profile, after, limit, version);
+        LOGGER.info("Evaluation: policy={}, examined={}, created={}, already_current={}, last_vacancy_id={}, more_available={}",
+                version,
                 result.examined(), result.created(), result.alreadyCurrent(), result.lastVacancyId(),
                 result.moreAvailable());
     }
 
     private void runShortlist(String[] args, ProfileFileService profiles, EvaluationService evaluations) {
+        runShortlistMode(args, profiles, evaluations, "--mode=shortlist", RuleEvaluationPolicy.VERSION);
+    }
+
+    private void runShortlistExtraction(String[] args, ProfileFileService profiles, EvaluationService evaluations) {
+        runShortlistMode(args, profiles, evaluations, "--mode=shortlist-extraction",
+                ExtractionAwareEvaluationPolicy.VERSION);
+    }
+
+    private void runShortlistMode(String[] args, ProfileFileService profiles, EvaluationService evaluations,
+                                  String mode, String version) {
         if (args.length < 2 || args.length > 3) {
             throw new IllegalArgumentException("Shortlist requires a profile file and optional limit");
         }
-        requireOnlyOptions(args, "--mode=shortlist", PROFILE_FILE_OPTION, LIMIT_OPTION);
+        requireOnlyOptions(args, mode, PROFILE_FILE_OPTION, LIMIT_OPTION);
         var profile = profiles.load(option(args, PROFILE_FILE_OPTION));
         int limit = Math.toIntExact(optionalLong(args, LIMIT_OPTION, 20));
-        var report = evaluations.shortlist(profile, limit, RuleEvaluationPolicy.VERSION);
-        LOGGER.info("Shortlist: suitable={}, needs_review={}", report.suitable().size(), report.needsReview().size());
+        var report = evaluations.shortlist(profile, limit, version);
+        LOGGER.info("Shortlist: policy={}, suitable={}, needs_review={}", version,
+                report.suitable().size(), report.needsReview().size());
         report.suitable().forEach(item -> logEvaluation("SUITABLE", item));
         report.needsReview().forEach(item -> logEvaluation("NEEDS_REVIEW", item));
     }
 
     private void logEvaluation(String group, VacancyEvaluationDTO item) {
         if (LOGGER.isInfoEnabled()) {
-            LOGGER.info("{} vacancy: id={}, rank={}, url={}, reasons={}, unknowns={}, evidence={}",
-                    group, item.vacancyId(), item.preferenceRank(), safeSourceUrl(item.originalUrl()),
+            LOGGER.info("{} vacancy: id={}, title={}, rank={}, role={}, url={}, extraction={}, work={}, rejected={}, reasons={}, unknowns={}, evidence={}",
+                    group, item.vacancyId(), safeSourceUrl(item.title()), item.preferenceRank(), item.roleClassification(),
+                    safeSourceUrl(item.originalUrl()), item.extractionStatus(), item.extractionWorkId(),
+                    item.rejectedCount(),
                     item.reasons(), item.unknowns(), item.evidence());
         }
     }

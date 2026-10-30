@@ -19,6 +19,19 @@ public class ExtractionRepository {
         this.jdbc = jdbc;
     }
 
+    public SelectedEvidenceRow selectedEvidence(long vacancyId, long sourceItemId, String revision,
+                                                String model, String promptVersion, String schemaVersion,
+                                                String policyVersion) {
+        return jdbc.query("SELECT id, status, result_json::text, rejected_count, rejection_diagnostics::text "
+                + "FROM extraction_work WHERE vacancy_id = ? AND source_item_id = ? AND vacancy_revision = ? "
+                + "AND provider = 'ANTHROPIC' AND kind = 'PRIMARY' AND model = ? AND prompt_version = ? "
+                + "AND schema_version = ? AND policy_version = ? AND status IN ('SUCCEEDED', 'PARTIAL') "
+                + "AND accepted_count > 0 AND result_json IS NOT NULL",
+                rs -> rs.next() ? new SelectedEvidenceRow(rs.getLong(1), rs.getString(2), rs.getString(3),
+                        rs.getInt(4), rs.getString(5)) : null,
+                vacancyId, sourceItemId, revision, model, promptVersion, schemaVersion, policyVersion);
+    }
+
     public BudgetRow lockBudget() {
         return jdbc.queryForObject("SELECT reserved_micro_usd, observed_micro_usd, attempts, primary_distinct, "
                 + "comparison_distinct, active_work_id, active_claim_token, halted_reason "
@@ -181,4 +194,6 @@ public class ExtractionRepository {
     public record WorkRow(long id, String status, String resultJson, UUID claimToken, boolean expired,
                           String inputJson, int acceptedCount, int rejectedCount,
                           String rejectionDiagnosticsJson) { }
+    public record SelectedEvidenceRow(long id, String status, String resultJson, int rejectedCount,
+                                      String rejectionsJson) { }
 }

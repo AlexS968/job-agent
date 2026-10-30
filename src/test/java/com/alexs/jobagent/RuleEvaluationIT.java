@@ -5,6 +5,10 @@ import static org.junit.jupiter.api.Assertions.*;
 import com.alexs.jobagent.evaluation.dto.LoadedProfileDTO;
 import com.alexs.jobagent.evaluation.dto.SearchProfileDTO;
 import com.alexs.jobagent.evaluation.service.EvaluationService;
+import com.alexs.jobagent.evaluation.service.ExtractionAwareEvaluationPolicy;
+import com.alexs.jobagent.evaluation.service.ExtractionInputService;
+import com.alexs.jobagent.evaluation.service.ExtractionOutputValidator;
+import com.alexs.jobagent.evaluation.service.ExtractionPolicy;
 import com.alexs.jobagent.evaluation.service.ProfileFileService;
 import com.alexs.jobagent.evaluation.service.RuleEvaluationPolicy;
 import java.nio.file.Files;
@@ -53,6 +57,8 @@ class RuleEvaluationIT {
     @Autowired JsonMapper json;
     @Autowired ProfileFileService profiles;
     @Autowired EvaluationService evaluation;
+    @Autowired ExtractionInputService extractionInputs;
+    @Autowired ExtractionOutputValidator extractionValidator;
     @Autowired PlatformTransactionManager manager;
     @TempDir Path directory;
 
@@ -64,7 +70,7 @@ class RuleEvaluationIT {
 
     @Test
     void migrationReplayVersionsAndStaleEvaluations() throws Exception {
-        assertEquals(12, jdbc.queryForObject("SELECT count(*) FROM flyway_schema_history", Integer.class));
+        assertEquals(13, jdbc.queryForObject("SELECT count(*) FROM flyway_schema_history", Integer.class));
         long vacancy = insert("Backend Engineer", COUNTRY_REMOTE);
         LoadedProfileDTO v1 = profile("v1", "Backend Engineer");
         assertEquals(1, evaluation.evaluate(v1, 0, 100, RuleEvaluationPolicy.VERSION).created());
@@ -85,6 +91,118 @@ class RuleEvaluationIT {
         assertEquals(4, count("vacancy_evaluations"));
         assertEquals(vacancy, evaluation.shortlist(v1, 10, RuleEvaluationPolicy.VERSION)
                 .needsReview().getFirst().vacancyId());
+    }
+
+    @Test
+    void currentPartialEvidenceSupersedesNoEvidenceAndPreservesHistory() throws Exception {
+        long vacancy = insert("Backend Engineer", "{\"workplaceType\":\"remote\"}");
+        LoadedProfileDTO profile = profile("v1", "Backend Engineer");
+        String version = ExtractionAwareEvaluationPolicy.VERSION;
+        assertEquals(1, evaluation.evaluate(profile, 0, 100, version).created());
+        var unavailable = evaluation.shortlist(profile, 10, version).needsReview().getFirst();
+        assertEquals("NONE", unavailable.extractionStatus());
+        assertTrue(unavailable.unknowns().contains("EXTRACTION_EVIDENCE_UNAVAILABLE"));
+        long work = insertExtraction(vacancy, "PARTIAL", ExtractionPolicy.POLICY_VERSION, """
+                {"claims":[{"fact":"SKILL","value":"Java or Go","sourceField":"description",
+                "quote":"Java or Go","uncertainty":"CONFLICTING",
+                "skillEvidence":{"kind":"TECHNOLOGY","requirementStrength":"UNKNOWN",
+                "sectionQuote":"","strengthQuote":""}},
+                {"fact":"COUNTRY_PERMISSION","value":"DE","sourceField":"description",
+                "quote":"Work in DE","uncertainty":"UNCERTAIN"}]}
+                """, 1);
+        assertTrue(evaluation.shortlist(profile, 10, version).needsReview().isEmpty());
+        assertEquals(1, evaluation.evaluate(profile, 0, 100, version).created());
+        assertEquals(0, evaluation.evaluate(profile, 0, 100, version).created());
+        var current = evaluation.shortlist(profile, 10, version).needsReview().getFirst();
+        assertEquals(work, current.extractionWorkId());
+        assertEquals("PARTIAL", current.extractionStatus());
+        assertEquals(1, current.rejectedCount());
+        assertTrue(current.evidence().stream().anyMatch(e -> e.contains("Java or Go [UNKNOWN]")));
+        assertTrue(current.unknowns().contains("COUNTRY_PERMISSION_NOT_INDEPENDENTLY_VERIFIED"));
+        assertTrue(current.unknowns().contains("EXTRACTION_SKILL_CONFLICTING"));
+        assertTrue(current.unknowns().contains("EXTRACTION_REJECTION_INVALID_FACT_VALUE"));
+        assertEquals(2, count("vacancy_evaluations"));
+        assertEquals(1, evaluation.evaluate(profile, 0, 100, RuleEvaluationPolicy.VERSION).created());
+    }
+
+    @Test
+    void incompatibleAndStaleExtractionNeverBecomesCurrent() throws Exception {
+        long vacancy = insert("Backend Engineer", "{}");
+        LoadedProfileDTO profile = profile("v1", "Backend Engineer");
+        insertExtraction(vacancy, "SUCCEEDED", "pilot-v5", "{\"claims\":[]}", 0);
+        assertEquals(1, evaluation.evaluate(profile, 0, 100, ExtractionAwareEvaluationPolicy.VERSION).created());
+        assertEquals("NONE", evaluation.shortlist(profile, 10, ExtractionAwareEvaluationPolicy.VERSION)
+                .needsReview().getFirst().extractionStatus());
+        insertExtraction(vacancy, "SUCCEEDED", ExtractionPolicy.POLICY_VERSION,
+                "{\"claims\":[{\"fact\":\"SENIORITY\",\"value\":\"Senior\",\"sourceField\":\"title\","
+                        + "\"quote\":\"Senior\",\"uncertainty\":\"STATED\"}]}", 0);
+        assertEquals(1, evaluation.evaluate(profile, 0, 100, ExtractionAwareEvaluationPolicy.VERSION).created());
+        jdbc.update("UPDATE vacancies SET title = 'Office Coordinator' WHERE id = ?", vacancy);
+        assertTrue(evaluation.shortlist(profile, 10, ExtractionAwareEvaluationPolicy.VERSION).needsReview().isEmpty());
+    }
+
+    @Test
+    void syntheticValidatedExtractionEvaluationAndShortlistReplay() throws Exception {
+        long vacancy = insert("Senior Backend Engineer", COUNTRY_REMOTE);
+        jdbc.update("UPDATE vacancies SET description = 'Java or Go experience' WHERE id = ?", vacancy);
+        var input = extractionInputs.load(vacancy);
+        var validated = extractionValidator.validate("""
+                {"truncated":false,"claims":[{"fact":"SENIORITY","value":"Senior",
+                "sourceField":"title","quote":"Senior Backend Engineer","uncertainty":"STATED"}]}
+                """, input);
+        long work = insertExtraction(vacancy, "SUCCEEDED", ExtractionPolicy.POLICY_VERSION,
+                json.writeValueAsString(validated), 0);
+        LoadedProfileDTO profile = profile("v1", "Backend Engineer");
+        String version = ExtractionAwareEvaluationPolicy.VERSION;
+        assertEquals(1, evaluation.evaluate(profile, 0, 100, version).created());
+        var report = evaluation.shortlist(profile, 1, version);
+        assertEquals(1, report.suitable().size());
+        assertEquals("Senior Backend Engineer", report.suitable().getFirst().title());
+        assertEquals(work, report.suitable().getFirst().extractionWorkId());
+        assertTrue(report.suitable().getFirst().evidence().stream()
+                .anyMatch(value -> value.contains("extracted SENIORITY")));
+        assertEquals(0, evaluation.evaluate(profile, 0, 100, version).created());
+        assertEquals(1, count("vacancy_evaluations"));
+    }
+
+    @Test
+    void extractionAwareConcurrentReplayAndFailedInsertAreAtomic() throws Exception {
+        long vacancy = insert("Backend Engineer", COUNTRY_REMOTE);
+        insertExtraction(vacancy, "SUCCEEDED", ExtractionPolicy.POLICY_VERSION,
+                "{\"claims\":[{\"fact\":\"FAMILY\",\"value\":\"Backend\","
+                        + "\"sourceField\":\"title\",\"quote\":\"Backend Engineer\","
+                        + "\"uncertainty\":\"STATED\"}]}", 0);
+        LoadedProfileDTO profile = profile("v1", "Backend Engineer");
+        jdbc.execute("CREATE FUNCTION reject_extraction_evaluation() RETURNS trigger LANGUAGE plpgsql AS $$ "
+                + "BEGIN RAISE EXCEPTION 'synthetic insert failure'; END $$");
+        jdbc.execute("CREATE TRIGGER reject_extraction_evaluation BEFORE INSERT ON vacancy_evaluations "
+                + "FOR EACH ROW EXECUTE FUNCTION reject_extraction_evaluation()");
+        assertThrows(RuntimeException.class, () -> evaluation.evaluate(profile, 0, 100,
+                ExtractionAwareEvaluationPolicy.VERSION));
+        assertEquals(0, count("vacancy_evaluations"));
+        jdbc.execute("DROP TRIGGER reject_extraction_evaluation ON vacancy_evaluations");
+        jdbc.execute("DROP FUNCTION reject_extraction_evaluation()");
+        CountDownLatch start = new CountDownLatch(1);
+        var first = CompletableFuture.supplyAsync(() -> awaitAndEvaluate(start, profile,
+                ExtractionAwareEvaluationPolicy.VERSION));
+        var second = CompletableFuture.supplyAsync(() -> awaitAndEvaluate(start, profile,
+                ExtractionAwareEvaluationPolicy.VERSION));
+        start.countDown();
+        assertEquals(1, first.get(10, TimeUnit.SECONDS) + second.get(10, TimeUnit.SECONDS));
+        assertEquals(1, count("vacancy_evaluations"));
+    }
+
+    private long insertExtraction(long vacancy, String status, String policyVersion, String result, int rejected) {
+        var input = extractionInputs.load(vacancy);
+        return jdbc.queryForObject("INSERT INTO extraction_work(vacancy_id, source_item_id, vacancy_revision, "
+                + "provider, model, prompt_version, schema_version, policy_version, input_json, kind, status, "
+                + "result_json, accepted_count, rejected_count, rejection_diagnostics) "
+                + "VALUES (?, ?, ?, 'ANTHROPIC', ?, ?, ?, ?, '{}'::jsonb, 'PRIMARY', ?, ?::jsonb, ?, ?, "
+                + "?::jsonb) RETURNING id", Long.class,
+                vacancy, input.sourceItemId(), input.revision(), ExtractionPolicy.PRIMARY_MODEL,
+                ExtractionPolicy.PROMPT_VERSION, ExtractionPolicy.SCHEMA_VERSION, policyVersion,
+                status, result, result.contains("\"fact\"") ? 1 : 0, rejected,
+                rejected == 0 ? "[]" : "[{\"index\":3,\"category\":\"INVALID_FACT_VALUE\"}]");
     }
 
     @Test
@@ -219,9 +337,13 @@ class RuleEvaluationIT {
     }
 
     private int awaitAndEvaluate(CountDownLatch start, LoadedProfileDTO profile) {
+        return awaitAndEvaluate(start, profile, RuleEvaluationPolicy.VERSION);
+    }
+
+    private int awaitAndEvaluate(CountDownLatch start, LoadedProfileDTO profile, String version) {
         try {
             assertTrue(start.await(5, TimeUnit.SECONDS));
-            return evaluation.evaluate(profile, 0, 100, RuleEvaluationPolicy.VERSION).created();
+            return evaluation.evaluate(profile, 0, 100, version).created();
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException(interrupted);
