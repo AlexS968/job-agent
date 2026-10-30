@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Pattern;
+import org.jsoup.parser.Parser;
 import org.springframework.stereotype.Service;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
@@ -25,6 +26,7 @@ public class ExtractionOutputValidator {
             "ARRANGEMENT", COUNTRY_PERMISSION, COUNTRY_RESTRICTION,
             "SALARY_MIN", "SALARY_MAX", "SALARY_CURRENCY", "SALARY_PERIOD");
     private static final Set<String> UNCERTAINTIES = Set.of("STATED", "UNCERTAIN", "CONFLICTING");
+    private static final Pattern INLINE_HTML_TAG = Pattern.compile("(?i)</?(?:span|strong|em|b|i|u)(?:\\s+[^>]*)?>");
     private final JsonMapper json;
 
     public ExtractionOutputValidator(JsonMapper json) {
@@ -69,10 +71,14 @@ public class ExtractionOutputValidator {
         if (!input.sourceFields().containsKey(field)) {
             throw new ExtractionValidationException(index, "SOURCE_FIELD_UNAVAILABLE");
         }
-        if (!normalize(input.sourceFields().get(field)).contains(normalize(quote))) {
+        String source = input.sourceFields().get(field);
+        String evidenceSource = evidenceText(source);
+        if (!normalize(source).contains(normalize(quote))
+                && !normalize(evidenceSource).contains(normalize(evidenceText(quote)))) {
             throw new ExtractionValidationException(index, "QUOTE_NOT_IN_SOURCE_FIELD");
         }
-        if (skill && (!input.sourceFields().get(field).contains(quote) || !quote.contains(value))) {
+        if (skill && (!(source.contains(quote) || evidenceSource.contains(evidenceText(quote)))
+                || !quote.contains(value))) {
             throw new ExtractionValidationException(index, "SKILL_VALUE_NOT_IN_QUOTE");
         }
         value = canonicalValue(fact, value, quote);
@@ -81,11 +87,11 @@ public class ExtractionOutputValidator {
         }
         // A generic remote label, country mention or office address cannot prove permission.
         if (COUNTRY_PERMISSION.equals(fact) && "STATED".equals(uncertainty)
-                && !explicitPermission(quote, value, input.sourceFields().get(field))) {
+                && !explicitPermission(quote, value, source)) {
             uncertainty = "UNCERTAIN";
         }
         SkillEvidenceDTO evidence = skill ? validateSkillEvidence(node.path("skillEvidence"),
-                input.sourceFields().get(field), value, quote, index) : null;
+                evidenceSource, value, quote, index) : null;
         return new ExtractionClaimDTO(fact, value, field, quote, uncertainty, evidence);
     }
 
@@ -102,12 +108,16 @@ public class ExtractionOutputValidator {
                 || !Set.of("REQUIRED", "PREFERRED", "UNKNOWN").contains(strength)) {
             throw new ExtractionValidationException(index, "INVALID_SKILL_EVIDENCE");
         }
-        validateSectionContext(source, quote, section, index);
-        if (!strengthQuote.isEmpty() && !source.contains(strengthQuote)) {
+        String renderedSection = evidenceText(section);
+        String renderedStrengthQuote = evidenceText(strengthQuote);
+        validateSectionContext(source, evidenceText(quote), renderedSection, index);
+        if (!strengthQuote.isEmpty() && !source.contains(renderedStrengthQuote)
+                && !source.contains(strengthQuote)) {
             throw new ExtractionValidationException(index, "SKILL_STRENGTH_QUOTE_NOT_SUPPORTED");
         }
         if (!"UNKNOWN".equals(strength)
-                && !explicitStrength(strength, strengthQuote, source, value, quote, section)) {
+                && !explicitStrength(strength, renderedStrengthQuote, source, value,
+                        evidenceText(quote), renderedSection)) {
             throw new ExtractionValidationException(index, "SKILL_STRENGTH_NOT_SUPPORTED");
         }
         return new SkillEvidenceDTO(kind, strength, section, strengthQuote);
@@ -264,6 +274,12 @@ public class ExtractionOutputValidator {
     private static String normalize(String value) {
         return Normalizer.normalize(value, Normalizer.Form.NFC).replaceAll("\\s+", " ")
                 .trim().toLowerCase(Locale.ROOT);
+    }
+
+    private static String evidenceText(String source) {
+        // Decode the escaped HTML layer and text entities, retaining block and heading boundaries.
+        String decoded = Parser.unescapeEntities(Parser.unescapeEntities(source, false), false);
+        return INLINE_HTML_TAG.matcher(decoded).replaceAll("").replace('\u00a0', ' ');
     }
 
     private static boolean explicitPermission(String quote, String country, String sourceField) {

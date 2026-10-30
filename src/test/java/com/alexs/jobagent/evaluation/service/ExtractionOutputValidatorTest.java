@@ -54,8 +54,10 @@ class ExtractionOutputValidatorTest {
                 "skillEvidence":{"kind":"COMPETENCY","requirementStrength":"UNKNOWN",
                 "sectionQuote":"","strengthQuote":""}}]}
                 """;
+        assertEquals(2, validator.validate(content, escaped).claims().size());
+        String unsupported = content.replace("We're building backend systems", "We invented backend systems");
         ExtractionValidationException failure = assertThrows(ExtractionValidationException.class,
-                () -> validator.validate(content, escaped));
+                () -> validator.validate(unsupported, escaped));
         assertEquals(1, failure.claimIndex());
         assertEquals("QUOTE_NOT_IN_SOURCE_FIELD", failure.category());
         assertFalse(failure.getMessage().contains("We're"));
@@ -320,6 +322,45 @@ class ExtractionOutputValidatorTest {
         assertEquals("SKILL_SECTION_NOT_SUPPORTED", assertThrows(ExtractionValidationException.class,
                 () -> validator.validate("{\"truncated\":false,\"claims\":[" + wrongSection + "]}", source))
                 .category());
+    }
+
+    @Test
+    void decodedHeadingAndInlineTextRetainExactSkillEvidence() {
+        String heading = "&lt;h4&gt;We&#39;d love to see&amp;nbsp;&lt;/h4&gt;";
+        String quote = "read, review, and debug code in multiple modern languages (e.g., Java, Go)";
+        String source = heading + "&lt;li&gt;" + "Other experience. ".repeat(90)
+                + "&lt;span&gt;read, review, and debug code in multiple modern languages (e.g., &lt;/span&gt;"
+                + "&lt;span&gt;Java, Go)&lt;/span&gt;&lt;/li&gt;";
+        String claim = skill("Java", quote, "TECHNOLOGY", "UNKNOWN", "We'd love to see", "");
+        assertEquals(1, validator.validate("{\"truncated\":false,\"claims\":[" + claim + "]}",
+                skillInput(source)).claims().size());
+
+        String interrupted = heading + "&lt;h4&gt;Other section&lt;/h4&gt;" + source.substring(heading.length());
+        assertEquals("SKILL_SECTION_NOT_SUPPORTED", assertThrows(ExtractionValidationException.class,
+                () -> validator.validate("{\"truncated\":false,\"claims\":[" + claim + "]}",
+                        skillInput(interrupted))).category());
+    }
+
+    @Test
+    void renderedQuotesAcceptEntitiesButNotParaphrasedSkillsOrCrossBlockText() {
+        String heading = "&lt;h4&gt;We&#39;d love to see&lt;/h4&gt;";
+        String quoted = "Philosophically aligned with \"Everything as Code.\"";
+        String source = heading + "&lt;li&gt;Philosophically aligned with &quot;Everything as Code.&quot;&lt;/li&gt;";
+        String exact = skill("Everything as Code", quoted.replace("\"", "\\\""), "COMPETENCY",
+                "UNKNOWN", "We'd love to see", "");
+        assertEquals(1, validator.validate("{\"truncated\":false,\"claims\":[" + exact + "]}",
+                skillInput(source)).claims().size());
+
+        String paraphrased = skill("DevOps culture experience", "Experience in a DevOps culture",
+                "COMPETENCY", "UNKNOWN", "We'd love to see", "");
+        assertEquals("SKILL_VALUE_NOT_IN_QUOTE", assertThrows(ExtractionValidationException.class,
+                () -> validator.validate("{\"truncated\":false,\"claims\":[" + paraphrased + "]}",
+                        skillInput(heading + "&lt;li&gt;Experience in a DevOps culture&lt;/li&gt;"))).category());
+
+        String crossed = skill("Java", "Java and Go", "TECHNOLOGY", "UNKNOWN", "We'd love to see", "");
+        assertEquals("QUOTE_NOT_IN_SOURCE_FIELD", assertThrows(ExtractionValidationException.class,
+                () -> validator.validate("{\"truncated\":false,\"claims\":[" + crossed + "]}",
+                        skillInput(heading + "&lt;li&gt;Java&lt;/li&gt;&lt;li&gt;and Go&lt;/li&gt;"))).category());
     }
 
     @Test
