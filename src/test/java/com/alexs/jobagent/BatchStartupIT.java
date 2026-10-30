@@ -31,7 +31,7 @@ class BatchStartupIT {
                  var statement = connection.createStatement();
                  var rows = statement.executeQuery("SELECT COUNT(*) FROM flyway_schema_history WHERE success")) {
                 assertTrue(rows.next());
-                assertEquals(11, rows.getInt(1));
+                assertEquals(12, rows.getInt(1));
             }
         }
     }
@@ -140,6 +140,36 @@ class BatchStartupIT {
                 assertTrue(rows.next());
                 assertEquals(0, rows.getInt(1));
             }
+        }
+    }
+
+    @Test
+    void extractionStatusShowsPartialBacklogWithoutAProviderCall() throws Exception {
+        try (PostgreSQLContainer postgres = new PostgreSQLContainer("postgres:17.11-alpine")
+                .withDatabaseName("job_agent_partial_status_test").withUsername("test_user")
+                .withPassword(PASSWORD)) {
+            postgres.start();
+            assertEquals(0, run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
+                    "--mode=synthetic").exitCode());
+            try (var connection = java.sql.DriverManager.getConnection(postgres.getJdbcUrl(),
+                    postgres.getUsername(), PASSWORD);
+                 var statement = connection.createStatement()) {
+                statement.execute("""
+                        INSERT INTO extraction_work (vacancy_id, source_item_id, vacancy_revision, provider,
+                            model, prompt_version, schema_version, policy_version, input_json, kind,
+                            status, result_json, accepted_count, rejected_count, rejection_diagnostics)
+                        VALUES (1, 1, repeat('a', 64), 'ANTHROPIC', 'claude-haiku-5-5', 'evidence-v3',
+                            'schema-v3', 'pilot-v6', '{}'::jsonb, 'PRIMARY', 'PARTIAL',
+                            '{"claims":[{"fact":"TITLE","value":"Synthetic","sourceField":"title",
+                            "quote":"Synthetic","uncertainty":"STATED"}]}'::jsonb, 1, 1,
+                            '[{"index":1,"category":"UNSUPPORTED_FACT"}]'::jsonb)
+                        """);
+            }
+            Result status = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
+                    "--mode=extract-status");
+            assertEquals(0, status.exitCode(), status.output());
+            assertTrue(status.output().contains("partial=1"), status.output());
+            assertFalse(status.output().contains(PASSWORD));
         }
     }
 

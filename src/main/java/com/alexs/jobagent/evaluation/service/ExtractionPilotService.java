@@ -7,11 +7,15 @@ import com.alexs.jobagent.evaluation.dto.ExtractionInputDTO;
 import com.alexs.jobagent.evaluation.dto.ExtractionOutputDTO;
 import com.alexs.jobagent.evaluation.dto.ExtractionResultDTO;
 import com.alexs.jobagent.evaluation.dto.ExtractionUsageDTO;
+import com.alexs.jobagent.evaluation.dto.ExtractionRejectionDTO;
+import com.alexs.jobagent.evaluation.dto.ExtractionValidationResultDTO;
 import com.alexs.jobagent.evaluation.dto.ExtractionWorkIdentityDTO;
 import com.alexs.jobagent.evaluation.exception.ExtractionFailureException;
 import com.alexs.jobagent.evaluation.exception.ExtractionValidationException;
 import com.alexs.jobagent.evaluation.repository.ExtractionRepository;
 import java.time.Clock;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 import java.util.function.Supplier;
 import org.springframework.stereotype.Service;
@@ -25,6 +29,7 @@ import tools.jackson.databind.json.JsonMapper;
 public class ExtractionPilotService {
     private static final String UNCERTAIN = "UNCERTAIN";
     private static final String SUCCEEDED = "SUCCEEDED";
+    private static final String PARTIAL = "PARTIAL";
     private final ExtractionInputService inputs;
     private final ExtractionOutputValidator validator;
     private final AnthropicExtractionGateway gateway;
@@ -89,7 +94,8 @@ public class ExtractionPilotService {
             ExtractionOutputDTO output = work.resultJson() == null ? null
                     : json.readValue(work.resultJson(), ExtractionOutputDTO.class);
             return new ExtractionResultDTO(work.id(), work.status(), model, input.sourceItemId(),
-                    input.revision(), output, true);
+                    input.revision(), output, true, acceptedCount(work, output), work.rejectedCount(),
+                    rejections(work.rejectionDiagnosticsJson()));
         });
     }
 
@@ -130,12 +136,12 @@ public class ExtractionPilotService {
 
     private ExtractionResultDTO execute(PreparedRequest request, Reservation reservation) {
         ExtractionGatewayResponseDTO response = null;
-        ExtractionOutputDTO output;
+        ExtractionValidationResultDTO validation;
         long actual;
         try {
             cancellation.check();
             response = gateway.extract(request.input(), request.model(), request.key());
-            output = validator.validate(response.content(), request.input());
+            validation = validator.validatePartial(response.content(), request.input());
             actual = ExtractionPolicy.cost(request.model(), response.inputTokens(), response.cacheCreationTokens(),
                     response.cacheReadTokens(), response.outputTokens());
             if (actual > reservation.amount()) {
@@ -145,25 +151,39 @@ public class ExtractionPilotService {
             recordFailure(request.model(), reservation, response, original);
             throw original;
         }
-        return completeSuccess(request, reservation, response, output, actual);
+        return completeValidated(request, reservation, response, validation, actual);
     }
 
-    private ExtractionResultDTO completeSuccess(PreparedRequest request, Reservation reservation,
-                                                ExtractionGatewayResponseDTO response, ExtractionOutputDTO output,
-                                                long actual) {
+    private ExtractionResultDTO completeValidated(PreparedRequest request, Reservation reservation,
+                                                  ExtractionGatewayResponseDTO response,
+                                                  ExtractionValidationResultDTO validation, long actual) {
+        String state = validation.acceptedCount() == 0 ? "FAILED"
+                : validation.rejectedCount() == 0 ? SUCCEEDED : PARTIAL;
+        String outcome = validation.acceptedCount() == 0
+                ? validation.rejectedCount() == 0 ? "EMPTY" : "NO_VALID_CLAIMS" : state;
         ExtractionUsageDTO usage = new ExtractionUsageDTO(response.inputTokens(), response.cacheCreationTokens(),
                 response.cacheReadTokens(), response.outputTokens(), actual, response.requestId());
         // A failed acknowledgement leaves the durable global claim for controlled recovery.
-        transactions.executeWithoutResult(status -> repository.finish(new ExtractionCompletionDTO(
-                reservation.workId(), reservation.token(), SUCCEEDED, json.writeValueAsString(output),
-                SUCCEEDED, usage, reservation.amount())));
-        return new ExtractionResultDTO(reservation.workId(), SUCCEEDED, request.model(),
-                request.input().sourceItemId(), request.input().revision(), output, false);
+        transactions.executeWithoutResult(status -> {
+            repository.finish(new ExtractionCompletionDTO(reservation.workId(), reservation.token(), state,
+                    json.writeValueAsString(validation.output()), outcome, usage, reservation.amount(),
+                    validation.acceptedCount(), validation.rejectedCount(),
+                    json.writeValueAsString(validation.rejections())));
+            if (!validation.rejections().isEmpty()) {
+                ExtractionRejectionDTO first = validation.rejections().getFirst();
+                repository.recordRejectedOutput(reservation.workId(), reservation.token(),
+                        first.index(), first.category(), response.content());
+            }
+        });
+        return new ExtractionResultDTO(reservation.workId(), state, request.model(),
+                request.input().sourceItemId(), request.input().revision(), validation.output(), false,
+                validation.acceptedCount(), validation.rejectedCount(), validation.rejections());
     }
 
     private void recordFailure(String model, Reservation reservation, ExtractionGatewayResponseDTO response,
                                RuntimeException original) {
-        String outcome = original instanceof ExtractionFailureException failure ? failure.outcome() : "INVALID";
+        String outcome = original instanceof ExtractionFailureException failure ? failure.outcome()
+                : original instanceof ExtractionValidationException ? "INVALID" : "INTERNAL_ERROR";
         String state = UNCERTAIN.equals(outcome) || "CANCELLED".equals(outcome)
                 || "OVER_ESTIMATE".equals(outcome) ? UNCERTAIN : "FAILED";
         ExtractionUsageDTO usage = failureUsage(model, response, original);
@@ -238,10 +258,11 @@ public class ExtractionPilotService {
         if (work != null && !json.readTree(work.inputJson()).equals(json.readTree(inputJson))) {
             throw new IllegalStateException("Extraction input changed without a version update");
         }
-        if (work != null && SUCCEEDED.equals(work.status())) {
+        if (work != null && (SUCCEEDED.equals(work.status()) || PARTIAL.equals(work.status()))) {
             ExtractionOutputDTO output = json.readValue(work.resultJson(), ExtractionOutputDTO.class);
-            return new Reservation(work.id(), null, 0, new ExtractionResultDTO(work.id(), SUCCEEDED, model,
-                    input.sourceItemId(), input.revision(), output, true));
+            return new Reservation(work.id(), null, 0, new ExtractionResultDTO(work.id(), work.status(), model,
+                    input.sourceItemId(), input.revision(), output, true, acceptedCount(work, output),
+                    work.rejectedCount(), rejections(work.rejectionDiagnosticsJson())));
         }
         requireAvailable(budget);
         if (comparison && !repository.primarySucceeded(identity(input, ExtractionPolicy.PRIMARY_MODEL), inputJson)) {
@@ -306,6 +327,19 @@ public class ExtractionPilotService {
 
     private static String model(boolean comparison) {
         return comparison ? ExtractionPolicy.COMPARISON_MODEL : ExtractionPolicy.PRIMARY_MODEL;
+    }
+
+    private List<ExtractionRejectionDTO> rejections(String serialized) {
+        List<ExtractionRejectionDTO> result = new ArrayList<>();
+        for (var node : json.readTree(serialized)) {
+            result.add(new ExtractionRejectionDTO(node.path("index").asInt(), node.path("category").asText()));
+        }
+        return List.copyOf(result);
+    }
+
+    private static int acceptedCount(ExtractionRepository.WorkRow work, ExtractionOutputDTO output) {
+        return SUCCEEDED.equals(work.status()) && work.acceptedCount() == 0 && output != null
+                ? output.claims().size() : work.acceptedCount();
     }
 
     public void recoverGlobalClaim(long workId, boolean confirmedNoInFlight,

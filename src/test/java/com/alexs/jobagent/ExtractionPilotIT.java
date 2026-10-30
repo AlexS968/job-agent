@@ -52,6 +52,14 @@ class ExtractionPilotIT {
             {"truncated":false,"claims":[{"fact":"TITLE","value":"Backend Engineer","sourceField":"title",
             "quote":"Backend Engineer","uncertainty":"STATED"}]}
             """;
+    private static final String PARTIAL_RESPONSE = """
+            {"truncated":false,"claims":[{"fact":"TITLE","value":"Backend Engineer","sourceField":"title",
+            "quote":"Backend Engineer","uncertainty":"STATED"},
+            {"fact":"SKILL","value":"invented","sourceField":"description",
+            "quote":"invented","uncertainty":"STATED",
+            "skillEvidence":{"kind":"TECHNOLOGY","requirementStrength":"REQUIRED",
+            "sectionQuote":"","strengthQuote":"required"}}]}
+            """;
     static { POSTGRES.start(); }
 
     @DynamicPropertySource
@@ -110,6 +118,162 @@ class ExtractionPilotIT {
         assertEquals(1, repository.budget().comparisonDistinct());
         assertEquals(2, repository.budget().succeeded());
         assertTrue(repository.budget().reservedMicroUsd() < ExtractionPolicy.TARGET_MICRO_USD);
+    }
+
+    @Test
+    void partialResultPersistsOnlyAcceptedClaimsAndIsReusedWithoutComparison() {
+        long vacancy = insert();
+        when(gateway.extract(any(), anyString(), anyString()))
+                .thenReturn(new ExtractionGatewayResponseDTO(PARTIAL_RESPONSE, 120, 30, "req-partial"));
+        var partial = run(vacancy, false, false);
+        assertEquals("PARTIAL", partial.status());
+        assertEquals(1, partial.acceptedCount());
+        assertEquals(1, partial.rejectedCount());
+        assertEquals(1, partial.rejections().getFirst().index());
+        assertEquals("SOURCE_FIELD_UNAVAILABLE", partial.rejections().getFirst().category());
+        assertEquals(1, partial.output().claims().size());
+        assertEquals(1, jdbc.queryForObject("SELECT accepted_count FROM extraction_work", Integer.class));
+        assertEquals(1, jdbc.queryForObject("SELECT rejected_count FROM extraction_work", Integer.class));
+        assertEquals(1, jdbc.queryForObject("SELECT jsonb_array_length(rejection_diagnostics) "
+                + "FROM extraction_work", Integer.class));
+        assertEquals(PARTIAL_RESPONSE, jdbc.queryForObject("SELECT rejected_output FROM extraction_attempts",
+                String.class));
+        assertEquals("PARTIAL", jdbc.queryForObject("SELECT outcome FROM extraction_attempts", String.class));
+        long actual = ExtractionPolicy.cost(ExtractionPolicy.PRIMARY_MODEL, 120, 30);
+        assertEquals(actual, repository.budget().reservedMicroUsd());
+        assertEquals(actual, repository.budget().observedMicroUsd());
+        assertNull(repository.budget().activeWorkId());
+        assertEquals(1, repository.budget().partial());
+        assertTrue(run(vacancy, false, false).reused());
+        assertEquals(1, service.current(vacancy, false).rejectedCount());
+        assertThrows(IllegalStateException.class, () -> run(vacancy, true, false));
+        assertEquals(1, repository.budget().attempts());
+        verify(gateway, times(1)).extract(any(), anyString(), anyString());
+    }
+
+    @Test
+    void acceptedSkillStrengthConflictPersistsAndReusesWithoutChangingSuccessStatus() {
+        long vacancy = insert();
+        jdbc.update("UPDATE vacancies SET description = ? WHERE id = ?",
+                "Java is required. JAVA is preferred.", vacancy);
+        String response = """
+                {"truncated":false,"claims":[
+                {"fact":"SKILL","value":"Java","sourceField":"description",
+                 "quote":"Java is required","uncertainty":"STATED",
+                 "skillEvidence":{"kind":"TECHNOLOGY","requirementStrength":"REQUIRED",
+                 "sectionQuote":"","strengthQuote":"required"}},
+                {"fact":"SKILL","value":"JAVA","sourceField":"description",
+                 "quote":"JAVA is preferred","uncertainty":"STATED",
+                 "skillEvidence":{"kind":"TECHNOLOGY","requirementStrength":"PREFERRED",
+                 "sectionQuote":"","strengthQuote":"preferred"}}]}
+                """;
+        when(gateway.extract(any(), anyString(), anyString()))
+                .thenReturn(new ExtractionGatewayResponseDTO(response, 100, 30, "req-conflict"));
+        var first = run(vacancy, false, false);
+        assertEquals("SUCCEEDED", first.status());
+        assertEquals(2, first.acceptedCount());
+        assertEquals(0, first.rejectedCount());
+        assertEquals("CONFLICTING", first.output().claims().get(0).uncertainty());
+        assertEquals("CONFLICTING", first.output().claims().get(1).uncertainty());
+        assertEquals("UNKNOWN", first.output().claims().get(0).skillEvidence().requirementStrength());
+        assertEquals("Java is required", first.output().claims().get(0).quote());
+        assertEquals("JAVA is preferred", first.output().claims().get(1).quote());
+        assertTrue(jdbc.queryForObject("SELECT result_json::text FROM extraction_work", String.class)
+                .contains("CONFLICTING"));
+        var reused = run(vacancy, false, false);
+        assertTrue(reused.reused());
+        assertEquals(first.output(), reused.output());
+        assertEquals(first.output(), service.current(vacancy, false).output());
+        assertEquals(1, repository.budget().attempts());
+        verify(gateway, times(1)).extract(any(), anyString(), anyString());
+    }
+
+    @Test
+    void wellFormedEmptyResponseIsFailedWithoutInventingFacts() {
+        long vacancy = insert();
+        when(gateway.extract(any(), anyString(), anyString())).thenReturn(new ExtractionGatewayResponseDTO(
+                "{\"truncated\":false,\"claims\":[]}", 100, 20, "req-empty"));
+        var result = run(vacancy, false, false);
+        assertEquals("FAILED", result.status());
+        assertEquals(0, result.acceptedCount());
+        assertEquals(0, result.rejectedCount());
+        assertEquals("EMPTY", jdbc.queryForObject("SELECT outcome FROM extraction_attempts", String.class));
+        assertEquals(0, repository.budget().partial());
+        assertNull(repository.budget().activeWorkId());
+        assertThrows(IllegalStateException.class, () -> run(vacancy, true, false));
+    }
+
+    @Test
+    void concurrentPartialClaimAllowsOneCallThenReusesCompletedResult() throws Exception {
+        long vacancy = insert();
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        when(gateway.extract(any(), anyString(), anyString())).thenAnswer(invocation -> {
+            entered.countDown();
+            if (!release.await(5, TimeUnit.SECONDS)) {
+                throw new AssertionError("HTTP gate timed out");
+            }
+            return new ExtractionGatewayResponseDTO(PARTIAL_RESPONSE, 100, 20, "req-partial");
+        });
+        CompletableFuture<?> first = CompletableFuture.runAsync(() -> run(vacancy, false, false));
+        assertTrue(entered.await(5, TimeUnit.SECONDS));
+        assertThrows(IllegalStateException.class, () -> run(vacancy, false, false));
+        release.countDown();
+        first.get(5, TimeUnit.SECONDS);
+        assertTrue(run(vacancy, false, false).reused());
+        assertEquals(1, repository.budget().attempts());
+        verify(gateway, times(1)).extract(any(), anyString(), anyString());
+    }
+
+    @Test
+    void partialCompletionDatabaseFailureRollsBackAcknowledgement() {
+        long vacancy = insert();
+        jdbc.execute("ALTER TABLE extraction_attempts ADD CONSTRAINT extraction_test_reject_partial "
+                + "CHECK (validation_category IS NULL)");
+        try {
+            when(gateway.extract(any(), anyString(), anyString()))
+                    .thenReturn(new ExtractionGatewayResponseDTO(PARTIAL_RESPONSE, 100, 20, "req-partial"));
+            assertThrows(RuntimeException.class, () -> run(vacancy, false, false));
+            assertEquals("CLAIMED", jdbc.queryForObject("SELECT status FROM extraction_work", String.class));
+            assertEquals("RESERVED", jdbc.queryForObject("SELECT outcome FROM extraction_attempts", String.class));
+            assertEquals(1, repository.budget().attempts());
+            assertNotNull(repository.budget().activeWorkId());
+        } finally {
+            jdbc.execute("ALTER TABLE extraction_attempts DROP CONSTRAINT extraction_test_reject_partial");
+        }
+    }
+
+    @Test
+    void partialResponseOverReservationStillHaltsWithoutSavingClaims() {
+        long vacancy = insert();
+        when(gateway.extract(any(), anyString(), anyString()))
+                .thenReturn(new ExtractionGatewayResponseDTO(PARTIAL_RESPONSE, 8_000_000, 50, "req-large"));
+        assertEquals("OVER_ESTIMATE", assertThrows(ExtractionFailureException.class,
+                () -> run(vacancy, false, false)).outcome());
+        assertEquals("UNCERTAIN", jdbc.queryForObject("SELECT status FROM extraction_work", String.class));
+        assertNull(jdbc.queryForObject("SELECT result_json::text FROM extraction_work", String.class));
+        assertEquals("USAGE_OVER_RESERVATION", repository.budget().haltedReason());
+        assertNotNull(repository.budget().activeWorkId());
+    }
+
+    @Test
+    void unexpectedValidatorErrorIsFatalAndNotRecordedAsRejectedClaim() {
+        long vacancy = insert();
+        ExtractionOutputValidator broken = mock(ExtractionOutputValidator.class);
+        when(broken.validatePartial(anyString(), any())).thenThrow(new IllegalStateException("synthetic defect"));
+        ExtractionPilotService affected = new ExtractionPilotService(inputs, broken, gateway, repository,
+                json, manager, Clock.fixed(Instant.parse("2026-10-29T12:00:00Z"), ZoneOffset.UTC),
+                () -> "synthetic-key", syntheticEstimator, new ExtractionCancellationGuard());
+        when(gateway.extract(any(), anyString(), anyString()))
+                .thenReturn(new ExtractionGatewayResponseDTO(RESPONSE, 100, 20, "req-internal"));
+        assertThrows(IllegalStateException.class,
+                () -> affected.extract(vacancy, false, false, true, "2026-10-29"));
+        assertEquals("INTERNAL_ERROR", jdbc.queryForObject("SELECT outcome FROM extraction_attempts",
+                String.class));
+        assertNull(jdbc.queryForObject("SELECT validation_category FROM extraction_attempts", String.class));
+        assertEquals(0, jdbc.queryForObject("SELECT rejected_count FROM extraction_work", Integer.class));
+        assertEquals(ExtractionPolicy.cost(ExtractionPolicy.PRIMARY_MODEL, 100, 20),
+                repository.budget().observedMicroUsd());
     }
 
     @Test
@@ -604,16 +768,18 @@ class ExtractionPilotIT {
         when(gateway.extract(any(), anyString(), anyString()))
                 .thenReturn(new ExtractionGatewayResponseDTO(rejected, 120, 30, "req-invalid"))
                 .thenReturn(new ExtractionGatewayResponseDTO(RESPONSE, 100, 50, "req-valid"));
-        ExtractionValidationException failure = assertThrows(ExtractionValidationException.class,
-                () -> run(first, false, false));
-        assertEquals(0, failure.claimIndex());
-        assertEquals("QUOTE_NOT_IN_SOURCE_FIELD", failure.category());
+        var failed = run(first, false, false);
+        assertEquals("FAILED", failed.status());
+        assertEquals(0, failed.acceptedCount());
+        assertEquals(1, failed.rejectedCount());
+        assertEquals(0, failed.rejections().getFirst().index());
+        assertEquals("QUOTE_NOT_IN_SOURCE_FIELD", failed.rejections().getFirst().category());
         assertEquals(rejected, jdbc.queryForObject("SELECT rejected_output FROM extraction_attempts WHERE work_id = 1",
                 String.class));
         assertEquals("QUOTE_NOT_IN_SOURCE_FIELD", jdbc.queryForObject(
                 "SELECT validation_category FROM extraction_attempts WHERE work_id = 1", String.class));
-        assertNull(jdbc.queryForObject("SELECT result_json::text FROM extraction_work WHERE id = 1",
-                String.class));
+        assertEquals(0, jdbc.queryForObject("SELECT jsonb_array_length(result_json -> 'claims') "
+                + "FROM extraction_work WHERE id = 1", Integer.class));
         long observed = ExtractionPolicy.cost(ExtractionPolicy.PRIMARY_MODEL, 120, 30);
         assertEquals(observed, repository.budget().observedMicroUsd());
         assertEquals(observed, repository.budget().reservedMicroUsd());

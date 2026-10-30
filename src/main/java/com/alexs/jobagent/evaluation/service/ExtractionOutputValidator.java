@@ -3,6 +3,8 @@ package com.alexs.jobagent.evaluation.service;
 import com.alexs.jobagent.evaluation.dto.ExtractionClaimDTO;
 import com.alexs.jobagent.evaluation.dto.ExtractionInputDTO;
 import com.alexs.jobagent.evaluation.dto.ExtractionOutputDTO;
+import com.alexs.jobagent.evaluation.dto.ExtractionRejectionDTO;
+import com.alexs.jobagent.evaluation.dto.ExtractionValidationResultDTO;
 import com.alexs.jobagent.evaluation.dto.SkillEvidenceDTO;
 import com.alexs.jobagent.evaluation.exception.ExtractionValidationException;
 import java.text.Normalizer;
@@ -14,6 +16,7 @@ import java.util.Set;
 import java.util.regex.Pattern;
 import org.jsoup.parser.Parser;
 import org.springframework.stereotype.Service;
+import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -34,10 +37,19 @@ public class ExtractionOutputValidator {
     }
 
     public ExtractionOutputDTO validate(String content, ExtractionInputDTO input) {
+        ExtractionValidationResultDTO result = validatePartial(content, input);
+        if (!result.rejections().isEmpty()) {
+            ExtractionRejectionDTO first = result.rejections().getFirst();
+            throw new ExtractionValidationException(first.index(), first.category());
+        }
+        return result.output();
+    }
+
+    public ExtractionValidationResultDTO validatePartial(String content, ExtractionInputDTO input) {
         JsonNode root;
         try {
             root = json.readTree(content);
-        } catch (RuntimeException exception) {
+        } catch (JacksonException exception) {
             throw new ExtractionValidationException(-1, "INVALID_JSON");
         }
         if (root == null || !root.isObject() || root.size() != 2
@@ -46,10 +58,19 @@ public class ExtractionOutputValidator {
             throw new ExtractionValidationException(-1, "INVALID_ROOT_SHAPE_OR_COUNT");
         }
         List<ExtractionClaimDTO> claims = new ArrayList<>();
+        List<ExtractionRejectionDTO> rejections = new ArrayList<>();
+        List<JsonNode> rejectedNodes = new ArrayList<>();
+        int index = 0;
         for (JsonNode node : root.path(CLAIMS_FIELD)) {
-            claims.add(validateClaim(node, input, claims.size()));
+            try {
+                claims.add(validateClaim(node, input, index));
+            } catch (ExtractionValidationException rejected) {
+                rejections.add(new ExtractionRejectionDTO(index, rejected.category()));
+                rejectedNodes.add(node);
+            }
+            index++;
         }
-        return markConflicts(claims);
+        return new ExtractionValidationResultDTO(markConflicts(claims, rejectedNodes, input), List.copyOf(rejections));
     }
 
     private static ExtractionClaimDTO validateClaim(JsonNode node, ExtractionInputDTO input, int index) {
@@ -232,8 +253,10 @@ public class ExtractionOutputValidator {
         return value.asText();
     }
 
-    private static ExtractionOutputDTO markConflicts(List<ExtractionClaimDTO> claims) {
+    private static ExtractionOutputDTO markConflicts(List<ExtractionClaimDTO> claims,
+                                                      List<JsonNode> rejectedNodes, ExtractionInputDTO input) {
         Set<String> conflicts = new HashSet<>();
+        Set<String> conflictingSkills = new HashSet<>();
         for (int i = 0; i < claims.size(); i++) {
             ExtractionClaimDTO first = claims.get(i);
             for (int j = i + 1; j < claims.size(); j++) {
@@ -245,11 +268,75 @@ public class ExtractionOutputValidator {
                     conflicts.add(first.fact());
                     conflicts.add(second.fact());
                 }
+                if (contradictorySkillStrengths(first, second)) {
+                    conflictingSkills.add(normalize(first.value()));
+                }
             }
         }
-        return new ExtractionOutputDTO(claims.stream().map(claim -> conflicts.contains(claim.fact())
-                ? new ExtractionClaimDTO(claim.fact(), claim.value(), claim.sourceField(), claim.quote(),
-                "CONFLICTING", claim.skillEvidence()) : claim).toList());
+        return new ExtractionOutputDTO(claims.stream().map(claim -> {
+            if ("SKILL".equals(claim.fact()) && conflictingSkills.contains(normalize(claim.value()))) {
+                var evidence = claim.skillEvidence();
+                return new ExtractionClaimDTO(claim.fact(), claim.value(), claim.sourceField(), claim.quote(),
+                        "CONFLICTING", new SkillEvidenceDTO(evidence.kind(), "UNKNOWN",
+                        evidence.sectionQuote(), evidence.strengthQuote()));
+            }
+            if (conflicts.contains(claim.fact())) {
+                return new ExtractionClaimDTO(claim.fact(), claim.value(), claim.sourceField(), claim.quote(),
+                        "CONFLICTING", claim.skillEvidence());
+            }
+            if (credibleRejectedContradiction(claim, rejectedNodes, input)) {
+                if (COUNTRY_PERMISSION.equals(claim.fact())) {
+                    return new ExtractionClaimDTO(claim.fact(), claim.value(), claim.sourceField(), claim.quote(),
+                            "UNCERTAIN", claim.skillEvidence());
+                }
+                var evidence = claim.skillEvidence();
+                return new ExtractionClaimDTO(claim.fact(), claim.value(), claim.sourceField(), claim.quote(),
+                        "UNCERTAIN", new SkillEvidenceDTO(evidence.kind(), "UNKNOWN",
+                                evidence.sectionQuote(), evidence.strengthQuote()));
+            }
+            return claim;
+        }).toList());
+    }
+
+    private static boolean contradictorySkillStrengths(ExtractionClaimDTO first, ExtractionClaimDTO second) {
+        if (!"SKILL".equals(first.fact()) || !"SKILL".equals(second.fact())
+                || !normalize(first.value()).equals(normalize(second.value()))) {
+            return false;
+        }
+        String firstStrength = first.skillEvidence().requirementStrength();
+        String secondStrength = second.skillEvidence().requirementStrength();
+        return ("REQUIRED".equals(firstStrength) && "PREFERRED".equals(secondStrength))
+                || ("PREFERRED".equals(firstStrength) && "REQUIRED".equals(secondStrength));
+    }
+
+    private static boolean credibleRejectedContradiction(ExtractionClaimDTO accepted,
+                                                          List<JsonNode> rejectedNodes, ExtractionInputDTO input) {
+        if (!COUNTRY_PERMISSION.equals(accepted.fact()) && !"SKILL".equals(accepted.fact())) {
+            return false;
+        }
+        for (JsonNode rejected : rejectedNodes) {
+            String fact = rejected.path("fact").asText();
+            String value = rejected.path("value").asText();
+            String field = rejected.path("sourceField").asText();
+            String quote = rejected.path("quote").asText();
+            if (value.length() > 120 || quote.isBlank() || quote.length() > 160
+                    || !value.equalsIgnoreCase(accepted.value()) || !input.sourceFields().containsKey(field)) {
+                continue;
+            }
+            String source = input.sourceFields().get(field);
+            if (!normalize(source).contains(normalize(quote))
+                    && !normalize(evidenceText(source)).contains(normalize(evidenceText(quote)))) {
+                continue;
+            }
+            if (COUNTRY_PERMISSION.equals(accepted.fact()) && COUNTRY_RESTRICTION.equals(fact)) {
+                return true;
+            }
+            if ("SKILL".equals(accepted.fact()) && "SKILL".equals(fact) && quote.contains(value)
+                    && !"UNKNOWN".equals(accepted.skillEvidence().requirementStrength())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static boolean differentSingleValuedFacts(ExtractionClaimDTO first, ExtractionClaimDTO second) {
