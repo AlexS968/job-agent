@@ -29,7 +29,7 @@ public class ExtractionRepository {
 
     public WorkRow find(ExtractionWorkIdentityDTO identity) {
         return jdbc.query("SELECT id, status, result_json::text, claim_token, lease_until < CURRENT_TIMESTAMP, "
-                + "input_json::text "
+                + "input_json::text, accepted_count, rejected_count, rejection_diagnostics::text "
                 + "FROM extraction_work WHERE vacancy_id = ? AND source_item_id = ? AND vacancy_revision = ? "
                 + "AND provider = 'ANTHROPIC' AND model = ? AND prompt_version = ? AND schema_version = ? "
                 + "AND policy_version = ? FOR UPDATE", (rs, row) -> work(rs), identity.vacancyId(),
@@ -86,9 +86,12 @@ public class ExtractionRepository {
         var usage = completion.usage();
         Long observedCost = usage.observedCostMicroUsd();
         int changed = jdbc.update("UPDATE extraction_work SET status = ?, result_json = CAST(? AS jsonb), "
+                + "accepted_count = ?, rejected_count = ?, rejection_diagnostics = CAST(? AS jsonb), "
                 + "claim_token = NULL, lease_until = NULL, updated_at = CURRENT_TIMESTAMP "
                 + "WHERE id = ? AND claim_token = ? AND status = 'CLAIMED' "
-                + "AND lease_until >= CURRENT_TIMESTAMP", completion.status(), completion.resultJson(), workId, token);
+                + "AND lease_until >= CURRENT_TIMESTAMP", completion.status(), completion.resultJson(),
+                completion.acceptedCount(), completion.rejectedCount(), completion.rejectionDiagnosticsJson(),
+                workId, token);
         if (changed != 1) {
             throw new IllegalStateException("Extraction claim changed before completion");
         }
@@ -124,7 +127,8 @@ public class ExtractionRepository {
                 ? content : null;
         int changed = jdbc.update("UPDATE extraction_attempts SET validation_claim_index = ?, "
                 + "validation_category = ?, rejected_output = ? WHERE work_id = ? AND claim_token = ? "
-                + "AND outcome = 'INVALID'", claimIndex, category, retained, workId, token);
+                + "AND outcome IN ('INVALID', 'PARTIAL', 'NO_VALID_CLAIMS')",
+                claimIndex, category, retained, workId, token);
         if (changed != 1) {
             throw new IllegalStateException("Extraction diagnostic claim changed before completion");
         }
@@ -153,6 +157,7 @@ public class ExtractionRepository {
                 + "b.primary_distinct, b.comparison_distinct, b.active_work_id, b.halted_reason, "
                 + "COUNT(*) FILTER (WHERE w.status = 'CLAIMED'), "
                 + "COUNT(*) FILTER (WHERE w.status = 'SUCCEEDED'), "
+                + "COUNT(*) FILTER (WHERE w.status = 'PARTIAL'), "
                 + "COUNT(*) FILTER (WHERE w.status = 'FAILED'), "
                 + "COUNT(*) FILTER (WHERE w.status = 'UNCERTAIN'), "
                 + "COUNT(*) FILTER (WHERE w.status = 'CLAIMED' AND w.lease_until < CURRENT_TIMESTAMP) "
@@ -161,17 +166,19 @@ public class ExtractionRepository {
                 + "b.primary_distinct, b.comparison_distinct, b.active_work_id, b.halted_reason",
                 (rs, row) -> new ExtractionBudgetDTO(rs.getLong(1), rs.getLong(2), rs.getInt(3), rs.getInt(4),
                 rs.getInt(5), rs.getObject(6, Long.class), rs.getString(7), rs.getInt(8), rs.getInt(9),
-                rs.getInt(10), rs.getInt(11), rs.getInt(12)));
+                rs.getInt(10), rs.getInt(11), rs.getInt(12), rs.getInt(13)));
     }
 
     private static WorkRow work(ResultSet rs) throws SQLException {
         return new WorkRow(rs.getLong(1), rs.getString(2), rs.getString(3),
-                rs.getObject(4, UUID.class), rs.getBoolean(5), rs.getString(6));
+                rs.getObject(4, UUID.class), rs.getBoolean(5), rs.getString(6),
+                rs.getInt(7), rs.getInt(8), rs.getString(9));
     }
 
     public record BudgetRow(long reservedMicroUsd, long observedMicroUsd, int attempts, int primaryDistinct,
                             int comparisonDistinct, Long activeWorkId, UUID activeToken,
                             String haltedReason) { }
     public record WorkRow(long id, String status, String resultJson, UUID claimToken, boolean expired,
-                          String inputJson) { }
+                          String inputJson, int acceptedCount, int rejectedCount,
+                          String rejectionDiagnosticsJson) { }
 }

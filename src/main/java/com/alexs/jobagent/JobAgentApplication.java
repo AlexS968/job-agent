@@ -21,6 +21,7 @@ import com.alexs.jobagent.evaluation.service.RuleEvaluationPolicy;
 import com.alexs.jobagent.evaluation.service.ExtractionPilotService;
 import com.alexs.jobagent.evaluation.service.ExtractionPolicy;
 import com.alexs.jobagent.evaluation.exception.ExtractionValidationException;
+import com.alexs.jobagent.evaluation.exception.PartialExtractionException;
 import com.alexs.jobagent.evaluation.dto.VacancyEvaluationDTO;
 import java.io.IOException;
 import java.io.InputStream;
@@ -51,6 +52,10 @@ public class JobAgentApplication {
         try (ConfigurableApplicationContext context = SpringApplication.run(JobAgentApplication.class, args)) {
             // Closing the context releases the connection pool before the batch process exits.
         } catch (Exception exception) {
+            if (hasCause(exception, PartialExtractionException.class)) {
+                LOGGER.error("Job Agent extraction completed partially; inspect preceding rejection diagnostics.");
+                System.exit(exitCode(exception));
+            }
             ExtractionValidationException validation = validationFailure(exception);
             if (validation != null) {
                 LOGGER.error("Job Agent extraction validation failed: claim_index={}, category={}",
@@ -58,8 +63,21 @@ public class JobAgentApplication {
             } else {
                 LOGGER.error("Job Agent run failed; inspect preceding diagnostics and configuration.");
             }
-            System.exit(1);
+            System.exit(exitCode(exception));
         }
+    }
+
+    static int exitCode(Throwable exception) {
+        return hasCause(exception, PartialExtractionException.class) ? 2 : 1;
+    }
+
+    private static boolean hasCause(Throwable exception, Class<? extends Throwable> expected) {
+        for (Throwable cause = exception; cause != null; cause = cause.getCause()) {
+            if (expected.isInstance(cause)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static ExtractionValidationException validationFailure(Throwable exception) {
@@ -150,10 +168,10 @@ public class JobAgentApplication {
         var budget = extraction.budget();
         LOGGER.info("Extraction pilot: accounted_micro_usd={}, observed_micro_usd={}, active_work={}, "
                 + "halted_reason={}, attempts={}, primary_distinct={}, comparison_distinct={}, "
-                + "claimed={}, succeeded={}, failed={}, uncertain={}, expired_claims={}",
+                + "claimed={}, succeeded={}, partial={}, failed={}, uncertain={}, expired_claims={}",
                 budget.reservedMicroUsd(), budget.observedMicroUsd(), budget.activeWorkId(),
                 budget.haltedReason(), budget.attempts(), budget.primaryDistinct(),
-                budget.comparisonDistinct(), budget.claimed(), budget.succeeded(), budget.failed(),
+                budget.comparisonDistinct(), budget.claimed(), budget.succeeded(), budget.partial(), budget.failed(),
                 budget.uncertain(), budget.expiredClaims());
         if (args.length == 3) {
             long id = Long.parseLong(option(args, VACANCY_ID_OPTION));
@@ -162,9 +180,10 @@ public class JobAgentApplication {
             if (work == null) {
                 LOGGER.info("Extraction work: vacancy={}, status=NOT_FOUND", id);
             } else {
-                LOGGER.info("Extraction work: vacancy={}, work={}, status={}, source={}, revision={}, claims={}",
+                LOGGER.info("Extraction work: vacancy={}, work={}, status={}, source={}, revision={}, "
+                                + "accepted={}, rejected={}, rejections={}",
                         id, work.workId(), work.status(), work.sourceItemId(), work.revision(),
-                        work.output() == null ? 0 : work.output().claims().size());
+                        work.acceptedCount(), work.rejectedCount(), work.rejections());
             }
         }
     }
@@ -181,7 +200,7 @@ public class JobAgentApplication {
         LOGGER.info("Extraction global claim recovered for work={}; reservation retained", workId);
     }
 
-    private void runExtraction(String[] args, ExtractionPilotService extraction, boolean comparison) {
+    void runExtraction(String[] args, ExtractionPilotService extraction, boolean comparison) {
         String mode = comparison ? "--mode=extract-compare" : "--mode=extract-primary";
         requireOnlyOptions(args, mode, VACANCY_ID_OPTION, "--live-confirm=", "--pricing-reviewed-on=",
                 "--replay-uncertain=");
@@ -192,9 +211,16 @@ public class JobAgentApplication {
         boolean replay = Arrays.stream(args).anyMatch("--replay-uncertain=yes"::equals);
         var result = extraction.extract(Long.parseLong(option(args, VACANCY_ID_OPTION)), comparison,
                 replay, live, option(args, "--pricing-reviewed-on="));
-        LOGGER.info("Extraction: work={}, status={}, model={}, source={}, revision={}, reused={}, claims={}",
+        LOGGER.info("Extraction: work={}, status={}, model={}, source={}, revision={}, reused={}, "
+                        + "accepted={}, rejected={}, rejections={}",
                 result.workId(), result.status(), result.model(), result.sourceItemId(), result.revision(),
-                result.reused(), result.output().claims().size());
+                result.reused(), result.acceptedCount(), result.rejectedCount(), result.rejections());
+        if ("PARTIAL".equals(result.status())) {
+            throw new PartialExtractionException();
+        }
+        if ("FAILED".equals(result.status())) {
+            throw new IllegalStateException("Extraction has no validated claims");
+        }
     }
 
     private boolean comparisonOption(String[] args) {
