@@ -31,7 +31,7 @@ class BatchStartupIT {
                  var statement = connection.createStatement();
                  var rows = statement.executeQuery("SELECT COUNT(*) FROM flyway_schema_history WHERE success")) {
                 assertTrue(rows.next());
-                assertEquals(12, rows.getInt(1));
+                assertEquals(13, rows.getInt(1));
             }
         }
     }
@@ -301,11 +301,25 @@ class BatchStartupIT {
             Result shortlist = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
                     "--mode=shortlist", "--profile-file=" + profile, "--limit=5");
             assertEquals(0, shortlist.exitCode(), shortlist.output());
-            assertTrue(shortlist.output().contains("Shortlist: suitable=0, needs_review=1"), shortlist.output());
+            assertTrue(shortlist.output().contains("Shortlist: policy=rules-v1, suitable=0, needs_review=1"),
+                    shortlist.output());
             assertTrue(shortlist.output().contains("https://jobs.example.org/roles/role-001"), shortlist.output());
             assertTrue(shortlist.output().contains("WORK_ELIGIBILITY_UNCONFIRMED"), shortlist.output());
             assertFalse(shortlist.output().contains(PASSWORD));
             assertFalse(shortlist.output().contains(profile.toString()));
+            Result extracted = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
+                    "--mode=evaluate-extraction", "--profile-file=" + profile);
+            assertEquals(0, extracted.exitCode(), extracted.output());
+            assertTrue(extracted.output().contains("policy=rules-extraction-v1, examined=1, created=1"),
+                    extracted.output());
+            Result explained = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
+                    "--mode=shortlist-extraction", "--profile-file=" + profile, "--limit=5");
+            assertEquals(0, explained.exitCode(), explained.output());
+            assertTrue(explained.output().contains("Shortlist: policy=rules-extraction-v1, suitable=0, needs_review=1"),
+                    explained.output());
+            assertTrue(explained.output().contains("EXTRACTION_EVIDENCE_UNAVAILABLE"), explained.output());
+            assertFalse(explained.output().contains(PASSWORD));
+            assertFalse(explained.output().contains(profile.toString()));
             Files.writeString(profile, Files.readString(profile).replace("Backend Engineer", "Senior Java"));
             Result changed = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
                     "--mode=evaluate-rules", "--profile-file=" + profile);
@@ -315,7 +329,7 @@ class BatchStartupIT {
                  var statement = connection.createStatement();
                  var rows = statement.executeQuery("SELECT count(*) FROM vacancy_evaluations")) {
                 assertTrue(rows.next());
-                assertEquals(1, rows.getInt(1));
+                assertEquals(2, rows.getInt(1));
             }
         } finally {
             Files.deleteIfExists(profile);

@@ -2,6 +2,7 @@ package com.alexs.jobagent.evaluation.repository;
 
 import com.alexs.jobagent.evaluation.dto.LoadedProfileDTO;
 import com.alexs.jobagent.evaluation.dto.VacancyEvaluationDTO;
+import com.alexs.jobagent.evaluation.dto.SelectedExtractionDTO;
 import java.util.Arrays;
 import java.util.List;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -44,31 +45,50 @@ public class EvaluationRepository {
         }
     }
 
-    public boolean insert(VacancyEvaluationDTO result, LoadedProfileDTO profile, String policyVersion) {
+    public boolean insert(VacancyEvaluationDTO result, LoadedProfileDTO profile, String policyVersion,
+                          SelectedExtractionDTO extraction) {
+        Object details = extraction == null ? "{}" : json.writeValueAsString(java.util.Map.of(
+                "model", extraction.model(), "promptVersion", extraction.promptVersion(),
+                "schemaVersion", extraction.schemaVersion(), "policyVersion", extraction.policyVersion(),
+                "rejections", extraction.rejections(), "rejectedCount", extraction.rejectedCount()));
         return jdbc.update("INSERT INTO vacancy_evaluations(vacancy_id, source_item_id, vacancy_revision, profile_id, "
                         + "profile_version, criteria_hash, policy_version, decision, preference_rank, "
-                        + "role_classification, reasons, unknowns, evidence, original_url) "
+                        + "role_classification, reasons, unknowns, evidence, original_url, extraction_work_id, "
+                        + "extraction_basis, extraction_details) "
                         + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb, "
-                        + "?::jsonb, ?) ON CONFLICT ON CONSTRAINT vacancy_evaluation_identity DO NOTHING",
+                        + "?::jsonb, ?, ?, ?, ?::jsonb) ON CONFLICT ON CONSTRAINT vacancy_evaluation_identity DO NOTHING",
                 result.vacancyId(), result.sourceItemId(), result.vacancyRevision(), profile.profile().profileId(),
                 profile.profile().version(), profile.criteriaHash(), policyVersion, result.decision(),
                 result.preferenceRank(), result.roleClassification(), json.writeValueAsString(result.reasons()),
                 json.writeValueAsString(result.unknowns()), json.writeValueAsString(result.evidence()),
-                result.originalUrl()) == 1;
+                result.originalUrl(), result.extractionWorkId(), result.extractionStatus(), details) == 1;
+    }
+
+    public boolean insert(VacancyEvaluationDTO result, LoadedProfileDTO profile, String policyVersion) {
+        return insert(result, profile, policyVersion, null);
+    }
+
+    public VacancyEvaluationDTO current(long vacancyId, String revision, LoadedProfileDTO profile,
+                                        String policyVersion, Long extractionWorkId, String extractionStatus) {
+        return jdbc.query("SELECT e.vacancy_id, e.source_item_id, e.vacancy_revision, e.decision, e.preference_rank, "
+                        + "e.role_classification, e.reasons::text, "
+                        + "e.unknowns::text, e.evidence::text, e.original_url, e.extraction_work_id, e.extraction_basis, "
+                        + "COALESCE((e.extraction_details->>'rejectedCount')::integer, 0), v.title "
+                        + "FROM vacancy_evaluations e JOIN vacancies v ON v.id = e.vacancy_id "
+                        + "WHERE e.vacancy_id = ? AND e.vacancy_revision = ? AND e.profile_id = ? "
+                        + "AND e.profile_version = ? AND e.criteria_hash = ? AND e.policy_version = ? "
+                        + "AND e.extraction_work_id IS NOT DISTINCT FROM ? AND e.extraction_basis = ?",
+                rs -> rs.next() ? new VacancyEvaluationDTO(rs.getLong(1), rs.getLong(2), rs.getString(3),
+                        rs.getString(4), rs.getInt(5), rs.getString(6), strings(rs.getString(7)),
+                        strings(rs.getString(8)), strings(rs.getString(9)), rs.getString(10),
+                        rs.getObject(11, Long.class), rs.getString(12), rs.getInt(13), rs.getString(14)) : null,
+                vacancyId, revision, profile.profile().profileId(), profile.profile().version(),
+                profile.criteriaHash(), policyVersion, extractionWorkId, extractionStatus);
     }
 
     public VacancyEvaluationDTO current(long vacancyId, String revision, LoadedProfileDTO profile,
                                         String policyVersion) {
-        return jdbc.query("SELECT vacancy_id, source_item_id, vacancy_revision, decision, preference_rank, "
-                        + "role_classification, reasons::text, "
-                        + "unknowns::text, evidence::text, original_url FROM vacancy_evaluations "
-                        + "WHERE vacancy_id = ? AND vacancy_revision = ? AND profile_id = ? "
-                        + "AND profile_version = ? AND criteria_hash = ? AND policy_version = ?",
-                rs -> rs.next() ? new VacancyEvaluationDTO(rs.getLong(1), rs.getLong(2), rs.getString(3),
-                        rs.getString(4), rs.getInt(5), rs.getString(6), strings(rs.getString(7)),
-                        strings(rs.getString(8)), strings(rs.getString(9)), rs.getString(10)) : null,
-                vacancyId, revision, profile.profile().profileId(), profile.profile().version(),
-                profile.criteriaHash(), policyVersion);
+        return current(vacancyId, revision, profile, policyVersion, null, "NONE");
     }
 
     private List<String> strings(String value) {

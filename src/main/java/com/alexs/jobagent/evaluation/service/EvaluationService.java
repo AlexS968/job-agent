@@ -4,6 +4,7 @@ import com.alexs.jobagent.evaluation.dto.EvaluationBatchResultDTO;
 import com.alexs.jobagent.evaluation.dto.LoadedProfileDTO;
 import com.alexs.jobagent.evaluation.dto.ShortlistDTO;
 import com.alexs.jobagent.evaluation.dto.VacancyEvaluationDTO;
+import com.alexs.jobagent.evaluation.dto.SelectedExtractionDTO;
 import com.alexs.jobagent.evaluation.repository.EvaluationRepository;
 import com.alexs.jobagent.source.dto.SourceEvidenceDTO;
 import com.alexs.jobagent.source.service.SourceEvidenceService;
@@ -30,15 +31,21 @@ public class EvaluationService {
     private final SourceEvidenceService sources;
     private final EvaluationRepository evaluations;
     private final RuleEvaluationPolicy policy;
+    private final ExtractionAwareEvaluationPolicy extractionPolicy;
+    private final ExtractionEvidenceService extractionEvidence;
     private final TransactionTemplate transaction;
 
     public EvaluationService(VacancyReadService vacancies, SourceEvidenceService sources,
                              EvaluationRepository evaluations, RuleEvaluationPolicy policy,
+                             ExtractionAwareEvaluationPolicy extractionPolicy,
+                             ExtractionEvidenceService extractionEvidence,
                              PlatformTransactionManager manager) {
         this.vacancies = vacancies;
         this.sources = sources;
         this.evaluations = evaluations;
         this.policy = policy;
+        this.extractionPolicy = extractionPolicy;
+        this.extractionEvidence = extractionEvidence;
         this.transaction = new TransactionTemplate(manager);
     }
 
@@ -113,10 +120,16 @@ public class EvaluationService {
             throw new IllegalStateException("Vacancy provenance is missing");
         }
         String revision = policy.revision(vacancy, source);
-        if (evaluations.current(id, revision, profile, policyVersion) != null) {
+        SelectedExtractionDTO selected = select(policyVersion, id, source.sourceItemId(), revision);
+        Long workId = selected == null ? null : selected.workId();
+        String basis = selected == null ? "NONE" : selected.status();
+        if (evaluations.current(id, revision, profile, policyVersion, workId, basis) != null) {
             return false;
         }
-        return evaluations.insert(policy.evaluate(vacancy, source, profile, revision), profile, policyVersion);
+        VacancyEvaluationDTO result = ExtractionAwareEvaluationPolicy.VERSION.equals(policyVersion)
+                ? extractionPolicy.evaluate(vacancy, source, profile, revision, selected)
+                : policy.evaluate(vacancy, source, profile, revision);
+        return evaluations.insert(result, profile, policyVersion, selected);
     }
 
     private VacancyEvaluationDTO current(long id, LoadedProfileDTO profile, String policyVersion) {
@@ -128,7 +141,17 @@ public class EvaluationService {
         if (source == null) {
             return null;
         }
-        return evaluations.current(id, policy.revision(vacancy, source), profile, policyVersion);
+        String revision = policy.revision(vacancy, source);
+        SelectedExtractionDTO selected = select(policyVersion, id, source.sourceItemId(), revision);
+        return evaluations.current(id, revision, profile, policyVersion,
+                selected == null ? null : selected.workId(), selected == null ? "NONE" : selected.status());
+    }
+
+    private SelectedExtractionDTO select(String version, long vacancyId, long sourceId, String revision) {
+        if (!ExtractionAwareEvaluationPolicy.VERSION.equals(version)) {
+            return null;
+        }
+        return extractionEvidence.current(vacancyId, sourceId, revision);
     }
 
     private static void addBounded(List<VacancyEvaluationDTO> results, VacancyEvaluationDTO result, int limit) {
