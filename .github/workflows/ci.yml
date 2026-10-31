@@ -23,6 +23,8 @@ jobs:
           cache: maven
       - name: Build, PostgreSQL integration tests and coverage
         run: ./mvnw -B clean verify
+      - name: Build linux/amd64 application container
+        run: docker buildx build --platform linux/amd64 --file Dockerfile --tag job-agent:ci --load .
       - name: Verify analysis inputs
         run: |
           test -s target/site/jacoco/jacoco.xml
@@ -38,6 +40,25 @@ jobs:
             target/site/jacoco/jacoco.xml
           if-no-files-found: error
           retention-days: 1
+
+  terraform:
+    name: Terraform validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.17.1
+      - name: Format
+        run: terraform fmt -check -recursive infra/terraform
+      - name: Initialize without backend
+        working-directory: infra/terraform
+        run: terraform init -backend=false -input=false
+      - name: Validate without AWS credentials
+        working-directory: infra/terraform
+        run: terraform validate
 
   sonar:
     name: Sonar Quality Gate

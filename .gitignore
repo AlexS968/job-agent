@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 *.pem
+!infra/certs/us-east-1-bundle.pem
 *.key
 credentials*.json
 private/
@@ -14,3 +15,20 @@ target/
 .vscode/
 .DS_Store
 *.log
+# Terraform state, plans, local variables, and provider downloads
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+backend.hcl
+*.tfvars
+!*.tfvars.example
+*.tfvars.json
+*.auto.tfvars
+*.auto.tfvars.json
+terraform.tfvars
+terraform.tfvars.json
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json

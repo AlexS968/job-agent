@@ -37,6 +37,31 @@ class BatchStartupIT {
     }
 
     @Test
+    void cloudAppValidatesButNeverMigratesAnEmptyDatabase() throws Exception {
+        try (PostgreSQLContainer postgres = new PostgreSQLContainer("postgres:17.11-alpine")
+                .withDatabaseName("job_agent_cloud_profile_test").withUsername("test_user").withPassword(PASSWORD)) {
+            postgres.start();
+            Result empty = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
+                    "--spring.profiles.active=cloud-app");
+            assertNotEquals(0, empty.exitCode(), empty.output());
+            assertFalse(empty.output().contains(PASSWORD), empty.output());
+            try (var connection = java.sql.DriverManager.getConnection(postgres.getJdbcUrl(),
+                    postgres.getUsername(), PASSWORD);
+                 var statement = connection.createStatement();
+                 var rows = statement.executeQuery("SELECT to_regclass('public.flyway_schema_history')")) {
+                assertTrue(rows.next());
+                assertNull(rows.getString(1), "Validate-only startup must not create Flyway history");
+            }
+
+            assertEquals(0, run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD).exitCode());
+            Result validated = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
+                    "--spring.profiles.active=cloud-app");
+            assertEquals(0, validated.exitCode(), validated.output());
+            assertTrue(validated.output().contains("Database ready"), validated.output());
+        }
+    }
+
+    @Test
     void unavailableDatabaseExitsWithErrorWithoutPassword() throws Exception {
         Result result = run("jdbc:postgresql://127.0.0.1:1/unavailable", "test_user", PASSWORD);
         assertNotEquals(0, result.exitCode());

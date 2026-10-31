@@ -1,0 +1,4 @@
+# Supply two AZ names verified for Aurora PostgreSQL 17.11 db.serverless in this account.
+availability_zones = ["us-east-1a", "us-east-1b"]
+# Leave enable_runtime=false for the first infrastructure review/apply.
+# Never put secret values in tfvars. Later provide only reviewed secret ARNs and an image digest.
