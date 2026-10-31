@@ -1,6 +1,6 @@
 # Job Agent
 
-A portfolio project for an autonomous job-search assistant built with Java 21, Spring Boot, PostgreSQL and AWS.
+A portfolio project for an autonomous job-search assistant built with Java 21, Spring Boot and PostgreSQL, with AWS deployment in preparation.
 
 The planned agent discovers vacancies and employers, normalizes and deduplicates results, evaluates explicit criteria, and produces an explained shortlist. Feedback, application drafts and outcome tracking follow in later phases. Applications require human approval.
 
@@ -161,6 +161,22 @@ java -jar target/job-agent-0.1.0-SNAPSHOT.jar --mode=shortlist --profile-file=/t
 The existing synthetic fixture says only `Remote`, so its expected result is `NEEDS_REVIEW` with `WORK_ELIGIBILITY_UNCONFIRMED`, not confirmed country eligibility. The private profile file is required for both commands. A batch evaluates at most 500 vacancies with pages of 100; use `--limit=100` (1–500) and the printed `last_vacancy_id` as the next `--after-id=` cursor while `more_available=true`. Shortlist output is capped at 50 entries; `--limit=20` is the default. Results are grouped as `SUITABLE` and `NEEDS_REVIEW`, with original URL, reasons, unknowns and bounded source evidence. `EXCLUDED` entries stay in evaluation history but do not appear in the shortlist. Each group orders by working-arrangement rank (country remote, EU remote, acceptable hybrid), then preferred before reserve role, then vacancy ID. The rank is an ordinal preference, not a probability. Lever's `on-site` label is normalized to `ONSITE` for configured exclusions; unknown labels remain unknown, and normalization never confirms country eligibility. Missing salary never rejects a listing; currency or period mismatches remain unknown.
 
 V9 stores a profile ID/version/hash and append-only vacancy evaluations with a source-snapshot reference. Reusing a profile version with changed criteria fails; increment the version. Evaluation identity also contains the current vacancy/source revision and policy version (`rules-v1`). An unchanged rerun adds no evaluation, while a changed vacancy, source snapshot or version retains earlier history. Shortlist reads only current revisions for the requested profile and policy. Source statements remain untrusted: Greenhouse/Lever `remote` labels or country mentions do not establish permanent work-country permission. Positive confirmed-eligibility examples use synthetic structured evidence only. Evaluation is explicit; automatic outbox consumption, trusted live eligibility extraction, LLM assessment and cloud execution remain future work. See [ADR 0005](docs/adr/0005-rule-evaluation-baseline.md) and the [Phase 4 task](docs/PHASE_4_TASK.md).
+
+## Phase 5A cloud foundation (local review, not deployed)
+
+Phase 5A adds a Java 21 `linux/amd64` batch image and reviewable Terraform for us-east-1. The image runs as a non-root user, includes the public RDS CA bundle, and uses a direct Java entrypoint so normal batch exit codes pass through. The default no-mode command performs only database and Flyway checks; it does not import vacancies or call Anthropic/Tavily. AWS task definitions are disabled by default. The normal cloud app profile validates migrations; a separate migration task applies them. No AWS resources, account-backed Terraform plan or remote task have been run for this local increment.
+
+```sh
+./mvnw -B clean verify
+docker buildx build --platform linux/amd64 -t job-agent:phase5a-local --load .
+terraform -chdir=infra/terraform init -backend=false -input=false
+terraform fmt -check -recursive infra/terraform
+terraform -chdir=infra/terraform validate
+```
+
+The Docker build is for x86 Fargate even on an Apple Silicon development machine. Local smoke tests must use an isolated PostgreSQL database, never the canonical pilot database. The image build context excludes test resources, local profiles and private files. The bundled public certificate is the [us-east-1 RDS CA bundle](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/UsingWithRDS.SSL.html); cloud JDBC requires `sslmode=verify-full`. Review certificate rotation before deployment.
+
+[Phase 5 task](docs/PHASE_5_TASK.md) gives the executed local checks, three reviewed IaC scanner findings, state bootstrap, account checks, DB-role/secrets provisioning, manual first task, cost scenarios and teardown. Its cost sketch covers only the initial foundation, not complete Phase 5 operation. [ADR 0008](docs/adr/0008-terraform-cloud-foundation.md) records the infrastructure choice. A new cloud database must not reset the existing LLM pilot budget, and private S3 document controls must be verified before requesting CVs. SQS, scheduling, AWS deployment automation, restore testing and measured recovery remain later work. AWS credits and the reported Free-plan dates are owner observations, not proof of coverage; external Anthropic/Tavily charges are separate.
 
 ## Anthropic evidence extraction (Phase 4B.1 merged; Phase 4B.2 pending)
 

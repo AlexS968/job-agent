@@ -1,0 +1,12 @@
+**
+!pom.xml
+!mvnw
+!.mvn/
+!.mvn/wrapper/
+!.mvn/wrapper/maven-wrapper.properties
+!src/
+!src/main/
+!src/main/**
+!infra/
+!infra/certs/
+!infra/certs/us-east-1-bundle.pem
