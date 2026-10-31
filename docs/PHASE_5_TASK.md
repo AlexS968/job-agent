@@ -1,6 +1,6 @@
 # Phase 5A: container and reviewable AWS foundation
 
-Status: local implementation for review; no AWS plan against an account, apply, task run or restore test. Phase 5 is incomplete.
+Status: Phase 5A code merged in PR #24. The owner reports a partial AWS apply: network, S3, ECR, ECS cluster and IAM resources were created, while Aurora cluster creation failed and no writer was created. No task run or restore test is verified. Phase 5 is incomplete.
 
 ## Scope and local checks
 
@@ -11,9 +11,11 @@ Local commands from the repository root:
 ```sh
 ./mvnw -B clean verify
 docker buildx build --platform linux/amd64 -t job-agent:phase5a-local --load .
+export TF_DATA_DIR="$(mktemp -d)" # isolate offline initialization from the configured remote backend
 terraform -chdir=infra/terraform init -backend=false -input=false
 terraform fmt -check -recursive infra/terraform
 terraform -chdir=infra/terraform validate
+unset TF_DATA_DIR
 git diff --check
 ```
 
@@ -26,13 +28,33 @@ These checks need Docker and provider downloads but no AWS credentials. The Terr
 - Isolated `postgres:17.11-alpine` container smoke: first and repeat no-mode runs exited 0; missing DB exited 1 without printing the synthetic password; `cloud-app` on an empty DB exited 1 and created no Flyway history; a separate migrator role applied migrations, and a restricted application role validated the result and exited 0. Temporary containers/network were removed. The direct container PARTIAL=2 path and live ECS SIGTERM/connection cleanup remain untested; the Java exit-code unit test and exec-form entrypoint support that behavior, but deployment must verify it.
 - Terraform 1.17.1 / AWS provider 6.71.0: `fmt -check`, `init -backend=false -input=false` and `validate` passed. Ruby parsed the CI YAML and exposed `build`, `terraform` and `sonar` jobs. These checks do not prove account availability, quotas, prices or a deployable plan.
 - Trivy 0.76.1 Terraform scan with HIGH/CRITICAL severity returned **three findings**, not a clean scan: AWS-0079 expects an explicit KMS key ID even though `storage_encrypted=true` uses an AWS-managed RDS key; AWS-0132 recommends a customer-managed S3 key, while this low-cost baseline explicitly uses SSE-S3; AWS-0104 flags outbound HTTPS to `0.0.0.0/0`. The latter permits ECR, Secrets Manager, logs and later reviewed HTTPS calls without costly VPC endpoints/NAT, but remains a broad egress risk. The task has no inbound rule and no AWS task-role permissions. Reconsider endpoints or narrower egress before enabling live provider work. No scanner findings were suppressed.
-- `git diff --check`: passed. Remote CI, account-backed `terraform plan`, AWS apply, task execution and restore verification have not run.
+- `git diff --check`: passed for the original local Phase 5A increment. Its later account-backed apply and partial result are recorded below; task execution and restore verification have not run.
+
+### Free Plan backup-retention correction (local, not applied)
+
+The owner reported that the first account-backed `terraform apply` created the network, S3, ECR, ECS cluster and IAM resources, then failed to create the Aurora cluster with `FreeTierRestrictionError: The specified backup retention period exceeds the maximum available to free tier customers.` The attempted `backup_retention_period` was 7 days. No Aurora cluster or writer was successfully created. This is an owner-reported deployment result, not a fresh read of AWS resources or state in this task. Preserve the existing remote Terraform state; do not start with a new state or reuse the old `phase5a.tfplan`.
+
+[AWS Aurora backup documentation](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/Aurora.Managing.Backups.html) and the [CreateDBCluster API](https://docs.aws.amazon.com/AmazonRDS/latest/APIReference/API_CreateDBCluster.html) specify 1–35 days, with 1 day as the Aurora default. They do **not** state the Free Plan-specific maximum. The smallest valid Aurora correction is therefore 1 day, proposed here for a new account-backed plan. Its acceptance by this Free Plan, and the rest of the Aurora Serverless v2 configuration, remain unverified. Aurora cannot use 0 days to disable automated backups. If the account rejects 1 day, this Aurora design is blocked on the Free Plan; do not silently switch databases or upgrade the account.
+
+The proposed change reduces the point-in-time restore window from seven days to **one day**. It does not establish a recovery-time objective or replace a restore drill. Retained final/manual snapshots may preserve older points, but snapshot creation, retention, cost and restoration are not yet verified. Reassess this protection before storing irreplaceable data.
+
+Local correction checks on 2026-10-31: `terraform fmt -check -recursive infra/terraform`, `TF_DATA_DIR=/private/tmp/job-agent-phase5-free-plan-offline terraform -chdir=infra/terraform init -backend=false -input=false`, and `TF_DATA_DIR=/private/tmp/job-agent-phase5-free-plan-offline terraform -chdir=infra/terraform validate` passed with Terraform 1.17.1 and the locked AWS provider 6.71.0. The first sandboxed initialization could not resolve the Terraform Registry; it was repeated successfully with network access. `git diff --check` passed. The local scan confirms only the retention value changed in Terraform; prior Phase 5A Trivy findings remain relevant and were not rerun for this one-line resource-setting change. No remote state, backend file, private tfvars, AWS resources or old plan were touched during these checks.
+
+After review and publication of this change, use the already configured remote backend and existing private variables to create and inspect a **fresh** plan. Do not run these commands as part of this local correction:
+
+```sh
+terraform -chdir=infra/terraform init -input=false -backend-config=backend.hcl
+terraform -chdir=infra/terraform plan -input=false -var-file=terraform.tfvars -out=phase5-free-plan-backups.tfplan
+terraform -chdir=infra/terraform show -no-color phase5-free-plan-backups.tfplan
+```
+
+Review the plan against the preserved remote state: expected changes should primarily be creation of the missing Aurora cluster and writer, plus any explicitly understood drift. A plan that recreates already provisioned network/storage/IAM resources is a stop condition. Keep the plan private; Terraform plans and state can contain sensitive values. Apply only after separate owner approval and a check of actual Free Plan support. The old `phase5a.tfplan` encodes the rejected seven-day setting and must never be applied.
 
 ## Controlled deployment sequence after approval
 
 1. Confirm account plan/service access, credits and their expiry, budget alerts, us-east-1 AZ mapping and Aurora 17.11/0 ACU ordering. Recheck prices and quotas. The owner reports USD 100 credits, Free plan ending 2027-04-30 and credit expiry 2027-10-30; these are not guarantees of eligibility or service coverage. Do not upgrade the plan automatically.
 2. Create a dedicated S3 state bucket with encryption, versioning, public-access blocking, restricted IAM and S3 lockfile support. Populate a private `backend.hcl` from the synthetic example. Initialize and review a saved plan with tightly scoped AWS credentials. Keep plan/state private; never print or commit them.
-3. Apply the reviewed foundation only after explicit authorization. Verify private DB, TLS, 0–2 ACU and auto-pause in the account. A failed `db.serverless` orderability query must stop the plan; do not silently switch instance classes or capacity.
+3. Continue from the existing remote state only after a fresh reviewed plan and explicit authorization. The previous partial apply created some foundation resources but no Aurora cluster/writer. Verify private DB, TLS, 0–2 ACU, one-day backup retention and auto-pause in the account. A failed `db.serverless` orderability query or a second Free Plan restriction must stop deployment; do not silently switch instance classes or capacity.
 4. From a controlled VPC bootstrap session, retrieve the RDS-managed master secret without putting it in shell history, create `job_agent_migrator` and `job_agent_app` LOGIN roles with separate generated passwords, then create two Secrets Manager JSON secrets with `password` keys. Grant migrator schema creation and migration ownership; grant the app only CONNECT, schema USAGE, required DML/sequence rights and read access to `flyway_schema_history`. Set migrator default table/sequence privileges for the app before migrations. Verify the app cannot create/alter schema. Remove bootstrap access afterward. Neither role uses the master credential in normal tasks. This SQL/bootstrap procedure and credential rotation remain to be tested in the account before first production task.
 5. Build and push a reviewed `linux/amd64` image to ECR, record its digest, and supply digest and secret ARNs via private variables. Enable runtime, review a second plan and apply. Run the migration task manually, inspect its exit code and schema. Run one no-mode app task manually with `assignPublicIp=ENABLED` in a task subnet and the task security group. It must report database readiness, exit zero and make no paid provider call. Check failure exit handling and logs without revealing secrets.
 6. Before any cloud paid LLM/search call, resolve continuity with the canonical local pilot budget/history. A new empty database cannot be used to reset or duplicate the approved USD 2 target and USD 3 authorization ceiling. S3 private-document controls must be verified before CVs are requested.
@@ -55,7 +77,7 @@ This sketch covers only the Phase 5A foundation and a hypothetical manual batch 
 | S3, ECR and logs | 1 GB × $0.023; 1 GB × $0.10; 0.1 GB × $0.50 | 0.17+ |
 | **Phase 5A priced subtotal** | Excludes items described below and later Phase 5 resources | **about $3.13+** |
 
-If the DB fails to pause and stays at 0.5 ACU for 730 hours, its compute alone is about **$43.80/month**, putting the same foundation subtotal around **$46.60+/month**. Scaling to 2 ACU, frequent restarts or a second writer would cost more. Temporary restore testing adds a second cluster's compute/storage, snapshot storage beyond included allowance, task/network use and possibly public IPv4; estimate its duration before the drill. Seven-day automated backup storage up to database size is generally included; retained final/manual snapshots and excess backups can be charged. An internet gateway has no standing hourly fee; data transfer, request/I/O and any later endpoints do. No NAT Gateway is included. Additional unpriced foundation usage includes the Terraform state bucket, S3 requests and versions, CloudWatch log storage/queries, Secrets Manager API calls, data transfer/egress, extra Aurora I/O and backup/snapshot storage. Future Phase 5 SQS, schedules, alarms, restore exercises, deployment automation and any added networking have **no estimate in this subtotal**.
+If the DB fails to pause and stays at 0.5 ACU for 730 hours, its compute alone is about **$43.80/month**, putting the same foundation subtotal around **$46.60+/month**. Scaling to 2 ACU, frequent restarts or a second writer would cost more. Temporary restore testing adds a second cluster's compute/storage, snapshot storage beyond included allowance, task/network use and possibly public IPv4; estimate its duration before the drill. The proposed one-day automated backup has a shorter restore window than the original seven-day design; retained final/manual snapshots and excess backups can be charged. An internet gateway has no standing hourly fee; data transfer, request/I/O and any later endpoints do. No NAT Gateway is included. Additional unpriced foundation usage includes the Terraform state bucket, S3 requests and versions, CloudWatch log storage/queries, Secrets Manager API calls, data transfer/egress, extra Aurora I/O and backup/snapshot storage. Future Phase 5 SQS, schedules, alarms, restore exercises, deployment automation and any added networking have **no estimate in this subtotal**.
 
 For the **priced Phase 5A assumptions only**, the estimated final AWS payment is **$0 if all usage is credit-eligible and sufficient credits actually apply**; otherwise the payment is the uncovered actual charges. After credits expire, the estimated final payment for this same narrow scenario is **at least about $3.13/month with reliable pausing, or $46.60/month if the DB stays at 0.5 ACU**, plus the unpriced usage above. These figures are not a full operating-cost quote. Anthropic/Tavily spending is external and is **not** offset by AWS credits. Free-plan eligibility, credit application, region rates, Aurora version/auto-pause availability, Fargate quotas and service access must be checked by the owner before apply.
 
