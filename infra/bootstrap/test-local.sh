@@ -5,6 +5,7 @@ test_network="job-agent-bootstrap-test-$$"
 test_db="job-agent-bootstrap-db-$$"
 export POSTGRES_PASSWORD="synthetic-bootstrap-test-only"
 export TEST_DB_PASSWORD="$POSTGRES_PASSWORD"
+bootstrap_test_image="${BOOTSTRAP_TEST_IMAGE:-job-agent-bootstrap:phase5b-local}"
 
 cleanup() {
   docker rm -f "$test_db" >/dev/null 2>&1 || true
@@ -30,4 +31,4 @@ done
 docker run --rm --read-only --network "$test_network" --entrypoint python \
   -e "TEST_DB_HOST=$test_db" -e TEST_DB_PORT=5432 -e TEST_DB_PASSWORD \
   -v "$PWD/infra/bootstrap/tests:/tests:ro" \
-  job-agent-bootstrap:phase5b-local -m unittest discover -v -s /tests
+  "$bootstrap_test_image" -m unittest discover -v -s /tests
