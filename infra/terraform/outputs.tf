@@ -35,3 +35,7 @@ output "application_task_definition_arn" {
 output "migration_task_definition_arn" {
   value = var.enable_runtime ? aws_ecs_task_definition.migrate[0].arn : null
 }
+
+output "bootstrap_task_definition_arn" {
+  value = var.enable_bootstrap ? aws_ecs_task_definition.bootstrap[0].arn : null
+}

@@ -25,6 +25,10 @@ jobs:
         run: ./mvnw -B clean verify
       - name: Build linux/amd64 application container
         run: docker buildx build --platform linux/amd64 --file Dockerfile --tag job-agent:ci --load .
+      - name: Verify one-off bootstrap image and isolated PostgreSQL grants
+        run: |
+          docker buildx build --platform linux/amd64 --file infra/bootstrap/Dockerfile --tag job-agent-bootstrap:phase5b-local --load .
+          bash infra/bootstrap/test-local.sh
       - name: Verify analysis inputs
         run: |
           test -s target/site/jacoco/jacoco.xml

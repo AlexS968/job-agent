@@ -10,3 +10,5 @@
 !infra/
 !infra/certs/
 !infra/certs/us-east-1-bundle.pem
+!infra/bootstrap/
+!infra/bootstrap/**
