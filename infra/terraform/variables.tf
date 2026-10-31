@@ -27,6 +27,16 @@ variable "name_prefix" {
   }
 }
 
+variable "aurora_activity_alert_email" {
+  description = "Confirmed owner email for Aurora prolonged-activity notifications. Supply only through an ignored local tfvars file."
+  type        = string
+  sensitive   = true
+  validation {
+    condition     = can(regex("^[^[:space:]@]+@[^[:space:]@]+\\.[^[:space:]@]+$", var.aurora_activity_alert_email))
+    error_message = "Provide one valid email address in an ignored local tfvars file."
+  }
+}
+
 variable "enable_runtime" {
   description = "Create one-off ECS task definitions only after image, database roles and secrets are ready."
   type        = bool
