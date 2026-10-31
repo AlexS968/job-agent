@@ -43,6 +43,22 @@ variable "enable_runtime" {
   default     = false
 }
 
+variable "enable_bootstrap" {
+  description = "Temporarily register the one-off DB bootstrap task and narrowly scoped IAM role; disable after grant finalization."
+  type        = bool
+  default     = false
+}
+
+variable "bootstrap_image_digest" {
+  description = "Reviewed linux/amd64 bootstrap image manifest digest in the existing ECR repository."
+  type        = string
+  default     = null
+  validation {
+    condition     = !var.enable_bootstrap || (var.bootstrap_image_digest != null && can(regex("^sha256:[0-9a-f]{64}$", var.bootstrap_image_digest)))
+    error_message = "Bootstrap requires a reviewed ECR sha256 image digest."
+  }
+}
+
 variable "image_digest" {
   description = "Immutable linux/amd64 ECR image digest, including sha256: prefix."
   type        = string
