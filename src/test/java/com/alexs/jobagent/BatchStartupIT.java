@@ -70,6 +70,34 @@ class BatchStartupIT {
     }
 
     @Test
+    void cloudHikariSettingsBindFromActualProcessEnvironment() throws Exception {
+        try (PostgreSQLContainer postgres = new PostgreSQLContainer("postgres:17.11-alpine")
+                .withDatabaseName("job_agent_hikari_env_test").withUsername("test_user").withPassword(PASSWORD)) {
+            postgres.start();
+            assertEquals(0, run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD).exitCode());
+            var oldNames = Map.of(
+                    "SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT", "60000",
+                    "SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE", "2");
+            Result misbound = runWithEnvironment("jdbc:postgresql://127.0.0.1:1/unavailable?connectTimeout=1",
+                    postgres.getUsername(), PASSWORD, oldNames,
+                    "--spring.datasource.hikari.connection-timeout=1000");
+            assertNotEquals(0, misbound.exitCode(), misbound.output());
+            assertTrue(misbound.output().contains("spring.datasource.hikari.connection"), misbound.output());
+            assertFalse(misbound.output().contains(PASSWORD), misbound.output());
+
+            var canonicalNames = Map.of(
+                    "SPRING_DATASOURCE_HIKARI_CONNECTIONTIMEOUT", "60000",
+                    "SPRING_DATASOURCE_HIKARI_MAXIMUMPOOLSIZE", "2");
+            Result bound = runWithEnvironment(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
+                    canonicalNames, "--logging.level.com.zaxxer.hikari.HikariConfig=DEBUG");
+            assertEquals(0, bound.exitCode(), bound.output());
+            assertTrue(bound.output().matches("(?s).*connectionTimeout\\.+60000.*"), bound.output());
+            assertTrue(bound.output().matches("(?s).*maximumPoolSize\\.+2.*"), bound.output());
+            assertFalse(bound.output().contains("spring.datasource.hikari.connection'"), bound.output());
+        }
+    }
+
+    @Test
     void searchDryRunNeedsNoKeyAndLiveModeWithoutKeyFailsBeforeReservation() throws Exception {
         try (PostgreSQLContainer postgres = new PostgreSQLContainer("postgres:17.11-alpine")
                 .withDatabaseName("job_agent_search_batch_test").withUsername("test_user").withPassword(PASSWORD)) {
@@ -536,6 +564,18 @@ class BatchStartupIT {
 
     private static Result runWithSources(String url, String username, String password, String boards,
                                          String sites, String... arguments) throws IOException, InterruptedException {
+        return runWithSourcesAndEnvironment(url, username, password, boards, sites, Map.of(), arguments);
+    }
+
+    private static Result runWithEnvironment(String url, String username, String password,
+                                             Map<String, String> extraEnvironment, String... arguments)
+            throws IOException, InterruptedException {
+        return runWithSourcesAndEnvironment(url, username, password, null, null, extraEnvironment, arguments);
+    }
+
+    private static Result runWithSourcesAndEnvironment(String url, String username, String password, String boards,
+                                                       String sites, Map<String, String> extraEnvironment,
+                                                       String... arguments) throws IOException, InterruptedException {
         Path outputFile = Files.createTempFile("job-agent-batch-", ".log");
         String jacocoAgent = System.getProperty("jacoco.agent.argLine");
         if (jacocoAgent == null || !jacocoAgent.startsWith("-javaagent:")) {
@@ -555,6 +595,8 @@ class BatchStartupIT {
         env.put("DB_URL", url);
         env.put("DB_USER", username);
         env.put("DB_PASSWORD", password);
+        env.keySet().removeIf(key -> key.startsWith("SPRING_DATASOURCE_HIKARI_"));
+        env.putAll(extraEnvironment);
         env.remove("TAVILY_API_KEY");
         if (boards == null) {
             env.remove("GREENHOUSE_BOARDS");

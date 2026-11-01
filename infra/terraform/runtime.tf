@@ -1,10 +1,10 @@
 locals {
   execution_secret_arns = [for arn in [var.app_db_secret_arn, var.migration_db_secret_arn] : arn if arn != null && arn != ""]
-  db_url                = "jdbc:postgresql://${aws_rds_cluster.db.endpoint}:5432/job_agent?sslmode=verify-full&sslrootcert=/opt/job-agent/certs/us-east-1-bundle.pem&connectTimeout=45&socketTimeout=120"
+  db_url                = "jdbc:postgresql://${aws_rds_cluster.db.endpoint}:5432/job_agent?sslmode=verify-full&sslrootcert=/opt/job-agent/certs/us-east-1-bundle.pem&connectTimeout=45&sslResponseTimeout=45000&socketTimeout=120"
   common_environment = [
     { name = "DB_URL", value = local.db_url },
-    { name = "SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT", value = "60000" },
-    { name = "SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE", value = "2" }
+    { name = "SPRING_DATASOURCE_HIKARI_CONNECTIONTIMEOUT", value = "60000" },
+    { name = "SPRING_DATASOURCE_HIKARI_MAXIMUMPOOLSIZE", value = "2" }
   ]
   log_configuration = {
     logDriver = "awslogs"
