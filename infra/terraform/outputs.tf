@@ -39,3 +39,15 @@ output "migration_task_definition_arn" {
 output "bootstrap_task_definition_arn" {
   value = var.enable_bootstrap ? aws_ecs_task_definition.bootstrap[0].arn : null
 }
+
+output "restore_verifier_task_definition_arn" {
+  value = var.enable_restore_drill ? aws_ecs_task_definition.restore_verifier[0].arn : null
+}
+
+output "restore_verifier_security_group_id" {
+  value = var.enable_restore_drill ? aws_security_group.restore_verifier[0].id : null
+}
+
+output "restore_cluster_identifier" {
+  value = var.enable_restore_drill ? aws_rds_cluster.restore_drill[0].cluster_identifier : null
+}
