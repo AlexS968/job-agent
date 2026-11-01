@@ -1,6 +1,6 @@
 # ADR 0008: Reviewable Terraform foundation for one-off AWS batches
 
-Status: Phase 5A merged in PR #24 and one-day backup correction in PR #25. After historical Free Plan failures, the owner changed to Paid Plan and reports the private Aurora cluster/writer deployed. Initial idle auto-pause and Aurora alert email delivery were observed; application wake/sleep, a real one-hour alert trigger and restore remain untested. Phase 5B first-run preparation is documented separately.
+Status: Phase 5A merged in PR #24 and one-day backup correction in PR #25. After historical Free Plan failures, the owner changed to Paid Plan and reports the private Aurora cluster/writer deployed. Initial idle auto-pause and Aurora alert email delivery were observed. Phase 5B bootstrap completed, but the first migration task failed during startup; application wake/sleep, a real one-hour alert trigger and restore remain untested. The retry is documented in the Phase 5B runbook.
 
 ## Decision
 

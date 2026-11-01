@@ -1,6 +1,6 @@
 # Phase 5A: container and reviewable AWS foundation
 
-Status: Phase 5A code merged in PR #24 and one-day backup correction in PR #25. After historical Free Plan creation failures, the owner changed to Paid Plan and reports the private Aurora cluster `job-agent-p5a-db` and writer `job-agent-p5a-writer` deployed in us-east-1. Initial idle auto-pause was observed. The merged activity alert's SNS subscription was confirmed; a controlled ALARM test and metric-driven return to OK delivered emails. A real one-hour alarm trigger, application wake/sleep, task execution and restore remain untested. The [Phase 5B runbook](PHASE_5B_RUNBOOK.md) is prepared locally and not deployed. Phase 5 is incomplete.
+Status: Phase 5A code merged in PR #24 and one-day backup correction in PR #25. After historical Free Plan creation failures, the owner changed to Paid Plan and reports the private Aurora cluster `job-agent-p5a-db` and writer `job-agent-p5a-writer` deployed in us-east-1. Initial idle auto-pause was observed. The merged activity alert's SNS subscription was confirmed; a controlled ALARM test and metric-driven return to OK delivered emails. Phase 5B bootstrap `prepare` completed; the first migration task exited 1 during startup, and a configuration correction awaits review and deployment. `finalize`, app execution, application wake/sleep, a real one-hour alarm trigger and restore remain untested. See the [Phase 5B runbook](PHASE_5B_RUNBOOK.md). Phase 5 is incomplete.
 
 ## Scope and local checks
 
