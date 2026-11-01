@@ -74,8 +74,8 @@ variable "app_db_secret_arn" {
   type        = string
   default     = null
   validation {
-    condition     = !var.enable_runtime || (var.app_db_secret_arn != null && can(regex("^arn:aws:secretsmanager:us-east-1:[0-9]{12}:secret:", var.app_db_secret_arn)))
-    error_message = "Runtime requires an existing us-east-1 application DB secret ARN."
+    condition     = !(var.enable_runtime || var.enable_restore_drill) || (var.app_db_secret_arn != null && can(regex("^arn:aws:secretsmanager:us-east-1:[0-9]{12}:secret:", var.app_db_secret_arn)))
+    error_message = "Runtime or restore drill requires an existing us-east-1 application DB secret ARN."
   }
 }
 
@@ -86,5 +86,51 @@ variable "migration_db_secret_arn" {
   validation {
     condition     = !var.enable_runtime || (var.migration_db_secret_arn != null && can(regex("^arn:aws:secretsmanager:us-east-1:[0-9]{12}:secret:", var.migration_db_secret_arn)))
     error_message = "Runtime requires an existing us-east-1 migration DB secret ARN."
+  }
+}
+
+variable "enable_restore_drill" {
+  description = "Temporarily restore a separate cluster for a reviewed, time-bounded PITR drill."
+  type        = bool
+  default     = false
+}
+
+variable "restore_drill_id" {
+  description = "Unique lowercase identifier for one restore drill; never reuse it."
+  type        = string
+  default     = null
+  validation {
+    condition     = !var.enable_restore_drill || (var.restore_drill_id != null && can(regex("^[a-z][a-z0-9]{3,11}$", var.restore_drill_id)))
+    error_message = "Enabled restore drill requires a unique 4-12 character lowercase alphanumeric ID."
+  }
+}
+
+variable "restore_time_utc" {
+  description = "Explicit UTC point within the source cluster's observed restorable interval."
+  type        = string
+  default     = null
+  validation {
+    condition     = !var.enable_restore_drill || (var.restore_time_utc != null && can(regex("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$", var.restore_time_utc)))
+    error_message = "Enabled restore drill requires an explicit UTC timestamp such as 2026-11-01T12:00:00Z."
+  }
+}
+
+variable "restore_verifier_image_digest" {
+  description = "Reviewed linux/amd64 digest of the isolated read-only verifier image."
+  type        = string
+  default     = null
+  validation {
+    condition     = !var.enable_restore_drill || (var.restore_verifier_image_digest != null && can(regex("^sha256:[0-9a-f]{64}$", var.restore_verifier_image_digest)))
+    error_message = "Enabled restore drill requires a reviewed verifier image digest."
+  }
+}
+
+variable "restore_expected_agent_runs" {
+  description = "Read-only source reference count recorded immediately before the selected restore point."
+  type        = number
+  default     = null
+  validation {
+    condition     = !var.enable_restore_drill || (var.restore_expected_agent_runs != null && var.restore_expected_agent_runs >= 0 && floor(var.restore_expected_agent_runs) == var.restore_expected_agent_runs)
+    error_message = "Enabled restore drill requires a nonnegative integer source reference count."
   }
 }

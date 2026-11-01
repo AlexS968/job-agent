@@ -1,5 +1,7 @@
 # Phase 5A: container and reviewable AWS foundation
 
+The [isolated PITR drill](PHASE_5_RESTORE_DRILL.md) is prepared locally but has not created AWS resources or verified recovery. It preserves the source and requires a current restorable window, reference count and reviewed creation/cleanup plans.
+
 Status: Phase 5A code merged in PR #24 and one-day backup correction in PR #25. After historical Free Plan creation failures, the owner changed to Paid Plan and reports the private Aurora cluster `job-agent-p5a-db` and writer `job-agent-p5a-writer` deployed in us-east-1. Initial idle auto-pause was observed. The merged activity alert's SNS subscription was confirmed; a controlled ALARM test and metric-driven return to OK delivered emails. Phase 5B's controlled cloud checks completed after a corrected migration retry: V1–V13 applied, grant finalization and two restricted application checks exited 0, temporary bootstrap access was removed and capacity returned to 0 ACU. The first migration startup failure remains historical. A real one-hour alarm trigger, restore, scheduling and business execution remain untested. See the [Phase 5B runbook](PHASE_5B_RUNBOOK.md). Phase 5 is incomplete.
 
 ## Scope and local checks
