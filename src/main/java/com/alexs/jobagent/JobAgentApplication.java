@@ -15,8 +15,6 @@ import com.alexs.jobagent.source.dto.SearchPilotResultDTO;
 import com.alexs.jobagent.outbox.dto.DispatchResultDTO;
 import com.alexs.jobagent.outbox.service.LocalEventDispatcher;
 import com.alexs.jobagent.outbox.service.OutboxService;
-import com.alexs.jobagent.outbox.service.SqsProducerService;
-import com.alexs.jobagent.outbox.service.SqsConsumerService;
 import com.alexs.jobagent.evaluation.service.EvaluationService;
 import com.alexs.jobagent.evaluation.service.ProfileFileService;
 import com.alexs.jobagent.evaluation.service.RuleEvaluationPolicy;
@@ -51,6 +49,7 @@ public class JobAgentApplication {
     private static final String LIMIT_OPTION = "--limit=";
     private static final String VACANCY_ID_OPTION = "--vacancy-id=";
     private static final String COMPARISON_OPTION = "--comparison=";
+    private static final String EVENT_ID_OPTION = "--event-id=";
 
     public static void main(String[] args) {
         try (ConfigurableApplicationContext context = SpringApplication.run(JobAgentApplication.class, args)) {
@@ -132,9 +131,9 @@ public class JobAgentApplication {
             case "--mode=synthetic" -> runSynthetic(args, ingestion, json);
             case "--mode=dispatch" -> runDispatch(args, dispatcher);
             case "--mode=replay-failed" -> runReplay(args, outbox);
-            case "--mode=sqs-produce" -> runSqsProduce(args, context.getBean(SqsProducerService.class));
-            case "--mode=sqs-consume" -> runSqsConsume(args, context.getBean(SqsConsumerService.class));
-            case "--mode=sqs-status" -> runSqsStatus(args, context.getBean(SqsConsumerService.class));
+            case "--mode=sqs-produce" -> new SqsBatchCommands(context).produce(args);
+            case "--mode=sqs-consume" -> new SqsBatchCommands(context).consume(args);
+            case "--mode=sqs-status" -> new SqsBatchCommands(context).status(args);
             case "--mode=greenhouse" -> runGreenhouse(args, greenhouse, boards);
             case "--mode=lever" -> runLever(args, lever, leverSites);
             case "--mode=search-dry-run" -> runSearchDryRun(args, searchPilot);
@@ -458,42 +457,14 @@ public class JobAgentApplication {
     }
 
     private void runReplay(String[] args, OutboxService outbox) {
-        if (args.length != 2 || !args[1].startsWith("--event-id=")) {
+        if (args.length != 2 || !args[1].startsWith(EVENT_ID_OPTION)) {
             throw new IllegalArgumentException("A failed event ID is required");
         }
-        UUID eventId = UUID.fromString(args[1].substring("--event-id=".length()));
+        UUID eventId = UUID.fromString(args[1].substring(EVENT_ID_OPTION.length()));
         if (!outbox.replayFailed(eventId)) {
             throw new IllegalStateException("Event is not in FAILED state");
         }
         LOGGER.info("Failed event queued for replay: event_id={}", eventId);
-    }
-
-    private void runSqsProduce(String[] args, SqsProducerService producer) {
-        requireOnlyOptions(args, "--mode=sqs-produce", LIMIT_OPTION);
-        var result = producer.publish(Math.toIntExact(optionalLong(args, LIMIT_OPTION, 20)));
-        LOGGER.info("SQS publish invocation: sent={}, deferred={}, failed={}",
-                result.processed(), result.deferred(), result.failed());
-        if (result.deferred() > 0 || result.failed() > 0) {
-            throw new IllegalStateException("SQS publish left deferred or failed events");
-        }
-    }
-
-    private void runSqsConsume(String[] args, SqsConsumerService consumer) {
-        requireOnlyOptions(args, "--mode=sqs-consume", LIMIT_OPTION);
-        var result = consumer.consume(Math.toIntExact(optionalLong(args, LIMIT_OPTION, 1)));
-        LOGGER.info("SQS consume invocation: processed={}, duplicates={}, failed={}",
-                result.processed(), result.duplicates(), result.failed());
-        if (result.failed() > 0) {
-            throw new IllegalStateException("SQS consume left retryable messages");
-        }
-    }
-
-    private void runSqsStatus(String[] args, SqsConsumerService consumer) {
-        requireOnlyOptions(args, "--mode=sqs-status", "--event-id=");
-        UUID eventId = UUID.fromString(option(args, "--event-id="));
-        var result = consumer.status(eventId);
-        LOGGER.info("SQS diagnostic status: event_id={}, receipt_recorded={}, observation_recorded={}",
-                eventId, result.receiptRecorded(), result.observationRecorded());
     }
 
     private void runSynthetic(String[] args, SyntheticIngestionService ingestion, JsonMapper json) throws IOException {

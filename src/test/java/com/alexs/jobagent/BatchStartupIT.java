@@ -9,8 +9,16 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.net.URI;
 import org.junit.jupiter.api.Test;
+import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.postgresql.PostgreSQLContainer;
+import org.testcontainers.utility.DockerImageName;
+import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.sqs.SqsClient;
+import software.amazon.awssdk.services.sqs.model.CreateQueueRequest;
 
 class BatchStartupIT {
     private static final String PASSWORD = "synthetic_test_secret_123";
@@ -76,6 +84,55 @@ class BatchStartupIT {
             assertEquals(0, status.exitCode(), status.output());
             assertTrue(status.output().contains("receipt_recorded=false, observation_recorded=false"), status.output());
             assertFalse(status.output().contains(PASSWORD), status.output());
+        }
+    }
+
+    @Test
+    void explicitSqsModesDeliverSyntheticEventThroughLocalQueueAndExitSafely() throws Exception {
+        try (PostgreSQLContainer postgres = new PostgreSQLContainer("postgres:17.11-alpine")
+                .withDatabaseName("job_agent_sqs_batch_test").withUsername("test_user").withPassword(PASSWORD);
+             GenericContainer<?> emulator = new GenericContainer<>(
+                     DockerImageName.parse("softwaremill/elasticmq-native:1.7.1")).withExposedPorts(9324)) {
+            postgres.start();
+            emulator.start();
+            URI endpoint = URI.create("http://" + emulator.getHost() + ":" + emulator.getMappedPort(9324));
+            try (SqsClient client = SqsClient.builder().region(Region.US_EAST_1).endpointOverride(endpoint)
+                    .credentialsProvider(StaticCredentialsProvider.create(
+                            AwsBasicCredentials.create("synthetic", "synthetic"))).build()) {
+                String queueUrl = client.createQueue(CreateQueueRequest.builder().queueName("synthetic-batch")
+                        .build()).queueUrl();
+                Map<String, String> environment = Map.of("JOBAGENT_SQS_ENABLED", "true",
+                        "JOBAGENT_SQS_ENDPOINT", endpoint.toString(), "JOBAGENT_SQS_QUEUEURL", queueUrl);
+                String dbUrl = postgres.getJdbcUrl();
+                String user = postgres.getUsername();
+                assertEquals(0, run(dbUrl, user, PASSWORD, "--mode=synthetic").exitCode());
+                Result published = runWithEnvironment(dbUrl, user, PASSWORD, environment,
+                        "--mode=sqs-produce", "--limit=1");
+                assertEquals(0, published.exitCode(), published.output());
+                assertTrue(published.output().contains("sent=1, deferred=0, failed=0"), published.output());
+                Result consumed = runWithEnvironment(dbUrl, user, PASSWORD, environment,
+                        "--mode=sqs-consume", "--limit=1");
+                assertEquals(0, consumed.exitCode(), consumed.output());
+                assertTrue(consumed.output().contains("processed=1, duplicates=0, failed=0"), consumed.output());
+                String eventId;
+                try (var connection = java.sql.DriverManager.getConnection(dbUrl, user, PASSWORD);
+                     var statement = connection.createStatement();
+                     var rows = statement.executeQuery("SELECT event_id FROM outbox_events")) {
+                    assertTrue(rows.next());
+                    eventId = rows.getString(1);
+                }
+                Result status = runWithEnvironment(dbUrl, user, PASSWORD, environment,
+                        "--mode=sqs-status", "--event-id=" + eventId);
+                assertEquals(0, status.exitCode(), status.output());
+                assertTrue(status.output().contains("receipt_recorded=true, observation_recorded=true"),
+                        status.output());
+                Result repeated = runWithEnvironment(dbUrl, user, PASSWORD, environment,
+                        "--mode=sqs-consume", "--limit=1");
+                assertEquals(0, repeated.exitCode(), repeated.output());
+                assertTrue(repeated.output().contains("processed=0, duplicates=0, failed=0"), repeated.output());
+                assertFalse(published.output().contains(PASSWORD));
+                assertFalse(consumed.output().contains(PASSWORD));
+            }
         }
     }
 

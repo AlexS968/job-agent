@@ -57,21 +57,7 @@ public class SqsConsumerService {
             }
             SqsMessageDTO message = messages.getFirst();
             try {
-                if (message.body() == null || message.body().getBytes(StandardCharsets.UTF_8).length > 4096) {
-                    throw new IllegalArgumentException("Invalid SQS envelope size");
-                }
-                SqsEventDTO envelope = json.readValue(message.body(), SqsEventDTO.class);
-                OutboxEventEntity stored = validStoredEvent(envelope);
-                boolean inserted = transaction.execute(status -> {
-                    if (repository.recordDeliveryIfAbsent(HANDLER_ID, stored.eventId(), clock.instant())) {
-                        repository.observeSqs(stored.eventId(), stored.aggregateId(), clock.instant());
-                        return true;
-                    }
-                    return false;
-                });
-                gateway.delete(message.receiptHandle());
-                LOGGER.info("SQS diagnostic event committed: event_id={}, duplicate={}", stored.eventId(), !inserted);
-                if (inserted) {
+                if (processMessage(message)) {
                     processed++;
                 } else {
                     duplicates++;
@@ -82,6 +68,24 @@ public class SqsConsumerService {
             }
         }
         return new SqsBatchResultDTO(processed, duplicates, 0, failed);
+    }
+
+    private boolean processMessage(SqsMessageDTO message) {
+        if (message.body() == null || message.body().getBytes(StandardCharsets.UTF_8).length > 4096) {
+            throw new IllegalArgumentException("Invalid SQS envelope size");
+        }
+        SqsEventDTO envelope = json.readValue(message.body(), SqsEventDTO.class);
+        OutboxEventEntity stored = validStoredEvent(envelope);
+        boolean inserted = transaction.execute(status -> {
+            if (repository.recordDeliveryIfAbsent(HANDLER_ID, stored.eventId(), clock.instant())) {
+                repository.observeSqs(stored.eventId(), stored.aggregateId(), clock.instant());
+                return true;
+            }
+            return false;
+        });
+        gateway.delete(message.receiptHandle());
+        LOGGER.info("SQS diagnostic event committed: event_id={}, duplicate={}", stored.eventId(), !inserted);
+        return inserted;
     }
 
     public SqsStatusDTO status(UUID eventId) {

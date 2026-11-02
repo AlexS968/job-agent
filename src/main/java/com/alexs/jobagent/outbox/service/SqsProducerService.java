@@ -41,28 +41,36 @@ public class SqsProducerService {
                 if (claim.exhaustedClaims() == 0) {
                     break;
                 }
-                continue;
-            }
-            String body = json.writeValueAsString(SqsEventDTO.from(event));
-            try {
-                gateway.send(body);
-            } catch (RuntimeException sendFailure) {
-                if (!outbox.deferOrFail(event, "SQS_SEND_UNCERTAIN")) {
-                    throw new IllegalStateException("SQS send outcome and outbox claim require review");
-                }
-                if (event.cycleAttempts() >= outbox.maxAttempts()) {
+            } else {
+                PublishOutcome outcome = sendClaim(event);
+                if (outcome == PublishOutcome.SENT) {
+                    sent++;
+                } else if (outcome == PublishOutcome.FAILED) {
                     failed++;
                 } else {
                     deferred++;
                 }
-                continue;
             }
-            if (!outbox.markPublished(event)) {
-                throw new IllegalStateException("SQS accepted event but outbox acknowledgement was lost");
-            }
-            LOGGER.info("Outbox event published to SQS: event_id={}", event.eventId());
-            sent++;
         }
         return new SqsBatchResultDTO(sent, 0, deferred, failed);
     }
+
+    private PublishOutcome sendClaim(OutboxEventEntity event) {
+        String body = json.writeValueAsString(SqsEventDTO.from(event));
+        try {
+            gateway.send(body);
+        } catch (RuntimeException sendFailure) {
+            if (!outbox.deferOrFail(event, "SQS_SEND_UNCERTAIN")) {
+                throw new IllegalStateException("SQS send outcome and outbox claim require review", sendFailure);
+            }
+            return event.cycleAttempts() >= outbox.maxAttempts() ? PublishOutcome.FAILED : PublishOutcome.DEFERRED;
+        }
+        if (!outbox.markPublished(event)) {
+            throw new IllegalStateException("SQS accepted event but outbox acknowledgement was lost");
+        }
+        LOGGER.info("Outbox event published to SQS: event_id={}", event.eventId());
+        return PublishOutcome.SENT;
+    }
+
+    private enum PublishOutcome { SENT, DEFERRED, FAILED }
 }
