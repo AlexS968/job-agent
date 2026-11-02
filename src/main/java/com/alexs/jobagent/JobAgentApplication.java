@@ -34,6 +34,7 @@ import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.ConfigurableApplicationContext;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -48,6 +49,7 @@ public class JobAgentApplication {
     private static final String LIMIT_OPTION = "--limit=";
     private static final String VACANCY_ID_OPTION = "--vacancy-id=";
     private static final String COMPARISON_OPTION = "--comparison=";
+    private static final String EVENT_ID_OPTION = "--event-id=";
 
     public static void main(String[] args) {
         try (ConfigurableApplicationContext context = SpringApplication.run(JobAgentApplication.class, args)) {
@@ -101,13 +103,13 @@ public class JobAgentApplication {
                                      SearchPilotService searchPilot,
                                      SourceVerificationService verifier, SourceRegistryService registry,
                                      ProfileFileService profiles, EvaluationService evaluations,
-                                     ExtractionPilotService extraction) {
+                                     ExtractionPilotService extraction, ApplicationContext context) {
         return args -> {
             flyway.validate();
             Integer count = jdbc.queryForObject("SELECT COUNT(*) FROM agent_runs", Integer.class);
             LOGGER.info("Database ready; agent_runs rows: {}", count);
             executeMode(args, ingestion, json, dispatcher, outbox, greenhouse, boards, lever, leverSites,
-                    searchPilot, verifier, registry, profiles, evaluations, extraction);
+                    searchPilot, verifier, registry, profiles, evaluations, extraction, context);
         };
     }
 
@@ -117,7 +119,7 @@ public class JobAgentApplication {
                              LeverBatchService lever, String leverSites, SearchPilotService searchPilot,
                              SourceVerificationService verifier, SourceRegistryService registry,
                              ProfileFileService profiles, EvaluationService evaluations,
-                             ExtractionPilotService extraction) throws IOException {
+                             ExtractionPilotService extraction, ApplicationContext context) throws IOException {
         String[] modes = Arrays.stream(args).filter(arg -> arg.startsWith("--mode=")).toArray(String[]::new);
         if (modes.length == 0) {
             return;
@@ -129,6 +131,9 @@ public class JobAgentApplication {
             case "--mode=synthetic" -> runSynthetic(args, ingestion, json);
             case "--mode=dispatch" -> runDispatch(args, dispatcher);
             case "--mode=replay-failed" -> runReplay(args, outbox);
+            case "--mode=sqs-produce" -> new SqsBatchCommands(context).produce(args);
+            case "--mode=sqs-consume" -> new SqsBatchCommands(context).consume(args);
+            case "--mode=sqs-status" -> new SqsBatchCommands(context).status(args);
             case "--mode=greenhouse" -> runGreenhouse(args, greenhouse, boards);
             case "--mode=lever" -> runLever(args, lever, leverSites);
             case "--mode=search-dry-run" -> runSearchDryRun(args, searchPilot);
@@ -452,10 +457,10 @@ public class JobAgentApplication {
     }
 
     private void runReplay(String[] args, OutboxService outbox) {
-        if (args.length != 2 || !args[1].startsWith("--event-id=")) {
+        if (args.length != 2 || !args[1].startsWith(EVENT_ID_OPTION)) {
             throw new IllegalArgumentException("A failed event ID is required");
         }
-        UUID eventId = UUID.fromString(args[1].substring("--event-id=".length()));
+        UUID eventId = UUID.fromString(args[1].substring(EVENT_ID_OPTION.length()));
         if (!outbox.replayFailed(eventId)) {
             throw new IllegalStateException("Event is not in FAILED state");
         }

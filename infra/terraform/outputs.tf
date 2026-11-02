@@ -51,3 +51,19 @@ output "restore_verifier_security_group_id" {
 output "restore_cluster_identifier" {
   value = var.enable_restore_drill ? aws_rds_cluster.restore_drill[0].cluster_identifier : null
 }
+
+output "sqs_queue_url" {
+  value = var.enable_sqs ? aws_sqs_queue.vacancy[0].id : null
+}
+
+output "sqs_dlq_url" {
+  value = var.enable_sqs ? aws_sqs_queue.vacancy_dlq[0].id : null
+}
+
+output "sqs_producer_task_definition_arn" {
+  value = var.enable_sqs ? aws_ecs_task_definition.sqs_producer[0].arn : null
+}
+
+output "sqs_consumer_task_definition_arn" {
+  value = var.enable_sqs ? aws_ecs_task_definition.sqs_consumer[0].arn : null
+}

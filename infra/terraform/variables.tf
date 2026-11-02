@@ -95,6 +95,16 @@ variable "enable_restore_drill" {
   default     = false
 }
 
+variable "enable_sqs" {
+  description = "Register the gated standard queue, DLQ and one-off producer/consumer tasks after review."
+  type        = bool
+  default     = false
+  validation {
+    condition     = !var.enable_sqs || var.enable_runtime
+    error_message = "SQS tasks require the reviewed runtime image and application DB secret."
+  }
+}
+
 variable "restore_drill_id" {
   description = "Unique lowercase identifier for one restore drill; never reuse it."
   type        = string
