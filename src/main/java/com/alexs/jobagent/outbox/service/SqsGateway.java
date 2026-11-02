@@ -1,0 +1,10 @@
+package com.alexs.jobagent.outbox.service;
+
+import com.alexs.jobagent.outbox.dto.SqsMessageDTO;
+import java.util.List;
+
+public interface SqsGateway {
+    void send(String body);
+    List<SqsMessageDTO> receive();
+    void delete(String receiptHandle);
+}

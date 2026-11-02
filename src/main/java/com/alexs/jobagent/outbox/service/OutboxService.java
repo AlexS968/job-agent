@@ -67,6 +67,16 @@ public class OutboxService {
         return transaction.execute(status -> repository.complete(event.eventId(), event.claimToken(), clock.instant()));
     }
 
+    public boolean markPublished(OutboxEventEntity event) {
+        requireNoAmbientTransaction();
+        return transaction.execute(status -> repository.markPublished(event.eventId(), event.claimToken(), clock.instant()));
+    }
+
+    public OutboxEventEntity findById(UUID eventId) {
+        requireNoAmbientTransaction();
+        return repository.findById(eventId);
+    }
+
     public boolean deferOrFail(OutboxEventEntity event, String safeCode) {
         requireNoAmbientTransaction();
         Instant now = clock.instant();

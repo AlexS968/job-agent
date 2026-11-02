@@ -31,7 +31,7 @@ class BatchStartupIT {
                  var statement = connection.createStatement();
                  var rows = statement.executeQuery("SELECT COUNT(*) FROM flyway_schema_history WHERE success")) {
                 assertTrue(rows.next());
-                assertEquals(13, rows.getInt(1));
+                assertEquals(14, rows.getInt(1));
             }
         }
     }
@@ -58,6 +58,24 @@ class BatchStartupIT {
                     "--spring.profiles.active=cloud-app");
             assertEquals(0, validated.exitCode(), validated.output());
             assertTrue(validated.output().contains("Database ready"), validated.output());
+        }
+    }
+
+    @Test
+    void sqsStatusUsesRealProcessEnvironmentWithoutContactingQueue() throws Exception {
+        try (PostgreSQLContainer postgres = new PostgreSQLContainer("postgres:17.11-alpine")
+                .withDatabaseName("job_agent_sqs_env_test").withUsername("test_user")
+                .withPassword(PASSWORD)) {
+            postgres.start();
+            assertEquals(0, run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD).exitCode());
+            String eventId = java.util.UUID.randomUUID().toString();
+            Result status = runWithEnvironment(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
+                    Map.of("JOBAGENT_SQS_ENABLED", "true", "JOBAGENT_SQS_QUEUEURL",
+                            "http://127.0.0.1:9324/queue/synthetic"),
+                    "--mode=sqs-status", "--event-id=" + eventId);
+            assertEquals(0, status.exitCode(), status.output());
+            assertTrue(status.output().contains("receipt_recorded=false, observation_recorded=false"), status.output());
+            assertFalse(status.output().contains(PASSWORD), status.output());
         }
     }
 

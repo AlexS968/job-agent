@@ -15,6 +15,8 @@ import com.alexs.jobagent.source.dto.SearchPilotResultDTO;
 import com.alexs.jobagent.outbox.dto.DispatchResultDTO;
 import com.alexs.jobagent.outbox.service.LocalEventDispatcher;
 import com.alexs.jobagent.outbox.service.OutboxService;
+import com.alexs.jobagent.outbox.service.SqsProducerService;
+import com.alexs.jobagent.outbox.service.SqsConsumerService;
 import com.alexs.jobagent.evaluation.service.EvaluationService;
 import com.alexs.jobagent.evaluation.service.ProfileFileService;
 import com.alexs.jobagent.evaluation.service.RuleEvaluationPolicy;
@@ -34,6 +36,7 @@ import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.ConfigurableApplicationContext;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -101,13 +104,13 @@ public class JobAgentApplication {
                                      SearchPilotService searchPilot,
                                      SourceVerificationService verifier, SourceRegistryService registry,
                                      ProfileFileService profiles, EvaluationService evaluations,
-                                     ExtractionPilotService extraction) {
+                                     ExtractionPilotService extraction, ApplicationContext context) {
         return args -> {
             flyway.validate();
             Integer count = jdbc.queryForObject("SELECT COUNT(*) FROM agent_runs", Integer.class);
             LOGGER.info("Database ready; agent_runs rows: {}", count);
             executeMode(args, ingestion, json, dispatcher, outbox, greenhouse, boards, lever, leverSites,
-                    searchPilot, verifier, registry, profiles, evaluations, extraction);
+                    searchPilot, verifier, registry, profiles, evaluations, extraction, context);
         };
     }
 
@@ -117,7 +120,7 @@ public class JobAgentApplication {
                              LeverBatchService lever, String leverSites, SearchPilotService searchPilot,
                              SourceVerificationService verifier, SourceRegistryService registry,
                              ProfileFileService profiles, EvaluationService evaluations,
-                             ExtractionPilotService extraction) throws IOException {
+                             ExtractionPilotService extraction, ApplicationContext context) throws IOException {
         String[] modes = Arrays.stream(args).filter(arg -> arg.startsWith("--mode=")).toArray(String[]::new);
         if (modes.length == 0) {
             return;
@@ -129,6 +132,9 @@ public class JobAgentApplication {
             case "--mode=synthetic" -> runSynthetic(args, ingestion, json);
             case "--mode=dispatch" -> runDispatch(args, dispatcher);
             case "--mode=replay-failed" -> runReplay(args, outbox);
+            case "--mode=sqs-produce" -> runSqsProduce(args, context.getBean(SqsProducerService.class));
+            case "--mode=sqs-consume" -> runSqsConsume(args, context.getBean(SqsConsumerService.class));
+            case "--mode=sqs-status" -> runSqsStatus(args, context.getBean(SqsConsumerService.class));
             case "--mode=greenhouse" -> runGreenhouse(args, greenhouse, boards);
             case "--mode=lever" -> runLever(args, lever, leverSites);
             case "--mode=search-dry-run" -> runSearchDryRun(args, searchPilot);
@@ -460,6 +466,34 @@ public class JobAgentApplication {
             throw new IllegalStateException("Event is not in FAILED state");
         }
         LOGGER.info("Failed event queued for replay: event_id={}", eventId);
+    }
+
+    private void runSqsProduce(String[] args, SqsProducerService producer) {
+        requireOnlyOptions(args, "--mode=sqs-produce", LIMIT_OPTION);
+        var result = producer.publish(Math.toIntExact(optionalLong(args, LIMIT_OPTION, 20)));
+        LOGGER.info("SQS publish invocation: sent={}, deferred={}, failed={}",
+                result.processed(), result.deferred(), result.failed());
+        if (result.deferred() > 0 || result.failed() > 0) {
+            throw new IllegalStateException("SQS publish left deferred or failed events");
+        }
+    }
+
+    private void runSqsConsume(String[] args, SqsConsumerService consumer) {
+        requireOnlyOptions(args, "--mode=sqs-consume", LIMIT_OPTION);
+        var result = consumer.consume(Math.toIntExact(optionalLong(args, LIMIT_OPTION, 1)));
+        LOGGER.info("SQS consume invocation: processed={}, duplicates={}, failed={}",
+                result.processed(), result.duplicates(), result.failed());
+        if (result.failed() > 0) {
+            throw new IllegalStateException("SQS consume left retryable messages");
+        }
+    }
+
+    private void runSqsStatus(String[] args, SqsConsumerService consumer) {
+        requireOnlyOptions(args, "--mode=sqs-status", "--event-id=");
+        UUID eventId = UUID.fromString(option(args, "--event-id="));
+        var result = consumer.status(eventId);
+        LOGGER.info("SQS diagnostic status: event_id={}, receipt_recorded={}, observation_recorded={}",
+                eventId, result.receiptRecorded(), result.observationRecorded());
     }
 
     private void runSynthetic(String[] args, SyntheticIngestionService ingestion, JsonMapper json) throws IOException {

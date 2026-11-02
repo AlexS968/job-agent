@@ -6,6 +6,11 @@ import com.alexs.jobagent.outbox.entity.OutboxEventEntity;
 import com.alexs.jobagent.outbox.service.LocalEventDispatcher;
 import com.alexs.jobagent.outbox.service.OutboxService;
 import com.alexs.jobagent.outbox.service.SyntheticVacancyConsumer;
+import com.alexs.jobagent.outbox.service.SqsGateway;
+import com.alexs.jobagent.outbox.service.SqsProducerService;
+import com.alexs.jobagent.outbox.service.SqsConsumerService;
+import com.alexs.jobagent.outbox.dto.SqsMessageDTO;
+import java.util.List;
 import com.alexs.jobagent.source.dto.SyntheticInputDTO;
 import com.alexs.jobagent.source.service.SyntheticIngestionService;
 import java.io.InputStream;
@@ -64,13 +69,14 @@ class OutboxIT {
     @BeforeEach
     void clear() {
         clock.reset();
-        jdbc.execute("TRUNCATE synthetic_vacancy_observations, consumer_deliveries, outbox_events, "
+        jdbc.execute("TRUNCATE sqs_vacancy_observations, synthetic_vacancy_observations, "
+                + "consumer_deliveries, outbox_events, "
                 + "vacancy_sources, source_items, vacancies, employers, agent_runs RESTART IDENTITY CASCADE");
     }
 
     @Test
     void migrationFromEmptyDatabaseAndAtomicEmission() throws Exception {
-        assertEquals(13, count("flyway_schema_history"));
+        assertEquals(14, count("flyway_schema_history"));
         ingestion.ingest(fixture());
         assertEquals(1, count("vacancies"));
         assertEquals(1, count("outbox_events"));
@@ -317,6 +323,119 @@ class OutboxIT {
             writer.get(10, TimeUnit.SECONDS);
         }
         assertNotNull(outbox.claim("reader"));
+    }
+
+    @Test
+    void uncertainSendCanRepeatButConsumerEffectCommitsOnce() throws Exception {
+        ingestion.ingest(fixture());
+        TestSqsGateway queue = new TestSqsGateway();
+        queue.failAfterSend = true;
+        var producer = new SqsProducerService(outbox, queue, json);
+        var consumer = new SqsConsumerService(queue, outbox,
+                new com.alexs.jobagent.outbox.repository.ConsumerDeliveryRepository(jdbc), json, clock, manager);
+        assertEquals(1, producer.publish(1).deferred());
+        assertEquals("PENDING", state());
+        assertEquals(1, consumer.consume(1).processed());
+        assertEquals(1, count("sqs_vacancy_observations"));
+        assertTrue(consumer.status(eventId()).receiptRecorded());
+        assertTrue(consumer.status(eventId()).observationRecorded());
+        clock.advance(Duration.ofSeconds(1));
+        assertEquals(1, producer.publish(1).processed());
+        assertEquals("PUBLISHED", state());
+        assertNull(jdbc.queryForObject("SELECT completed_at FROM outbox_events", Timestamp.class));
+        assertNotNull(jdbc.queryForObject("SELECT published_at FROM outbox_events", Timestamp.class));
+        assertEquals(1, consumer.consume(1).duplicates());
+        assertEquals(1, count("sqs_vacancy_observations"));
+    }
+
+    @Test
+    void failedSendWithoutEnqueueLeavesOutboxRetryable() throws Exception {
+        ingestion.ingest(fixture());
+        TestSqsGateway queue = new TestSqsGateway();
+        queue.failBeforeSend = true;
+        var producer = new SqsProducerService(outbox, queue, json);
+        assertEquals(1, producer.publish(1).deferred());
+        assertNull(queue.body);
+        assertEquals("PENDING", state());
+        clock.advance(Duration.ofSeconds(1));
+        assertEquals(1, producer.publish(1).processed());
+        assertEquals("PUBLISHED", state());
+        assertNotNull(queue.body);
+    }
+
+    @Test
+    void deleteFailureAfterCommitAndConcurrentRedeliveryDoNotRepeatEffect() throws Exception {
+        ingestion.ingest(fixture());
+        TestSqsGateway queue = new TestSqsGateway();
+        new SqsProducerService(outbox, queue, json).publish(1);
+        queue.failDelete = true;
+        var repo = new com.alexs.jobagent.outbox.repository.ConsumerDeliveryRepository(jdbc);
+        var first = new SqsConsumerService(queue, outbox, repo, json, clock, manager);
+        var second = new SqsConsumerService(queue, outbox, repo, json, clock, manager);
+        assertEquals(1, first.consume(1).failed());
+        assertEquals(1, count("consumer_deliveries"));
+        assertEquals(1, count("sqs_vacancy_observations"));
+        queue.failDelete = false;
+        CountDownLatch start = new CountDownLatch(1);
+        var a = CompletableFuture.supplyAsync(() -> awaitSqs(start, first));
+        var b = CompletableFuture.supplyAsync(() -> awaitSqs(start, second));
+        start.countDown();
+        assertEquals(0, a.get(10, TimeUnit.SECONDS).failed());
+        assertEquals(0, b.get(10, TimeUnit.SECONDS).failed());
+        assertEquals(1, count("consumer_deliveries"));
+        assertEquals(1, count("sqs_vacancy_observations"));
+    }
+
+    @Test
+    void invalidEnvelopeAndEffectFailureRemainRetryable() throws Exception {
+        ingestion.ingest(fixture());
+        TestSqsGateway queue = new TestSqsGateway();
+        new SqsProducerService(outbox, queue, json).publish(1);
+        var consumer = new SqsConsumerService(queue, outbox,
+                new com.alexs.jobagent.outbox.repository.ConsumerDeliveryRepository(jdbc), json, clock, manager);
+        String valid = queue.body;
+        queue.body = valid.replace("\"schemaVersion\":1", "\"schemaVersion\":2");
+        assertEquals(1, consumer.consume(1).failed());
+        assertEquals(0, count("consumer_deliveries"));
+        queue.body = valid;
+        jdbc.execute("CREATE FUNCTION reject_sqs_observation() RETURNS trigger LANGUAGE plpgsql AS $$ "
+                + "BEGIN RAISE EXCEPTION 'synthetic test failure'; END $$");
+        jdbc.execute("CREATE TRIGGER reject_sqs_observation BEFORE INSERT ON sqs_vacancy_observations "
+                + "FOR EACH ROW EXECUTE FUNCTION reject_sqs_observation()");
+        try {
+            assertEquals(1, consumer.consume(1).failed());
+            assertEquals(0, count("consumer_deliveries"));
+            assertEquals(0, count("sqs_vacancy_observations"));
+        } finally {
+            jdbc.execute("DROP TRIGGER reject_sqs_observation ON sqs_vacancy_observations");
+            jdbc.execute("DROP FUNCTION reject_sqs_observation()");
+        }
+        assertEquals(1, consumer.consume(1).processed());
+    }
+
+    private com.alexs.jobagent.outbox.dto.SqsBatchResultDTO awaitSqs(CountDownLatch start,
+                                                                         SqsConsumerService consumer) {
+        try { start.await(); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+        return consumer.consume(1);
+    }
+
+    static class TestSqsGateway implements SqsGateway {
+        volatile String body;
+        volatile boolean failAfterSend;
+        volatile boolean failBeforeSend;
+        volatile boolean failDelete;
+        @Override public synchronized void send(String value) {
+            if (failBeforeSend) { failBeforeSend = false; throw new IllegalStateException("synthetic send failure"); }
+            body = value;
+            if (failAfterSend) { failAfterSend = false; throw new IllegalStateException("uncertain synthetic send"); }
+        }
+        @Override public synchronized List<SqsMessageDTO> receive() {
+            return body == null ? List.of() : List.of(new SqsMessageDTO(body, "synthetic-receipt"));
+        }
+        @Override public synchronized void delete(String receipt) {
+            if (failDelete) { throw new IllegalStateException("synthetic delete failure"); }
+            body = null;
+        }
     }
 
     private OutboxEventEntity awaitClaim(CountDownLatch start, String worker) {

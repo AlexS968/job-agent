@@ -75,6 +75,22 @@ public class OutboxRepository {
                 Timestamp.from(now), eventId, token, Timestamp.from(now)) == 1;
     }
 
+    public boolean markPublished(UUID eventId, UUID token, Instant now) {
+        return jdbc.update("UPDATE outbox_events SET state = 'PUBLISHED', published_at = ?, "
+                        + "claimed_by = NULL, claim_token = NULL, lease_until = NULL, failure_code = NULL "
+                        + "WHERE event_id = ? AND claim_token = ? AND state = 'CLAIMED' AND lease_until > ?",
+                Timestamp.from(now), eventId, token, Timestamp.from(now)) == 1;
+    }
+
+    public OutboxEventEntity findById(UUID eventId) {
+        List<OutboxEventEntity> rows = jdbc.query("SELECT event_id, event_type, schema_version, aggregate_id, "
+                        + "occurred_at, run_id, payload::text FROM outbox_events WHERE event_id = ?",
+                (rs, row) -> new OutboxEventEntity(rs.getObject(1, UUID.class), rs.getString(2), rs.getInt(3),
+                        rs.getLong(4), rs.getTimestamp(5).toInstant(), rs.getLong(6), rs.getString(7), null, 0),
+                eventId);
+        return rows.isEmpty() ? null : rows.getFirst();
+    }
+
     public boolean fail(UUID eventId, UUID token, Instant now, Instant nextAttempt, int maxAttempts, String code) {
         return jdbc.update("UPDATE outbox_events SET state = CASE WHEN cycle_attempts >= ? THEN 'FAILED' "
                         + "ELSE 'PENDING' END, next_attempt_at = ?, failure_code = ?, "
