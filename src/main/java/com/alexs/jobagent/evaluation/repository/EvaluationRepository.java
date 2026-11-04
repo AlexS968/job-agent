@@ -2,6 +2,7 @@ package com.alexs.jobagent.evaluation.repository;
 
 import com.alexs.jobagent.evaluation.dto.LoadedProfileDTO;
 import com.alexs.jobagent.evaluation.dto.VacancyEvaluationDTO;
+import com.alexs.jobagent.evaluation.dto.EvaluationStatusDTO;
 import com.alexs.jobagent.evaluation.dto.SelectedExtractionDTO;
 import java.util.Arrays;
 import java.util.List;
@@ -66,6 +67,28 @@ public class EvaluationRepository {
 
     public boolean insert(VacancyEvaluationDTO result, LoadedProfileDTO profile, String policyVersion) {
         return insert(result, profile, policyVersion, null);
+    }
+
+    public long idFor(long vacancyId, String revision, LoadedProfileDTO profile, String policyVersion) {
+        Long id = jdbc.queryForObject("SELECT id FROM vacancy_evaluations WHERE vacancy_id = ? "
+                        + "AND vacancy_revision = ? AND profile_id = ? AND profile_version = ? "
+                        + "AND criteria_hash = ? AND policy_version = ? AND extraction_work_id IS NULL "
+                        + "AND extraction_basis = 'NONE'", Long.class, vacancyId, revision,
+                profile.profile().profileId(), profile.profile().version(), profile.criteriaHash(), policyVersion);
+        if (id == null) {
+            throw new IllegalStateException("Committed evaluation identity is missing");
+        }
+        return id;
+    }
+
+    public EvaluationStatusDTO status(long id) {
+        return jdbc.query("SELECT id, vacancy_id, source_item_id, vacancy_revision, profile_id, profile_version, "
+                        + "criteria_hash, policy_version, decision, reasons::text, unknowns::text, evidence::text "
+                        + "FROM vacancy_evaluations WHERE id = ?",
+                rs -> rs.next() ? new EvaluationStatusDTO(rs.getLong(1), rs.getLong(2), rs.getLong(3),
+                        rs.getString(4), rs.getString(5), rs.getString(6), rs.getString(7), rs.getString(8),
+                        rs.getString(9), strings(rs.getString(10)), strings(rs.getString(11)),
+                        strings(rs.getString(12))) : null, id);
     }
 
     public VacancyEvaluationDTO current(long vacancyId, String revision, LoadedProfileDTO profile,

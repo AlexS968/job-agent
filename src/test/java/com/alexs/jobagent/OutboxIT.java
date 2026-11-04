@@ -77,12 +77,15 @@ class OutboxIT {
 
     @Test
     void migrationFromEmptyDatabaseAndAtomicEmission() throws Exception {
-        assertEquals(14, count("flyway_schema_history"));
+        assertEquals(15, count("flyway_schema_history"));
         ingestion.ingest(fixture());
         assertEquals(1, count("vacancies"));
         assertEquals(1, count("outbox_events"));
         assertEquals("VacancyDiscovered", jdbc.queryForObject("SELECT event_type FROM outbox_events", String.class));
         assertEquals(1, jdbc.queryForObject("SELECT schema_version FROM outbox_events", Integer.class));
+        assertEquals(1L, jdbc.queryForObject("SELECT (payload->>'source_item_id')::bigint FROM outbox_events", Long.class));
+        assertTrue(jdbc.queryForObject("SELECT payload->>'vacancy_revision' FROM outbox_events", String.class)
+                .matches("[0-9a-f]{64}"));
         assertEquals("PENDING", state());
     }
 

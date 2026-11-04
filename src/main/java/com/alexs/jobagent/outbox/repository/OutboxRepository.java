@@ -28,6 +28,16 @@ public class OutboxRepository {
                 eventId, eventType, vacancyId, Timestamp.from(now), runId, vacancyId, Timestamp.from(now));
     }
 
+    public void enqueueSnapshot(UUID eventId, String eventType, long vacancyId, long runId,
+                                Instant now, long sourceItemId, String revision) {
+        jdbc.update("INSERT INTO outbox_events(event_id, event_type, schema_version, aggregate_id, occurred_at, "
+                        + "run_id, payload, next_attempt_at) VALUES (?, ?, 1, ?, ?, ?, "
+                        + "jsonb_build_object('vacancy_id', ?::bigint, 'source_item_id', ?::bigint, "
+                        + "'vacancy_revision', ?::text), ?)",
+                eventId, eventType, vacancyId, Timestamp.from(now), runId,
+                vacancyId, sourceItemId, revision, Timestamp.from(now));
+    }
+
     public int expireExhaustedClaims(Instant now, int maxAttempts, int limit) {
         return jdbc.update("WITH expired AS (SELECT event_id FROM outbox_events "
                         + "WHERE state = 'CLAIMED' AND lease_until <= ? AND cycle_attempts >= ? "

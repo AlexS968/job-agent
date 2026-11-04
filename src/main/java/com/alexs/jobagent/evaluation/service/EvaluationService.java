@@ -5,6 +5,7 @@ import com.alexs.jobagent.evaluation.dto.LoadedProfileDTO;
 import com.alexs.jobagent.evaluation.dto.ShortlistDTO;
 import com.alexs.jobagent.evaluation.dto.VacancyEvaluationDTO;
 import com.alexs.jobagent.evaluation.dto.SelectedExtractionDTO;
+import com.alexs.jobagent.evaluation.dto.EvaluationStatusDTO;
 import com.alexs.jobagent.evaluation.repository.EvaluationRepository;
 import com.alexs.jobagent.source.dto.SourceEvidenceDTO;
 import com.alexs.jobagent.source.service.SourceEvidenceService;
@@ -79,6 +80,33 @@ public class EvaluationService {
                 !vacancies.idsAfter(cursor, 1).isEmpty());
     }
 
+    /** Joins the caller's receipt transaction; the vacancy row lock fences concurrent updates. */
+    public EventEvaluationDTO evaluateEventInTransaction(long vacancyId, long sourceItemId, String revision,
+                                                          LoadedProfileDTO profile) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive()) {
+            throw new IllegalStateException("Event evaluation requires the receipt transaction");
+        }
+        VacancyReadDTO vacancy = vacancies.lock(vacancyId);
+        SourceEvidenceDTO source = vacancy == null ? null : sources.latestForVacancy(vacancyId);
+        if (source == null) {
+            throw new IllegalStateException("Event vacancy provenance is unavailable");
+        }
+        if (source.sourceItemId() != sourceItemId
+                || !policy.revision(vacancy, source).equals(revision)) {
+            return new EventEvaluationDTO(true, null);
+        }
+        evaluations.registerProfile(profile);
+        evaluateLocked(vacancy, source, profile, RuleEvaluationPolicy.VERSION, revision);
+        return new EventEvaluationDTO(false,
+                evaluations.idFor(vacancyId, revision, profile, RuleEvaluationPolicy.VERSION));
+    }
+
+    public record EventEvaluationDTO(boolean stale, Long evaluationId) { }
+
+    public EvaluationStatusDTO evaluationStatus(long id) {
+        return evaluations.status(id);
+    }
+
     public ShortlistDTO shortlist(LoadedProfileDTO profile, int limit, String policyVersion) {
         rejectAmbient();
         if (limit < 1 || limit > MAX_REPORT || !validVersion(policyVersion)) {
@@ -120,6 +148,12 @@ public class EvaluationService {
             throw new IllegalStateException("Vacancy provenance is missing");
         }
         String revision = policy.revision(vacancy, source);
+        return evaluateLocked(vacancy, source, profile, policyVersion, revision);
+    }
+
+    private boolean evaluateLocked(VacancyReadDTO vacancy, SourceEvidenceDTO source, LoadedProfileDTO profile,
+                                   String policyVersion, String revision) {
+        long id = vacancy.id();
         SelectedExtractionDTO selected = select(policyVersion, id, source.sourceItemId(), revision);
         Long workId = selected == null ? null : selected.workId();
         String basis = selected == null ? "NONE" : selected.status();

@@ -169,3 +169,69 @@ resource "aws_ecs_task_definition" "sqs_consumer" {
   }])
   depends_on = [aws_iam_role_policy.execution, aws_iam_role_policy.sqs_consumer]
 }
+
+resource "aws_iam_role" "sqs_evaluation_execution" {
+  count              = var.enable_sqs_evaluation ? 1 : 0
+  name               = "${var.name_prefix}-sqs-evaluation-execution"
+  assume_role_policy = aws_iam_role.execution.assume_role_policy
+}
+
+resource "aws_iam_role_policy" "sqs_evaluation_execution" {
+  count = var.enable_sqs_evaluation ? 1 : 0
+  name  = "${var.name_prefix}-sqs-evaluation-pull-logs-secrets"
+  role  = aws_iam_role.sqs_evaluation_execution[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow", Action = ["ecr:GetAuthorizationToken"], Resource = "*"
+      },
+      {
+        Effect   = "Allow", Action = ["ecr:BatchCheckLayerAvailability", "ecr:GetDownloadUrlForLayer", "ecr:BatchGetImage"]
+        Resource = aws_ecr_repository.app.arn
+      },
+      {
+        Effect   = "Allow", Action = ["logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = "${aws_cloudwatch_log_group.task.arn}:*"
+      },
+      {
+        Effect   = "Allow", Action = ["secretsmanager:GetSecretValue"]
+        Resource = [var.app_db_secret_arn, var.evaluation_profile_secret_arn]
+      }
+    ]
+  })
+}
+
+resource "aws_ecs_task_definition" "sqs_evaluation" {
+  count                    = var.enable_sqs_evaluation ? 1 : 0
+  family                   = "${var.name_prefix}-sqs-evaluate"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = "1024"
+  memory                   = "2048"
+  execution_role_arn       = aws_iam_role.sqs_evaluation_execution[0].arn
+  task_role_arn            = aws_iam_role.sqs_consumer[0].arn
+  runtime_platform {
+    operating_system_family = "LINUX"
+    cpu_architecture        = "X86_64"
+  }
+  container_definitions = jsonencode([{
+    name      = "job-agent"
+    image     = "${aws_ecr_repository.app.repository_url}@${var.image_digest}"
+    essential = true
+    command   = ["--mode=sqs-evaluate", "--limit=1"]
+    environment = concat(local.common_environment, [
+      { name = "DB_USER", value = "job_agent_app" },
+      { name = "SPRING_PROFILES_ACTIVE", value = "cloud-app" },
+      { name = "JOBAGENT_SQS_ENABLED", value = "true" },
+      { name = "JOBAGENT_SQS_QUEUEURL", value = aws_sqs_queue.vacancy[0].id }
+    ])
+    secrets = [
+      { name = "DB_PASSWORD", valueFrom = "${var.app_db_secret_arn}:password::" },
+      { name = "JOBAGENT_EVALUATION_PROFILE_JSON", valueFrom = var.evaluation_profile_secret_arn }
+    ]
+    logConfiguration = local.log_configuration
+    stopTimeout      = 120
+  }])
+  depends_on = [aws_iam_role_policy.sqs_evaluation_execution, aws_iam_role_policy.sqs_consumer]
+}

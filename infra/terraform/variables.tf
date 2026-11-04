@@ -105,6 +105,27 @@ variable "enable_sqs" {
   }
 }
 
+variable "enable_sqs_evaluation" {
+  description = "Register a separate one-off rules-v1 evaluation consumer for reviewed use."
+  type        = bool
+  default     = false
+  validation {
+    condition     = !var.enable_sqs_evaluation || var.enable_sqs
+    error_message = "SQS evaluation requires the deployed SQS queue and runtime."
+  }
+}
+
+variable "evaluation_profile_secret_arn" {
+  description = "ARN of an existing private Secrets Manager secret containing only the profile JSON."
+  type        = string
+  default     = null
+  validation {
+    condition = !var.enable_sqs_evaluation || (var.evaluation_profile_secret_arn != null &&
+    can(regex("^arn:aws:secretsmanager:us-east-1:[0-9]{12}:secret:", var.evaluation_profile_secret_arn)))
+    error_message = "SQS evaluation requires a reviewed us-east-1 profile secret ARN."
+  }
+}
+
 variable "restore_drill_id" {
   description = "Unique lowercase identifier for one restore drill; never reuse it."
   type        = string

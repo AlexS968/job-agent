@@ -4,6 +4,9 @@ import com.alexs.jobagent.outbox.entity.OutboxEventEntity;
 import com.alexs.jobagent.outbox.dto.BacklogDTO;
 import com.alexs.jobagent.outbox.dto.ClaimResultDTO;
 import com.alexs.jobagent.outbox.repository.OutboxRepository;
+import com.alexs.jobagent.evaluation.service.RuleEvaluationPolicy;
+import com.alexs.jobagent.source.service.SourceEvidenceService;
+import com.alexs.jobagent.vacancy.service.VacancyReadService;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -20,13 +23,20 @@ public class OutboxService {
     private final OutboxRepository repository;
     private final Clock clock;
     private final RetryPolicy retryPolicy;
+    private final VacancyReadService vacancies;
+    private final SourceEvidenceService sources;
+    private final RuleEvaluationPolicy revisions;
     private final TransactionTemplate transaction;
 
     public OutboxService(OutboxRepository repository, Clock clock, RetryPolicy retryPolicy,
-                         PlatformTransactionManager manager) {
+                         VacancyReadService vacancies, SourceEvidenceService sources,
+                         RuleEvaluationPolicy revisions, PlatformTransactionManager manager) {
         this.repository = repository;
         this.clock = clock;
         this.retryPolicy = retryPolicy;
+        this.vacancies = vacancies;
+        this.sources = sources;
+        this.revisions = revisions;
         this.transaction = new TransactionTemplate(manager);
     }
 
@@ -34,14 +44,24 @@ public class OutboxService {
         if (!TransactionSynchronizationManager.isActualTransactionActive()) {
             throw new IllegalStateException("Event creation requires the vacancy transaction");
         }
-        repository.enqueue(UUID.randomUUID(), vacancyId, runId, clock.instant());
+        enqueueSnapshot("VacancyDiscovered", vacancyId, runId);
     }
 
     public void vacancyUpdated(long vacancyId, long runId) {
         if (!TransactionSynchronizationManager.isActualTransactionActive()) {
             throw new IllegalStateException("Event creation requires the vacancy transaction");
         }
-        repository.enqueue(UUID.randomUUID(), "VacancyUpdated", vacancyId, runId, clock.instant());
+        enqueueSnapshot("VacancyUpdated", vacancyId, runId);
+    }
+
+    private void enqueueSnapshot(String eventType, long vacancyId, long runId) {
+        var vacancy = vacancies.read(vacancyId);
+        var source = sources.latestForVacancy(vacancyId);
+        if (vacancy == null || source == null) {
+            throw new IllegalStateException("Vacancy event provenance is unavailable");
+        }
+        repository.enqueueSnapshot(UUID.randomUUID(), eventType, vacancyId, runId, clock.instant(),
+                source.sourceItemId(), revisions.revision(vacancy, source));
     }
 
     public OutboxEventEntity claim(String worker) {

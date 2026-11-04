@@ -133,6 +133,8 @@ public class JobAgentApplication {
             case "--mode=replay-failed" -> runReplay(args, outbox);
             case "--mode=sqs-produce" -> new SqsBatchCommands(context).produce(args);
             case "--mode=sqs-consume" -> new SqsBatchCommands(context).consume(args);
+            case "--mode=sqs-evaluate" -> new SqsBatchCommands(context).evaluate(args);
+            case "--mode=sqs-evaluation-status" -> new SqsBatchCommands(context).evaluationStatus(args);
             case "--mode=sqs-status" -> new SqsBatchCommands(context).status(args);
             case "--mode=greenhouse" -> runGreenhouse(args, greenhouse, boards);
             case "--mode=lever" -> runLever(args, lever, leverSites);
