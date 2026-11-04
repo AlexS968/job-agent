@@ -2,7 +2,7 @@
 
 The [isolated PITR drill](PHASE_5_RESTORE_DRILL.md) was prepared locally in PR #31 and then executed by the owner. The temporary restore and restricted verification succeeded, followed by reviewed deletion of eight Terraform drill resources. The source database and normal task definitions were retained.
 
-The [SQS outbox increment](PHASE_5_SQS_RUNBOOK.md) is prepared locally for review, with a gated standard queue/DLQ, one-off producer and consumer, V14 diagnostic evidence and isolated tests. No AWS SQS queue, migration or worker has run for it; normal tasks and schedules remain unchanged.
+The [SQS outbox increment](PHASE_5_SQS_RUNBOOK.md) passed a bounded owner-run AWS diagnostic smoke on 2026-11-04: V14 migration, restricted startup, one synthetic event's publication/consumption, duplicate skip and invalid-message DLQ redrive. Queues and one-off task definitions remain deployed. No schedule or real business handler is enabled.
 
 Status: Phase 5A code merged in PR #24 and one-day backup correction in PR #25. After historical Free Plan creation failures, the owner changed to Paid Plan and reports the private Aurora cluster `job-agent-p5a-db` and writer `job-agent-p5a-writer` deployed in us-east-1. Initial idle auto-pause was observed. The merged activity alert's SNS subscription was confirmed; a controlled ALARM test and metric-driven return to OK delivered emails. Phase 5B's controlled cloud checks completed after a corrected migration retry: V1–V13 applied, grant finalization and two restricted application checks exited 0, temporary bootstrap access was removed and capacity returned to 0 ACU. The first migration startup failure remains historical. A real one-hour alarm trigger, populated-data recovery, measured RTO/RPO, scheduling and business execution remain untested. See the [Phase 5B runbook](PHASE_5B_RUNBOOK.md) and [restore record](PHASE_5_RESTORE_DRILL.md). Phase 5 is incomplete.
 
@@ -75,7 +75,7 @@ The [CloudWatch price example](https://aws.amazon.com/cloudwatch/pricing/) is ab
 
 Provider API keys, if separately authorized later, should be placed in service secrets and injected only into the specific one-off task that needs them, with a scoped execution-role grant. A private search profile should be stored as an encrypted S3 object and read by a task with narrowly scoped object access only after the S3 flow and audit behavior are tested. Neither key nor profile value belongs in Terraform variables/state, image layers, logs or shell history. These integrations and IAM grants are deliberately absent from Phase 5A.
 
-No schedule, deployed SQS, business event handler, AWS deployment credentials in CI or live source import is included. The isolated restore drill ran separately; SQS event delivery/processing is prepared locally as the next bounded increment. Broader recovery targets, measured costs and cutover remain later work. Existing Gmail/Sheets remain the old pipeline master.
+No schedule, business event handler, AWS deployment credentials in CI or live source import is included. The isolated restore drill and diagnostic SQS smoke ran separately. The SQS smoke does not establish useful vacancy evaluation or a recurring pipeline. Broader recovery targets, measured costs and cutover remain later work. Existing Gmail/Sheets remain the old pipeline master.
 
 ## Monthly cost sketch, us-east-1, before credits
 
