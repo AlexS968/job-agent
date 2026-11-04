@@ -93,21 +93,6 @@ public class SqsConsumerService {
     }
 
     private OutboxEventEntity validStoredEvent(SqsEventDTO envelope) {
-        if (envelope == null || envelope.eventId() == null || envelope.aggregateId() <= 0
-                || envelope.runId() <= 0 || envelope.occurredAt() == null
-                || !("VacancyDiscovered".equals(envelope.eventType())
-                     || "VacancyUpdated".equals(envelope.eventType())) || envelope.schemaVersion() != 1) {
-            throw new IllegalArgumentException("Unsupported SQS event envelope");
-        }
-        OutboxEventEntity stored = outbox.findById(envelope.eventId());
-        if (stored == null || !SqsEventDTO.from(stored).equals(envelope)) {
-            throw new IllegalArgumentException("SQS event does not match persisted outbox");
-        }
-        var payload = json.readTree(stored.payload());
-        if (payload == null || !payload.path("vacancy_id").isIntegralNumber()
-                || payload.path("vacancy_id").asLong() != stored.aggregateId()) {
-            throw new IllegalArgumentException("Persisted SQS event payload identity is invalid");
-        }
-        return stored;
+        return SqsEventValidation.stored(envelope, outbox, json, false);
     }
 }

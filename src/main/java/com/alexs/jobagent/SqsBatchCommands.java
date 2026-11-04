@@ -2,6 +2,8 @@ package com.alexs.jobagent;
 
 import com.alexs.jobagent.outbox.service.SqsConsumerService;
 import com.alexs.jobagent.outbox.service.SqsProducerService;
+import com.alexs.jobagent.outbox.service.SqsEvaluationConsumerService;
+import com.alexs.jobagent.evaluation.service.ProfileFileService;
 import java.util.Arrays;
 import java.util.UUID;
 import org.slf4j.Logger;
@@ -36,6 +38,41 @@ final class SqsBatchCommands {
                 result.processed(), result.duplicates(), result.failed());
         if (result.failed() > 0) {
             throw new IllegalStateException("SQS consume left retryable messages");
+        }
+    }
+
+    void evaluate(String[] args) {
+        int limit = limit(args, "--mode=sqs-evaluate", 1);
+        String profileJson = context.getEnvironment().getProperty("JOBAGENT_EVALUATION_PROFILE_JSON");
+        var profile = context.getBean(ProfileFileService.class).loadJson(profileJson);
+        var result = context.getBean(SqsEvaluationConsumerService.class).consume(limit, profile);
+        LOGGER.info("SQS evaluation invocation: evaluated={}, duplicates={}, stale={}, failed={}",
+                result.evaluated(), result.duplicates(), result.stale(), result.failed());
+        if (result.failed() > 0) {
+            throw new IllegalStateException("SQS evaluation left retryable messages");
+        }
+    }
+
+    void evaluationStatus(String[] args) {
+        if (args.length != 2 || Arrays.stream(args).filter("--mode=sqs-evaluation-status"::equals).count() != 1) {
+            throw new IllegalArgumentException("SQS evaluation status requires one event ID");
+        }
+        String option = Arrays.stream(args).filter(arg -> arg.startsWith(EVENT_ID_OPTION))
+                .findFirst().orElseThrow(() -> new IllegalArgumentException("SQS evaluation status requires one event ID"));
+        UUID eventId = UUID.fromString(option.substring(EVENT_ID_OPTION.length()));
+        var profile = context.getBean(ProfileFileService.class)
+                .loadJson(context.getEnvironment().getProperty("JOBAGENT_EVALUATION_PROFILE_JSON"));
+        var result = context.getBean(SqsEvaluationConsumerService.class).status(eventId, profile);
+        if (result.evaluation() == null) {
+            LOGGER.info("SQS evaluation status: event_id={}, outcome={}", eventId, result.outcome());
+        } else {
+            var evaluation = result.evaluation();
+            LOGGER.info("SQS evaluation status: event_id={}, outcome={}, evaluation_id={}, vacancy_id={}, "
+                            + "source_item_id={}, revision={}, profile_version={}, "
+                            + "policy_version={}, decision={}, reasons={}, unknowns={}",
+                    eventId, result.outcome(), evaluation.id(), evaluation.vacancyId(),
+                    evaluation.sourceItemId(), evaluation.revision(), evaluation.profileVersion(),
+                    evaluation.policyVersion(), evaluation.decision(), evaluation.reasons(), evaluation.unknowns());
         }
     }
 

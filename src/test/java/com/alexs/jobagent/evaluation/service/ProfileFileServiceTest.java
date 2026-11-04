@@ -46,4 +46,22 @@ class ProfileFileServiceTest {
         Files.writeString(bad, "{\"profileId\":\"x\",\"version\":\"v1\",\"workCountry\":\"Germany\"}");
         assertThrows(IllegalArgumentException.class, () -> profiles.load(badFile));
     }
+
+    @Test
+    void injectedProfileUsesSameIdentityAndRejectsInvalidOrOversizedSecretsSafely() throws Exception {
+        String body = """
+                {"profileId":"synthetic","version":"v1","workCountry":"DE",
+                 "preferredRoleTerms":["Backend"],"reserveRoleTerms":[],
+                 "excludedTitleTerms":[],"excludedArrangements":[],
+                 "allowedHybridLocations":[],"allowEuRemote":false,"salaryPreference":null}
+                """;
+        Path file = directory.resolve("profile.json");
+        Files.writeString(file, body);
+        assertEquals(profiles.load(file.toString()).criteriaHash(), profiles.loadJson(body).criteriaHash());
+        assertThrows(IllegalArgumentException.class, () -> profiles.loadJson(null));
+        assertThrows(IllegalArgumentException.class, () -> profiles.loadJson("x".repeat(32_769)));
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> profiles.loadJson("{\"private\":\"secret-marker\"}"));
+        assertFalse(failure.getMessage().contains("secret-marker"));
+    }
 }

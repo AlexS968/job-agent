@@ -45,6 +45,20 @@ public class ProfileFileService {
         return new LoadedProfileDTO(profile, sha256(json.writeValueAsBytes(profile)));
     }
 
+    /** Accepts a profile injected as an ECS secret; the value is never logged. */
+    public LoadedProfileDTO loadJson(String value) {
+        if (value == null || value.isBlank() || value.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 32_768) {
+            throw new IllegalArgumentException("Private profile configuration is unavailable or invalid");
+        }
+        try {
+            SearchProfileDTO profile = json.readValue(value, SearchProfileDTO.class);
+            validate(profile);
+            return new LoadedProfileDTO(profile, sha256(json.writeValueAsBytes(profile)));
+        } catch (RuntimeException invalid) {
+            throw new IllegalArgumentException("Private profile configuration is unavailable or invalid");
+        }
+    }
+
     static String sha256(byte[] bytes) {
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256").digest(bytes);

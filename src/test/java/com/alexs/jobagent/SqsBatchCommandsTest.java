@@ -11,9 +11,17 @@ import com.alexs.jobagent.outbox.dto.SqsBatchResultDTO;
 import com.alexs.jobagent.outbox.dto.SqsStatusDTO;
 import com.alexs.jobagent.outbox.service.SqsConsumerService;
 import com.alexs.jobagent.outbox.service.SqsProducerService;
+import com.alexs.jobagent.outbox.service.SqsEvaluationConsumerService;
+import com.alexs.jobagent.outbox.dto.SqsEvaluationBatchDTO;
+import com.alexs.jobagent.outbox.dto.SqsEvaluationStatusDTO;
+import com.alexs.jobagent.evaluation.service.ProfileFileService;
+import com.alexs.jobagent.evaluation.dto.LoadedProfileDTO;
+import com.alexs.jobagent.evaluation.dto.SearchProfileDTO;
+import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.ApplicationContext;
+import org.springframework.core.env.Environment;
 
 class SqsBatchCommandsTest {
     private final ApplicationContext context = mock(ApplicationContext.class);
@@ -64,5 +72,28 @@ class SqsBatchCommandsTest {
         when(consumer.status(eventId)).thenReturn(new SqsStatusDTO(true, true));
         commands.status(new String[] {"--mode=sqs-status", "--event-id=" + eventId});
         verify(consumer).status(eventId);
+    }
+
+    @Test
+    void explicitEvaluationModeUsesConfiguredProfileAndFailsOnRetryableWork() {
+        var environment = mock(Environment.class);
+        var profiles = mock(ProfileFileService.class);
+        var evaluator = mock(SqsEvaluationConsumerService.class);
+        var selected = new LoadedProfileDTO(new SearchProfileDTO("synthetic", "v1", "DE",
+                List.of("Backend"), List.of(), List.of(), List.of(), List.of(), false, null), "a".repeat(64));
+        when(context.getEnvironment()).thenReturn(environment);
+        when(environment.getProperty("JOBAGENT_EVALUATION_PROFILE_JSON")).thenReturn("synthetic-profile-json");
+        when(context.getBean(ProfileFileService.class)).thenReturn(profiles);
+        when(profiles.loadJson("synthetic-profile-json")).thenReturn(selected);
+        when(context.getBean(SqsEvaluationConsumerService.class)).thenReturn(evaluator);
+        when(evaluator.consume(1, selected)).thenReturn(new SqsEvaluationBatchDTO(1, 0, 0, 0));
+        assertDoesNotThrow(() -> commands.evaluate(new String[] {"--mode=sqs-evaluate"}));
+        when(evaluator.consume(1, selected)).thenReturn(new SqsEvaluationBatchDTO(0, 0, 0, 1));
+        assertThrows(IllegalStateException.class, () -> commands.evaluate(new String[] {"--mode=sqs-evaluate"}));
+        UUID eventId = UUID.randomUUID();
+        when(evaluator.status(eventId, selected)).thenReturn(new SqsEvaluationStatusDTO("STALE", null));
+        assertDoesNotThrow(() -> commands.evaluationStatus(new String[] {
+                "--mode=sqs-evaluation-status", "--event-id=" + eventId}));
+        verify(evaluator).status(eventId, selected);
     }
 }

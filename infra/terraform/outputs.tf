@@ -67,3 +67,7 @@ output "sqs_producer_task_definition_arn" {
 output "sqs_consumer_task_definition_arn" {
   value = var.enable_sqs ? aws_ecs_task_definition.sqs_consumer[0].arn : null
 }
+
+output "sqs_evaluation_task_definition_arn" {
+  value = var.enable_sqs_evaluation ? aws_ecs_task_definition.sqs_evaluation[0].arn : null
+}
