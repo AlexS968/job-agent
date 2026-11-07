@@ -25,6 +25,7 @@ import com.alexs.jobagent.evaluation.exception.ExtractionValidationException;
 import com.alexs.jobagent.evaluation.exception.PartialExtractionException;
 import com.alexs.jobagent.evaluation.dto.VacancyEvaluationDTO;
 import com.alexs.jobagent.batch.service.BatchPipelineService;
+import com.alexs.jobagent.batch.service.ScheduledBatchService;
 import java.time.Duration;
 import java.io.IOException;
 import java.io.InputStream;
@@ -54,6 +55,9 @@ public class JobAgentApplication {
     private static final String EVENT_ID_OPTION = "--event-id=";
 
     public static void main(String[] args) {
+        if (Arrays.asList(args).contains("--mode=scheduled-batch")) {
+            startScheduledDeadline();
+        }
         try (ConfigurableApplicationContext context = SpringApplication.run(JobAgentApplication.class, args)) {
             // Closing the context releases the connection pool before the batch process exits.
         } catch (Exception exception) {
@@ -70,6 +74,31 @@ public class JobAgentApplication {
             }
             System.exit(exitCode(exception));
         }
+    }
+
+    private static void startScheduledDeadline() {
+        startScheduledDeadline(Duration.ofMinutes(25), Duration.ofSeconds(30),
+                () -> System.exit(124), () -> Runtime.getRuntime().halt(124));
+    }
+
+    static Thread startScheduledDeadline(Duration limit, Duration grace, Runnable orderlyExit, Runnable forcedExit) {
+        return Thread.ofPlatform().daemon().name("scheduled-batch-deadline").start(() -> {
+            try {
+                Thread.sleep(limit);
+                LOGGER.error("Scheduled batch reached its 25-minute process deadline");
+                Thread.ofPlatform().daemon().name("scheduled-batch-hard-stop").start(() -> {
+                    try {
+                        Thread.sleep(grace);
+                        forcedExit.run();
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                });
+                orderlyExit.run();
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        });
     }
 
     static int exitCode(Throwable exception) {
@@ -139,6 +168,7 @@ public class JobAgentApplication {
             case "--mode=sqs-evaluation-status" -> new SqsBatchCommands(context).evaluationStatus(args);
             case "--mode=sqs-status" -> new SqsBatchCommands(context).status(args);
             case "--mode=batch-pipeline" -> runBatchPipeline(args, context, profiles);
+            case "--mode=scheduled-batch" -> runScheduledBatch(args, context, profiles);
             case "--mode=greenhouse" -> runGreenhouse(args, greenhouse, boards);
             case "--mode=lever" -> runLever(args, lever, leverSites);
             case "--mode=search-dry-run" -> runSearchDryRun(args, searchPilot);
@@ -329,6 +359,14 @@ public class JobAgentApplication {
         if ("FAILED".equals(result.outcome()) || "TIME_LIMIT".equals(result.outcome())) {
             throw new IllegalStateException("Batch pipeline stopped with failures or time limit");
         }
+    }
+
+    private void runScheduledBatch(String[] args, ApplicationContext context, ProfileFileService profiles) {
+        if (args.length != 1) {
+            throw new IllegalArgumentException("Scheduled batch takes no command options");
+        }
+        var profile = profiles.loadJson(context.getEnvironment().getProperty("JOBAGENT_EVALUATION_PROFILE_JSON"));
+        context.getBean(ScheduledBatchService.class).run(profile);
     }
 
     private void runEvaluateRules(String[] args, ProfileFileService profiles, EvaluationService evaluations) {
