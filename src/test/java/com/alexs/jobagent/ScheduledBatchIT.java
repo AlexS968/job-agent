@@ -12,6 +12,7 @@ import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ScheduledBatchIT {
@@ -26,6 +27,7 @@ class ScheduledBatchIT {
             Flyway.configure().dataSource(dataSource).load().migrate();
             var repository = new ScheduledBatchRepository(new JdbcTemplate(dataSource));
             var date = LocalDate.of(2026, 11, 5);
+            assertFalse(repository.exists(date));
             var start = new CountDownLatch(1);
             try (var workers = Executors.newFixedThreadPool(2)) {
                 var first = workers.submit(() -> { start.await(); return repository.start(date, "demo", "v1"); });
@@ -33,10 +35,13 @@ class ScheduledBatchIT {
                 start.countDown();
                 assertTrue(first.get(15, TimeUnit.SECONDS) ^ second.get(15, TimeUnit.SECONDS));
             }
+            assertTrue(repository.exists(date));
             assertFalse(repository.start(date.plusDays(5), "demo", "v1"));
             repository.transition(date, "RUNNING", "PREPARED", "safe report", null);
             repository.transition(date, "PREPARED", "PUBLISHING", null, null);
             repository.transition(date, "PUBLISHING", "UNCERTAIN", null, null);
+            assertThrows(IllegalStateException.class,
+                    () -> repository.transition(date, "PUBLISHING", "PUBLISHED", null, "synthetic-message-id"));
             assertFalse(repository.start(date, "demo", "v1"));
             assertTrue(repository.start(date.plusDays(5), "demo", "v1"));
             assertEquals("UNCERTAIN", new JdbcTemplate(dataSource).queryForObject(

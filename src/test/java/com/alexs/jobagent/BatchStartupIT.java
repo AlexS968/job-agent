@@ -45,6 +45,27 @@ class BatchStartupIT {
     }
 
     @Test
+    void invalidScheduledArgumentsExitBeforeAnyBatchReservation() throws Exception {
+        try (PostgreSQLContainer postgres = new PostgreSQLContainer("postgres:17.11-alpine")
+                .withDatabaseName("job_agent_invalid_schedule_test").withUsername("test_user")
+                .withPassword(PASSWORD)) {
+            postgres.start();
+            Result invalid = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
+                    "--mode=scheduled-batch", "--invalid");
+            assertNotEquals(0, invalid.exitCode(), invalid.output());
+            assertTrue(invalid.output().contains("Job Agent run failed"), invalid.output());
+            assertFalse(invalid.output().contains(PASSWORD), invalid.output());
+            try (var connection = java.sql.DriverManager.getConnection(postgres.getJdbcUrl(),
+                    postgres.getUsername(), PASSWORD);
+                 var statement = connection.createStatement();
+                 var rows = statement.executeQuery("SELECT count(*) FROM scheduled_batch_reports")) {
+                assertTrue(rows.next());
+                assertEquals(0, rows.getInt(1));
+            }
+        }
+    }
+
+    @Test
     void cloudAppValidatesButNeverMigratesAnEmptyDatabase() throws Exception {
         try (PostgreSQLContainer postgres = new PostgreSQLContainer("postgres:17.11-alpine")
                 .withDatabaseName("job_agent_cloud_profile_test").withUsername("test_user").withPassword(PASSWORD)) {

@@ -77,19 +77,24 @@ public class JobAgentApplication {
     }
 
     private static void startScheduledDeadline() {
-        Thread.ofPlatform().daemon().name("scheduled-batch-deadline").start(() -> {
+        startScheduledDeadline(Duration.ofMinutes(25), Duration.ofSeconds(30),
+                () -> System.exit(124), () -> Runtime.getRuntime().halt(124));
+    }
+
+    static Thread startScheduledDeadline(Duration limit, Duration grace, Runnable orderlyExit, Runnable forcedExit) {
+        return Thread.ofPlatform().daemon().name("scheduled-batch-deadline").start(() -> {
             try {
-                Thread.sleep(Duration.ofMinutes(25));
+                Thread.sleep(limit);
                 LOGGER.error("Scheduled batch reached its 25-minute process deadline");
                 Thread.ofPlatform().daemon().name("scheduled-batch-hard-stop").start(() -> {
                     try {
-                        Thread.sleep(Duration.ofSeconds(30));
-                        Runtime.getRuntime().halt(124);
+                        Thread.sleep(grace);
+                        forcedExit.run();
                     } catch (InterruptedException interrupted) {
                         Thread.currentThread().interrupt();
                     }
                 });
-                System.exit(124);
+                orderlyExit.run();
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
             }

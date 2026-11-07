@@ -1,9 +1,11 @@
 package com.alexs.jobagent.batch.service;
 
 import java.time.Duration;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
+import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
 import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.retries.StandardRetryStrategy;
@@ -16,12 +18,26 @@ public class AwsSnsReportGateway implements ReportGateway, AutoCloseable {
     private final SnsClient client;
     private final String topicArn;
 
+    @Autowired
     public AwsSnsReportGateway(@Value("${jobagent.report.topic-arn}") String topicArn) {
-        if (topicArn == null || !topicArn.matches("arn:aws:sns:us-east-1:[0-9]{12}:[A-Za-z0-9_-]+")) {
+        this(validateTopicArn(topicArn), newClient());
+    }
+
+    AwsSnsReportGateway(String topicArn, SnsClient client) {
+        this.topicArn = topicArn;
+        this.client = client;
+    }
+
+    private static String validateTopicArn(String topicArn) {
+        if (topicArn == null || !topicArn.matches("arn:aws:sns:us-east-1:\\d{12}:[A-Za-z0-9_-]+")) {
             throw new IllegalArgumentException("A us-east-1 report topic ARN is required");
         }
-        this.topicArn = topicArn;
-        this.client = SnsClient.builder().region(Region.US_EAST_1)
+        return topicArn;
+    }
+
+    private static SnsClient newClient() {
+        return SnsClient.builder().region(Region.US_EAST_1)
+                .credentialsProvider(DefaultCredentialsProvider.create())
                 .overrideConfiguration(ClientOverrideConfiguration.builder()
                         .apiCallTimeout(Duration.ofSeconds(30))
                         .apiCallAttemptTimeout(Duration.ofSeconds(20))

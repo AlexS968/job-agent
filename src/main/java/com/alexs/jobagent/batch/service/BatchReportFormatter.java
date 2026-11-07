@@ -58,9 +58,6 @@ public class BatchReportFormatter {
             included++;
         }
         text.append("Omitted entries due to message size: ").append(entries.size() - included).append('\n');
-        if (bytes(text.toString()) > MAX_BYTES) {
-            throw new IllegalStateException("Batch report exceeds its local size bound");
-        }
         return text.toString();
     }
 

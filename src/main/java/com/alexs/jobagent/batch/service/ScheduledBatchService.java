@@ -6,7 +6,6 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.ZoneId;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
@@ -18,6 +17,7 @@ import org.slf4j.LoggerFactory;
 public class ScheduledBatchService {
     private static final Logger LOGGER = LoggerFactory.getLogger(ScheduledBatchService.class);
     private static final ZoneId BERLIN = ZoneId.of("Europe/Berlin");
+    private static final String PUBLISHING = "PUBLISHING";
     private final ScheduledBatchRepository repository;
     private final BatchPipelineService pipeline;
     private final BatchReportFormatter formatter;
@@ -53,24 +53,28 @@ public class ScheduledBatchService {
             }
             String body = formatter.format(date, profile, result);
             repository.transition(date, "RUNNING", "PREPARED", body, null);
-            repository.transition(date, "PREPARED", "PUBLISHING", null, null);
-            String messageId;
-            try {
-                messageId = gateway.publish("Job Agent batch " + date + ": " + result.outcome(), body);
-                if (messageId == null || messageId.isBlank()) {
-                    throw new IllegalStateException("SNS did not return a message identity");
-                }
-            } catch (RuntimeException uncertain) {
-                markIfPossible(date, "PUBLISHING", "UNCERTAIN");
-                throw new IllegalStateException("Report publication outcome is uncertain; review before any replay", uncertain);
-            }
-            repository.transition(date, "PUBLISHING", "PUBLISHED", null, messageId);
+            repository.transition(date, "PREPARED", PUBLISHING, null, null);
+            publishPrepared(date, result.outcome(), body);
             LOGGER.info("Scheduled report: date={}, status=PUBLISHED, outcome={}", date, result.outcome());
         } catch (RuntimeException failure) {
             // A published or uncertain report must not be rewritten as a failed processing run.
             markIfPossible(date, "RUNNING", "FAILED");
             throw failure;
         }
+    }
+
+    private void publishPrepared(LocalDate date, String outcome, String body) {
+        String messageId;
+        try {
+            messageId = gateway.publish("Job Agent batch " + date + ": " + outcome, body);
+            if (messageId == null || messageId.isBlank()) {
+                throw new IllegalStateException("SNS did not return a message identity");
+            }
+        } catch (RuntimeException uncertain) {
+            markIfPossible(date, PUBLISHING, "UNCERTAIN");
+            throw new IllegalStateException("Report publication outcome is uncertain; review before any replay", uncertain);
+        }
+        repository.transition(date, PUBLISHING, "PUBLISHED", null, messageId);
     }
 
     private void markIfPossible(LocalDate date, String from, String to) {
