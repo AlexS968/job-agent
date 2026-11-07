@@ -301,7 +301,7 @@ public class JobAgentApplication {
         }
     }
 
-    private void runBatchPipeline(String[] args, ApplicationContext context, ProfileFileService profiles) {
+    void runBatchPipeline(String[] args, ApplicationContext context, ProfileFileService profiles) {
         requireOnlyOptions(args, "--mode=batch-pipeline", "--max-events=", "--duration-seconds=",
                 "--shortlist-limit=");
         if (args.length != 4) {

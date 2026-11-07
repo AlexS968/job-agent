@@ -104,7 +104,7 @@ public class SourceRegistryService {
             return new ActiveSourceImportResultDTO(0, result.failed() + result.rejected(),
                     result.created(), result.updated(), result.unchanged());
         }
-        return new ActiveSourceImportResultDTO(0, 1);
+        return new ActiveSourceImportResultDTO(0, 1, 0, 0, 0);
     }
 
     private boolean eligible(VerifiedSourceEntity source) {

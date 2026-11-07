@@ -57,8 +57,20 @@ public class AwsSqsGateway implements SqsGateway {
                         QueueAttributeName.APPROXIMATE_NUMBER_OF_MESSAGES_NOT_VISIBLE,
                         QueueAttributeName.APPROXIMATE_NUMBER_OF_MESSAGES_DELAYED).build()).attributes();
         return new SqsQueueBacklogDTO(
-                Integer.parseInt(attributes.get(QueueAttributeName.APPROXIMATE_NUMBER_OF_MESSAGES)),
-                Integer.parseInt(attributes.get(QueueAttributeName.APPROXIMATE_NUMBER_OF_MESSAGES_NOT_VISIBLE)),
-                Integer.parseInt(attributes.get(QueueAttributeName.APPROXIMATE_NUMBER_OF_MESSAGES_DELAYED)));
+                attributeCount(attributes.get(QueueAttributeName.APPROXIMATE_NUMBER_OF_MESSAGES)),
+                attributeCount(attributes.get(QueueAttributeName.APPROXIMATE_NUMBER_OF_MESSAGES_NOT_VISIBLE)),
+                attributeCount(attributes.get(QueueAttributeName.APPROXIMATE_NUMBER_OF_MESSAGES_DELAYED)));
+    }
+
+    private static int attributeCount(String value) {
+        try {
+            int count = Integer.parseInt(value);
+            if (count < 0) {
+                throw new NumberFormatException("negative count");
+            }
+            return count;
+        } catch (NumberFormatException invalid) {
+            throw new IllegalStateException("SQS backlog attributes are unavailable or invalid", invalid);
+        }
     }
 }

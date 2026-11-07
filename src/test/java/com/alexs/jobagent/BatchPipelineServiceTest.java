@@ -21,6 +21,7 @@ import java.time.ZoneOffset;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
@@ -96,6 +97,43 @@ class BatchPipelineServiceTest {
     }
 
     @Test
+    void failedQueueEvaluationStopsNextBatchAndPreservesCommittedCounts() {
+        when(sources.importActive()).thenReturn(new ActiveSourceImportResultDTO(1, 0, 1, 0, 0));
+        when(producer.publish(10)).thenReturn(new SqsBatchResultDTO(0, 0, 0, 0));
+        when(consumer.consume(10, profile)).thenReturn(new SqsEvaluationBatchDTO(1, 0, 0, 1));
+        var result = pipeline.run(profile, 10, Duration.ofMinutes(10), 5);
+        assertEquals("FAILED", result.outcome());
+        assertEquals(1, result.evaluated());
+        assertEquals(1, result.failed());
+        verify(consumer).consume(10, profile);
+    }
+
+    @Test
+    void committedEventBudgetStopsPublicationWithoutAnotherClaim() {
+        when(sources.importActive()).thenReturn(new ActiveSourceImportResultDTO(1, 0, 10, 0, 0));
+        when(producer.publish(10)).thenReturn(new SqsBatchResultDTO(10, 0, 0, 0));
+        when(consumer.consume(10, profile)).thenReturn(new SqsEvaluationBatchDTO(10, 0, 0, 0));
+        var result = pipeline.run(profile, 10, Duration.ofMinutes(10), 5);
+        assertEquals(10, result.published());
+        assertEquals(10, result.evaluated());
+        verify(producer).publish(10);
+        verify(consumer).consume(10, profile);
+    }
+
+    @Test
+    void rejectsAmbientTransactionBeforeAnySourceOrQueueWork() {
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            Duration duration = Duration.ofMinutes(10);
+            assertThrows(IllegalStateException.class, () -> pipeline.run(profile, 10, duration, 5));
+        } finally {
+            TransactionSynchronizationManager.setActualTransactionActive(false);
+        }
+        verify(sources, never()).importActive();
+        verify(producer, never()).publish(anyInt());
+    }
+
+    @Test
     void elapsedBudgetAfterImportStopsBeforePublication() {
         Clock advancing = mock(Clock.class);
         Instant start = Instant.parse("2026-01-01T00:00:00Z");
@@ -109,10 +147,12 @@ class BatchPipelineServiceTest {
 
     @Test
     void boundsRejectWorkBeforeImport() {
+        Duration permitted = Duration.ofMinutes(10);
+        Duration tooLong = Duration.ofMinutes(16);
         assertThrows(IllegalArgumentException.class,
-                () -> pipeline.run(profile, 101, Duration.ofMinutes(10), 5));
+                () -> pipeline.run(profile, 101, permitted, 5));
         assertThrows(IllegalArgumentException.class,
-                () -> pipeline.run(profile, 10, Duration.ofMinutes(16), 5));
+                () -> pipeline.run(profile, 10, tooLong, 5));
         verify(sources, never()).importActive();
     }
 }
