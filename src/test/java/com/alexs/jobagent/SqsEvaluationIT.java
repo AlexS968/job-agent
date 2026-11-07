@@ -14,8 +14,11 @@ import com.alexs.jobagent.outbox.service.SqsProducerService;
 import com.alexs.jobagent.outbox.repository.ConsumerDeliveryRepository;
 import com.alexs.jobagent.source.dto.SyntheticInputDTO;
 import com.alexs.jobagent.source.service.SyntheticIngestionService;
+import com.alexs.jobagent.source.service.SourceRegistryService;
+import com.alexs.jobagent.batch.service.BatchPipelineService;
 import java.io.InputStream;
 import java.time.Clock;
+import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -55,12 +58,36 @@ class SqsEvaluationIT {
     @Autowired JsonMapper json;
     @Autowired Clock clock;
     @Autowired PlatformTransactionManager manager;
+    @Autowired SourceRegistryService registry;
 
     @BeforeEach
     void clear() {
         jdbc.execute("TRUNCATE sqs_evaluation_effects, sqs_vacancy_observations, vacancy_evaluations, "
                 + "evaluation_profiles, consumer_deliveries, outbox_events, vacancy_sources, source_items, "
                 + "vacancies, employers, agent_runs RESTART IDENTITY CASCADE");
+    }
+
+    @Test
+    void boundedPipelinePublishesEvaluatesAndRerunsWithoutAnotherEffect() throws Exception {
+        try (InputStream stream = getClass().getResourceAsStream("/synthetic/source-item.json")) {
+            assertNotNull(stream);
+            ingestion.ingest(json.readValue(stream, SyntheticInputDTO.class));
+        }
+        Queue queue = new Queue();
+        var pipeline = new BatchPipelineService(registry, outbox, new SqsProducerService(outbox, queue, json),
+                consumer(queue), queue, evaluations, clock);
+        var selected = profile("v1");
+        var first = pipeline.run(selected, 10, Duration.ofMinutes(10), 5);
+        assertEquals(1, first.published());
+        assertEquals(1, first.evaluated());
+        assertEquals(0, first.failed());
+        assertEquals(1, count("vacancy_evaluations"));
+        assertEquals(1, count("consumer_deliveries"));
+        var second = pipeline.run(selected, 10, Duration.ofMinutes(10), 5);
+        assertEquals("NO_NEW_VACANCIES", second.outcome());
+        assertEquals(0, second.published());
+        assertEquals(0, second.evaluated());
+        assertEquals(1, count("vacancy_evaluations"));
     }
 
     @Test
@@ -277,6 +304,9 @@ class SqsEvaluationIT {
         @Override public void delete(String handle) {
             if (failDelete) { throw new IllegalStateException("Synthetic delete failure"); }
             body = null;
+        }
+        @Override public com.alexs.jobagent.outbox.dto.SqsQueueBacklogDTO backlog() {
+            return new com.alexs.jobagent.outbox.dto.SqsQueueBacklogDTO(body == null ? 0 : 1, 0, 0);
         }
     }
 }
