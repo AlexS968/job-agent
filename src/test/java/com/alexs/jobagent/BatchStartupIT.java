@@ -356,7 +356,8 @@ class BatchStartupIT {
             Result inactive = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
                     "--mode=import-active-sources");
             assertEquals(0, inactive.exitCode(), inactive.output());
-            assertTrue(inactive.output().contains("sources=0, failures=0"), inactive.output());
+            assertTrue(inactive.output().contains("sources=0, created=0, updated=0, unchanged=0, failures=0"),
+                    inactive.output());
             Result invalid = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
                     "--mode=activate-source", "--source-id=999");
             assertNotEquals(0, invalid.exitCode());

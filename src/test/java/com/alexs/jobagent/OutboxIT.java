@@ -547,6 +547,9 @@ class OutboxIT {
             if (failDelete) { throw new IllegalStateException("synthetic delete failure"); }
             body = null;
         }
+        @Override public synchronized com.alexs.jobagent.outbox.dto.SqsQueueBacklogDTO backlog() {
+            return new com.alexs.jobagent.outbox.dto.SqsQueueBacklogDTO(body == null ? 0 : 1, 0, 0);
+        }
     }
 
     private OutboxEventEntity awaitClaim(CountDownLatch start, String worker) {

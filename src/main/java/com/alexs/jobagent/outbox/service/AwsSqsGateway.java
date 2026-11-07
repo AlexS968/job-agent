@@ -1,6 +1,7 @@
 package com.alexs.jobagent.outbox.service;
 
 import com.alexs.jobagent.outbox.dto.SqsMessageDTO;
+import com.alexs.jobagent.outbox.dto.SqsQueueBacklogDTO;
 import java.util.List;
 import java.net.URI;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -10,6 +11,8 @@ import software.amazon.awssdk.services.sqs.SqsClient;
 import software.amazon.awssdk.services.sqs.model.DeleteMessageRequest;
 import software.amazon.awssdk.services.sqs.model.ReceiveMessageRequest;
 import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
+import software.amazon.awssdk.services.sqs.model.GetQueueAttributesRequest;
+import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
 
 @Component
 @ConditionalOnProperty(name = "jobagent.sqs.enabled", havingValue = "true")
@@ -45,5 +48,17 @@ public class AwsSqsGateway implements SqsGateway {
     @Override
     public void delete(String receiptHandle) {
         client.deleteMessage(DeleteMessageRequest.builder().queueUrl(queueUrl).receiptHandle(receiptHandle).build());
+    }
+
+    @Override
+    public SqsQueueBacklogDTO backlog() {
+        var attributes = client.getQueueAttributes(GetQueueAttributesRequest.builder().queueUrl(queueUrl)
+                .attributeNames(QueueAttributeName.APPROXIMATE_NUMBER_OF_MESSAGES,
+                        QueueAttributeName.APPROXIMATE_NUMBER_OF_MESSAGES_NOT_VISIBLE,
+                        QueueAttributeName.APPROXIMATE_NUMBER_OF_MESSAGES_DELAYED).build()).attributes();
+        return new SqsQueueBacklogDTO(
+                Integer.parseInt(attributes.get(QueueAttributeName.APPROXIMATE_NUMBER_OF_MESSAGES)),
+                Integer.parseInt(attributes.get(QueueAttributeName.APPROXIMATE_NUMBER_OF_MESSAGES_NOT_VISIBLE)),
+                Integer.parseInt(attributes.get(QueueAttributeName.APPROXIMATE_NUMBER_OF_MESSAGES_DELAYED)));
     }
 }

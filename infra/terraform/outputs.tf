@@ -71,3 +71,7 @@ output "sqs_consumer_task_definition_arn" {
 output "sqs_evaluation_task_definition_arn" {
   value = var.enable_sqs_evaluation ? aws_ecs_task_definition.sqs_evaluation[0].arn : null
 }
+
+output "batch_pipeline_task_definition_arn" {
+  value = var.enable_batch_pipeline ? aws_ecs_task_definition.batch_pipeline[0].arn : null
+}

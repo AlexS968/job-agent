@@ -92,8 +92,14 @@ class SourceVerificationIT {
                 lever, clock(NOW), manager);
         assertEquals(0, registry.importActive().sources());
         assertTrue(registry.activate(1));
-        assertEquals(1, registry.importActive().sources());
-        assertEquals(1, registry.importActive().sources());
+        var firstImport = registry.importActive();
+        assertEquals(1, firstImport.sources());
+        assertEquals(1, firstImport.created());
+        assertEquals(0, firstImport.unchanged());
+        var replay = registry.importActive();
+        assertEquals(1, replay.sources());
+        assertEquals(0, replay.created());
+        assertEquals(1, replay.unchanged());
         assertEquals(2, batches.get());
         assertEquals(1, count("vacancies"));
         assertEquals(1, count("outbox_events"));

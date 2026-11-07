@@ -235,3 +235,57 @@ resource "aws_ecs_task_definition" "sqs_evaluation" {
   }])
   depends_on = [aws_iam_role_policy.sqs_evaluation_execution, aws_iam_role_policy.sqs_consumer]
 }
+
+resource "aws_iam_role" "batch_pipeline" {
+  count              = var.enable_batch_pipeline ? 1 : 0
+  name               = "${var.name_prefix}-batch-pipeline"
+  assume_role_policy = aws_iam_role.execution.assume_role_policy
+}
+
+resource "aws_iam_role_policy" "batch_pipeline" {
+  count = var.enable_batch_pipeline ? 1 : 0
+  name  = "${var.name_prefix}-batch-sqs"
+  role  = aws_iam_role.batch_pipeline[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["sqs:SendMessage", "sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
+      Resource = aws_sqs_queue.vacancy[0].arn
+    }]
+  })
+}
+
+resource "aws_ecs_task_definition" "batch_pipeline" {
+  count                    = var.enable_batch_pipeline ? 1 : 0
+  family                   = "${var.name_prefix}-batch-pipeline"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = "1024"
+  memory                   = "2048"
+  execution_role_arn       = aws_iam_role.sqs_evaluation_execution[0].arn
+  task_role_arn            = aws_iam_role.batch_pipeline[0].arn
+  runtime_platform {
+    operating_system_family = "LINUX"
+    cpu_architecture        = "X86_64"
+  }
+  container_definitions = jsonencode([{
+    name      = "job-agent"
+    image     = "${aws_ecr_repository.app.repository_url}@${var.image_digest}"
+    essential = true
+    command   = ["--mode=batch-pipeline", "--max-events=50", "--duration-seconds=900", "--shortlist-limit=20"]
+    environment = concat(local.common_environment, [
+      { name = "DB_USER", value = "job_agent_app" },
+      { name = "SPRING_PROFILES_ACTIVE", value = "cloud-app" },
+      { name = "JOBAGENT_SQS_ENABLED", value = "true" },
+      { name = "JOBAGENT_SQS_QUEUEURL", value = aws_sqs_queue.vacancy[0].id }
+    ])
+    secrets = [
+      { name = "DB_PASSWORD", valueFrom = "${var.app_db_secret_arn}:password::" },
+      { name = "JOBAGENT_EVALUATION_PROFILE_JSON", valueFrom = var.evaluation_profile_secret_arn }
+    ]
+    logConfiguration = local.log_configuration
+    stopTimeout      = 120
+  }])
+  depends_on = [aws_iam_role_policy.sqs_evaluation_execution, aws_iam_role_policy.batch_pipeline]
+}

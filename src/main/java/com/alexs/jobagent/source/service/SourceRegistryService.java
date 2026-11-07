@@ -54,6 +54,9 @@ public class SourceRegistryService {
         requireNoAmbientTransaction();
         int sources = 0;
         int failures = 0;
+        int created = 0;
+        int updated = 0;
+        int unchanged = 0;
         List<VerifiedSourceEntity> active = repository.listActive();
         if (active.size() > 5) {
             throw new IllegalStateException("At most five active sources can be imported per invocation");
@@ -65,9 +68,13 @@ public class SourceRegistryService {
                 continue;
             }
             sources++;
-            failures += importSource(source.orElseThrow());
+            var result = importSource(source.orElseThrow());
+            failures += result.failures();
+            created += result.created();
+            updated += result.updated();
+            unchanged += result.unchanged();
         }
-        return new ActiveSourceImportResultDTO(sources, failures);
+        return new ActiveSourceImportResultDTO(sources, failures, created, updated, unchanged);
     }
 
     private Optional<VerifiedSourceEntity> eligibleSource(long id) {
@@ -86,16 +93,18 @@ public class SourceRegistryService {
         });
     }
 
-    private int importSource(VerifiedSourceEntity source) {
+    private ActiveSourceImportResultDTO importSource(VerifiedSourceEntity source) {
         if ("GREENHOUSE".equals(source.platform())) {
             var result = greenhouse.run(source.sourceId() + "|" + source.employerName());
-            return result.failed() + result.rejected();
+            return new ActiveSourceImportResultDTO(0, result.failed() + result.rejected(),
+                    result.created(), result.updated(), result.unchanged());
         }
         if ("LEVER".equals(source.platform())) {
             var result = lever.run(source.region() + "|" + source.sourceId() + "|" + source.employerName());
-            return result.failed() + result.rejected();
+            return new ActiveSourceImportResultDTO(0, result.failed() + result.rejected(),
+                    result.created(), result.updated(), result.unchanged());
         }
-        return 1;
+        return new ActiveSourceImportResultDTO(0, 1);
     }
 
     private boolean eligible(VerifiedSourceEntity source) {

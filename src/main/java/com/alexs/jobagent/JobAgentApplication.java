@@ -24,6 +24,8 @@ import com.alexs.jobagent.evaluation.service.ExtractionAwareEvaluationPolicy;
 import com.alexs.jobagent.evaluation.exception.ExtractionValidationException;
 import com.alexs.jobagent.evaluation.exception.PartialExtractionException;
 import com.alexs.jobagent.evaluation.dto.VacancyEvaluationDTO;
+import com.alexs.jobagent.batch.service.BatchPipelineService;
+import java.time.Duration;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Arrays;
@@ -136,6 +138,7 @@ public class JobAgentApplication {
             case "--mode=sqs-evaluate" -> new SqsBatchCommands(context).evaluate(args);
             case "--mode=sqs-evaluation-status" -> new SqsBatchCommands(context).evaluationStatus(args);
             case "--mode=sqs-status" -> new SqsBatchCommands(context).status(args);
+            case "--mode=batch-pipeline" -> runBatchPipeline(args, context, profiles);
             case "--mode=greenhouse" -> runGreenhouse(args, greenhouse, boards);
             case "--mode=lever" -> runLever(args, lever, leverSites);
             case "--mode=search-dry-run" -> runSearchDryRun(args, searchPilot);
@@ -291,9 +294,40 @@ public class JobAgentApplication {
             throw new IllegalArgumentException("Unsupported import arguments");
         }
         var result = registry.importActive();
-        LOGGER.info("Active source import: sources={}, failures={}", result.sources(), result.failures());
+        LOGGER.info("Active source import: sources={}, created={}, updated={}, unchanged={}, failures={}",
+                result.sources(), result.created(), result.updated(), result.unchanged(), result.failures());
         if (result.failures() > 0) {
             throw new IllegalStateException("Active source import had failures");
+        }
+    }
+
+    private void runBatchPipeline(String[] args, ApplicationContext context, ProfileFileService profiles) {
+        requireOnlyOptions(args, "--mode=batch-pipeline", "--max-events=", "--duration-seconds=",
+                "--shortlist-limit=");
+        if (args.length != 4) {
+            throw new IllegalArgumentException("Batch pipeline requires explicit bounds");
+        }
+        int events = Math.toIntExact(Long.parseLong(option(args, "--max-events=")));
+        long seconds = Long.parseLong(option(args, "--duration-seconds="));
+        int reportLimit = Math.toIntExact(Long.parseLong(option(args, "--shortlist-limit=")));
+        var profile = profiles.loadJson(context.getEnvironment().getProperty("JOBAGENT_EVALUATION_PROFILE_JSON"));
+        var result = context.getBean(BatchPipelineService.class).run(profile, events,
+                Duration.ofSeconds(seconds), reportLimit);
+        LOGGER.info("Batch pipeline: outcome={}, sources={}, created={}, updated={}, unchanged={}, "
+                        + "published={}, evaluated={}, duplicates={}, stale={}, failed={}, "
+                        + "outbox_ready={}, outbox_future={}, outbox_active={}, outbox_expired={}, outbox_failed={}, "
+                        + "sqs_visible={}, sqs_in_flight={}, sqs_delayed={}, suitable={}, needs_review={}",
+                result.outcome(), result.imported().sources(), result.imported().created(),
+                result.imported().updated(), result.imported().unchanged(), result.published(),
+                result.evaluated(), result.duplicates(), result.stale(), result.failed(),
+                result.outbox().ready(), result.outbox().futureRetries(), result.outbox().activeClaims(),
+                result.outbox().expiredClaims(), result.outbox().terminalFailures(), result.queue().visible(),
+                result.queue().inFlight(), result.queue().delayed(), result.shortlist().suitable().size(),
+                result.shortlist().needsReview().size());
+        result.shortlist().suitable().forEach(item -> logEvaluation("SUITABLE", item));
+        result.shortlist().needsReview().forEach(item -> logEvaluation("NEEDS_REVIEW", item));
+        if ("FAILED".equals(result.outcome()) || "TIME_LIMIT".equals(result.outcome())) {
+            throw new IllegalStateException("Batch pipeline stopped with failures or time limit");
         }
     }
 
