@@ -125,6 +125,38 @@ variable "enable_batch_pipeline" {
   }
 }
 
+variable "enable_scheduled_batch" {
+  description = "Prepare report SNS, failure alerts and a disabled twice-weekly schedule. Does not enable recurring execution."
+  type        = bool
+  default     = false
+  validation {
+    condition     = !var.enable_scheduled_batch || var.enable_batch_pipeline
+    error_message = "Scheduled batch preparation requires the existing batch task."
+  }
+}
+
+variable "enable_recurring_batch" {
+  description = "Explicit owner gate after email acceptance and an agreed private selection profile."
+  type        = bool
+  default     = false
+  validation {
+    condition     = !var.enable_recurring_batch || var.enable_scheduled_batch
+    error_message = "Recurring execution requires prepared schedule resources."
+  }
+}
+
+variable "batch_report_email" {
+  description = "Owner email for the separate batch report/failure topic; supply only through ignored local tfvars."
+  type        = string
+  sensitive   = true
+  default     = null
+  validation {
+    condition = !var.enable_scheduled_batch || (var.batch_report_email != null &&
+    can(regex("^[^[:space:]@]+@[^[:space:]@]+\\.[^[:space:]@]+$", var.batch_report_email)))
+    error_message = "Prepared batch reporting requires a valid email in ignored local tfvars."
+  }
+}
+
 variable "evaluation_profile_secret_arn" {
   description = "ARN of an existing private Secrets Manager secret containing only the profile JSON."
   type        = string

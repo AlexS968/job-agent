@@ -256,6 +256,20 @@ resource "aws_iam_role_policy" "batch_pipeline" {
   })
 }
 
+resource "aws_iam_role_policy" "batch_report_publish" {
+  count = var.enable_scheduled_batch ? 1 : 0
+  name  = "${var.name_prefix}-batch-report-publish"
+  role  = aws_iam_role.batch_pipeline[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["sns:Publish"]
+      Resource = aws_sns_topic.batch_report[0].arn
+    }]
+  })
+}
+
 resource "aws_ecs_task_definition" "batch_pipeline" {
   count                    = var.enable_batch_pipeline ? 1 : 0
   family                   = "${var.name_prefix}-batch-pipeline"
@@ -279,7 +293,10 @@ resource "aws_ecs_task_definition" "batch_pipeline" {
       { name = "SPRING_PROFILES_ACTIVE", value = "cloud-app" },
       { name = "JOBAGENT_SQS_ENABLED", value = "true" },
       { name = "JOBAGENT_SQS_QUEUEURL", value = aws_sqs_queue.vacancy[0].id }
-    ])
+      ], var.enable_scheduled_batch ? [
+      { name = "JOBAGENT_REPORT_ENABLED", value = "true" },
+      { name = "JOBAGENT_REPORT_TOPICARN", value = aws_sns_topic.batch_report[0].arn }
+    ] : [])
     secrets = [
       { name = "DB_PASSWORD", valueFrom = "${var.app_db_secret_arn}:password::" },
       { name = "JOBAGENT_EVALUATION_PROFILE_JSON", valueFrom = var.evaluation_profile_secret_arn }
@@ -287,5 +304,6 @@ resource "aws_ecs_task_definition" "batch_pipeline" {
     logConfiguration = local.log_configuration
     stopTimeout      = 120
   }])
-  depends_on = [aws_iam_role_policy.sqs_evaluation_execution, aws_iam_role_policy.batch_pipeline]
+  depends_on = [aws_iam_role_policy.sqs_evaluation_execution, aws_iam_role_policy.batch_pipeline,
+  aws_iam_role_policy.batch_report_publish]
 }

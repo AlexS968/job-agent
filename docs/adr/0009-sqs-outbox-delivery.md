@@ -1,6 +1,6 @@
 # ADR 0009: Bounded SQS transport for existing outbox events
 
-Status: decision implemented; diagnostic AWS smoke completed on 2026-11-04 and one bounded rules evaluation smoke on 2026-11-06. Scheduled processing remains unverified.
+Status: decision implemented; diagnostic AWS smoke completed on 2026-11-04 and one bounded rules evaluation smoke on 2026-11-06. A disabled schedule and report path are prepared locally; scheduled processing remains unverified.
 
 ## Decision
 
@@ -23,3 +23,5 @@ New vacancy events retain envelope schema 1 and add `source_item_id` and the exi
 The [2026-11-06 evaluation smoke](../PHASE_5_SQS_RUNBOOK.md#verified-rules-evaluation-smoke-2026-11-06) used a synthetic demo profile: one Solaris event produced evaluation ID 1 and an exact-envelope redelivery reported a duplicate with the same ID. It did not evaluate all imported vacancies or personal suitability. No schedule or complete batch pipeline was exercised. The latest ECR findings remain an owner-deferred consolidated security assessment before Phase 5 closure.
 
 References: [AWS SQS visibility and duplicates](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-visibility-timeout.html), [DLQ and retention](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-dead-letter-queues.html), [SSE-SQS](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-configure-sqs-sse-queue.html), [TLS policy](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-security-best-practices.html).
+
+The later scheduled-batch preparation reuses this transport and `rules-v1` handler; it does not change SQS receipts or delivery semantics. V16 records one Berlin calendar slot and the separate SNS report lifecycle. An active-slot constraint prevents overlapping runs; ambiguous publication is retained for review without automatic email resend or vacancy reprocessing. The [schedule runbook](../PHASE_5_SQS_RUNBOOK.md#prepared-schedule-and-email-cloud-execution-pending) covers deployment, disabled-by-default gating and failure paths. SNS acceptance is not exactly-once email delivery or evidence that the recipient read a message.

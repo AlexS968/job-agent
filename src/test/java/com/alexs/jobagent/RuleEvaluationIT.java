@@ -70,7 +70,7 @@ class RuleEvaluationIT {
 
     @Test
     void migrationReplayVersionsAndStaleEvaluations() throws Exception {
-        assertEquals(15, jdbc.queryForObject("SELECT count(*) FROM flyway_schema_history", Integer.class));
+        assertEquals(16, jdbc.queryForObject("SELECT count(*) FROM flyway_schema_history", Integer.class));
         long vacancy = insert("Backend Engineer", COUNTRY_REMOTE);
         LoadedProfileDTO v1 = profile("v1", "Backend Engineer");
         assertEquals(1, evaluation.evaluate(v1, 0, 100, RuleEvaluationPolicy.VERSION).created());

@@ -39,7 +39,7 @@ class BatchStartupIT {
                  var statement = connection.createStatement();
                  var rows = statement.executeQuery("SELECT COUNT(*) FROM flyway_schema_history WHERE success")) {
                 assertTrue(rows.next());
-                assertEquals(15, rows.getInt(1));
+                assertEquals(16, rows.getInt(1));
             }
         }
     }

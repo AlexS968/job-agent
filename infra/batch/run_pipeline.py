@@ -12,7 +12,9 @@ import time
 from datetime import datetime, timedelta, timezone
 
 ROOT = Path(__file__).resolve().parents[2]
-STATE = Path("/tmp/job-agent-batch-pipeline-progress.json")
+SCHEDULED = sys.argv[1:] == ["--scheduled-report"]
+STATE = Path("/tmp/job-agent-scheduled-batch-progress.json" if SCHEDULED
+             else "/tmp/job-agent-batch-pipeline-progress.json")
 PROFILE = "job-agent"
 REGION = "us-east-1"
 
@@ -93,11 +95,28 @@ def wait_task(cluster, arn):
     raise RuntimeError("25-minute task bound reached; stop requested, confirm STOPPED")
 
 
-def report(arn, definition):
+def report(arn, definition, code):
     container = next(item for item in definition["containerDefinitions"] if item["name"] == "job-agent")
     options = container["logConfiguration"]["options"]
     stream = f"{options['awslogs-stream-prefix']}/job-agent/{arn.rsplit('/', 1)[-1]}"
+    if SCHEDULED and code != 0:
+        events = aws("logs", "filter-log-events", "--log-group-name", options["awslogs-group"],
+                     "--log-stream-names", stream, "--filter-pattern", '"Job Agent run failed"')
+        for event in events.get("events", [])[-3:]:
+            print(event["message"].strip(), flush=True)
+        return
     for attempt in range(7):
+        if SCHEDULED:
+            events = aws("logs", "filter-log-events", "--log-group-name", options["awslogs-group"],
+                         "--log-stream-names", stream, "--filter-pattern", '"Scheduled report"')
+            published = [event["message"].strip() for event in events.get("events", [])
+                         if "Scheduled report: date=" in event["message"] and "status=PUBLISHED" in event["message"]]
+            if published:
+                print(published[-1], flush=True)
+                return
+            if attempt < 6:
+                time.sleep(10)
+            continue
         lines = []
         for phrase in ('"Batch pipeline"', '"SUITABLE vacancy"', '"NEEDS_REVIEW vacancy"'):
             events = aws("logs", "filter-log-events", "--log-group-name", options["awslogs-group"],
@@ -159,6 +178,8 @@ def idle(endpoint, after):
 
 
 def main():
+    if sys.argv[1:] not in ([], ["--scheduled-report"]):
+        raise RuntimeError("Expected no arguments or --scheduled-report")
     state = load()
     cluster = output("ecs_cluster_name")
     definition_arn = output("batch_pipeline_task_definition_arn")
@@ -172,15 +193,20 @@ def main():
         save(state)
         network = {"awsvpcConfiguration": {"subnets": output("task_subnet_ids"),
                    "securityGroups": [output("task_security_group_id")], "assignPublicIp": "ENABLED"}}
-        launched = aws("ecs", "run-task", "--cluster", cluster, "--launch-type", "FARGATE",
+        launch_args = ["--cluster", cluster, "--launch-type", "FARGATE",
                        "--task-definition", definition_arn, "--count", "1",
-                       "--network-configuration", json.dumps(network))
+                       "--network-configuration", json.dumps(network)]
+        if SCHEDULED:
+            launch_args += ["--group", output("scheduled_batch_group")]
+            launch_args += ["--overrides", json.dumps({"containerOverrides": [
+                {"name": "job-agent", "command": ["--mode=scheduled-batch"]}]})]
+        launched = aws("ecs", "run-task", *launch_args)
         if launched.get("failures") or len(launched.get("tasks", [])) != 1:
             raise RuntimeError("ECS rejected launch; inspect before retrying")
         state["arn"] = launched["tasks"][0]["taskArn"]
         save(state)
     current, code = wait_task(cluster, state["arn"])
-    report(state["arn"], definition)
+    report(state["arn"], definition, code)
     if code != 0:
         raise RuntimeError("Batch task failed; inspect safe logs and backlog before any rerun")
     family = definition_arn.rsplit("/", 1)[-1].split(":", 1)[0]
@@ -193,7 +219,10 @@ def main():
         idle(output("database_endpoint"), stamp(current["stoppedAt"]))
         state["idle_verified"] = True
         save(state)
-    print("Batch acceptance complete; inspect reported backlog before another invocation", flush=True)
+    if SCHEDULED:
+        print("Scheduled report publication confirmed by task log; owner must confirm email receipt", flush=True)
+    else:
+        print("Batch acceptance complete; inspect reported backlog before another invocation", flush=True)
 
 
 if __name__ == "__main__":
