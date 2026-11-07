@@ -115,6 +115,16 @@ variable "enable_sqs_evaluation" {
   }
 }
 
+variable "enable_batch_pipeline" {
+  description = "Register one bounded import, SQS delivery, evaluation and shortlist task after review."
+  type        = bool
+  default     = false
+  validation {
+    condition     = !var.enable_batch_pipeline || var.enable_sqs_evaluation
+    error_message = "Batch pipeline requires the reviewed SQS evaluation task and profile secret."
+  }
+}
+
 variable "evaluation_profile_secret_arn" {
   description = "ARN of an existing private Secrets Manager secret containing only the profile JSON."
   type        = string

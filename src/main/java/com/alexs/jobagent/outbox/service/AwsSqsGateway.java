@@ -1,6 +1,7 @@
 package com.alexs.jobagent.outbox.service;
 
 import com.alexs.jobagent.outbox.dto.SqsMessageDTO;
+import com.alexs.jobagent.outbox.dto.SqsQueueBacklogDTO;
 import java.util.List;
 import java.net.URI;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -10,6 +11,8 @@ import software.amazon.awssdk.services.sqs.SqsClient;
 import software.amazon.awssdk.services.sqs.model.DeleteMessageRequest;
 import software.amazon.awssdk.services.sqs.model.ReceiveMessageRequest;
 import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
+import software.amazon.awssdk.services.sqs.model.GetQueueAttributesRequest;
+import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
 
 @Component
 @ConditionalOnProperty(name = "jobagent.sqs.enabled", havingValue = "true")
@@ -45,5 +48,29 @@ public class AwsSqsGateway implements SqsGateway {
     @Override
     public void delete(String receiptHandle) {
         client.deleteMessage(DeleteMessageRequest.builder().queueUrl(queueUrl).receiptHandle(receiptHandle).build());
+    }
+
+    @Override
+    public SqsQueueBacklogDTO backlog() {
+        var attributes = client.getQueueAttributes(GetQueueAttributesRequest.builder().queueUrl(queueUrl)
+                .attributeNames(QueueAttributeName.APPROXIMATE_NUMBER_OF_MESSAGES,
+                        QueueAttributeName.APPROXIMATE_NUMBER_OF_MESSAGES_NOT_VISIBLE,
+                        QueueAttributeName.APPROXIMATE_NUMBER_OF_MESSAGES_DELAYED).build()).attributes();
+        return new SqsQueueBacklogDTO(
+                attributeCount(attributes.get(QueueAttributeName.APPROXIMATE_NUMBER_OF_MESSAGES)),
+                attributeCount(attributes.get(QueueAttributeName.APPROXIMATE_NUMBER_OF_MESSAGES_NOT_VISIBLE)),
+                attributeCount(attributes.get(QueueAttributeName.APPROXIMATE_NUMBER_OF_MESSAGES_DELAYED)));
+    }
+
+    private static int attributeCount(String value) {
+        try {
+            int count = Integer.parseInt(value);
+            if (count < 0) {
+                throw new NumberFormatException("negative count");
+            }
+            return count;
+        } catch (NumberFormatException invalid) {
+            throw new IllegalStateException("SQS backlog attributes are unavailable or invalid", invalid);
+        }
     }
 }
