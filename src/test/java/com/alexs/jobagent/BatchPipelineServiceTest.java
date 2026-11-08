@@ -48,6 +48,7 @@ class BatchPipelineServiceTest {
         when(outbox.backlog()).thenReturn(new BacklogDTO(0, 0, 0, 0, 0));
         when(queue.backlog()).thenReturn(new SqsQueueBacklogDTO(0, 0, 0));
         when(evaluations.shortlist(any(), anyInt(), any())).thenReturn(new ShortlistDTO(List.of(), List.of()));
+        when(evaluations.reportShortlist(any(), anyInt(), any())).thenReturn(new ShortlistDTO(List.of(), List.of()));
     }
 
     @Test
