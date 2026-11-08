@@ -6,10 +6,12 @@ import com.alexs.jobagent.batch.service.BatchPipelineService;
 import com.alexs.jobagent.batch.service.BatchReportFormatter;
 import com.alexs.jobagent.batch.service.ReportGateway;
 import com.alexs.jobagent.batch.service.ScheduledBatchService;
+import com.alexs.jobagent.evaluation.dto.EvaluationBatchResultDTO;
 import com.alexs.jobagent.evaluation.dto.LoadedProfileDTO;
 import com.alexs.jobagent.evaluation.dto.SearchProfileDTO;
 import com.alexs.jobagent.evaluation.dto.ShortlistDTO;
 import com.alexs.jobagent.evaluation.dto.VacancyEvaluationDTO;
+import com.alexs.jobagent.evaluation.service.EvaluationService;
 import com.alexs.jobagent.outbox.dto.BacklogDTO;
 import com.alexs.jobagent.outbox.dto.SqsQueueBacklogDTO;
 import com.alexs.jobagent.source.dto.ActiveSourceImportResultDTO;
@@ -37,129 +39,184 @@ import static org.mockito.Mockito.doThrow;
 class ScheduledBatchServiceTest {
     private final ScheduledBatchRepository repository = mock(ScheduledBatchRepository.class);
     private final BatchPipelineService pipeline = mock(BatchPipelineService.class);
+    private final EvaluationService evaluations = mock(EvaluationService.class);
     private final ReportGateway gateway = mock(ReportGateway.class);
     private final BatchReportFormatter formatter = new BatchReportFormatter();
     private final Clock clock = Clock.fixed(Instant.parse("2026-11-05T18:00:00Z"), ZoneOffset.UTC);
     private final LocalDate date = LocalDate.of(2026, 11, 5);
-    private final LoadedProfileDTO profile = new LoadedProfileDTO(new SearchProfileDTO("fictional-demo", "v1",
-            "Germany", List.of(), List.of(), List.of(), List.of(), List.of(), false, null), "synthetic-hash");
+    private final LoadedProfileDTO de = profile("alex-de", "DE");
+    private final LoadedProfileDTO at = profile("alex-at", "AT");
+    private final LoadedProfileDTO profile = de;
+
+    private static LoadedProfileDTO profile(String id, String country) {
+        return new LoadedProfileDTO(new SearchProfileDTO(id, "v1", country,
+                List.of("Java"), List.of(), List.of(), List.of(), List.of(), false, null),
+                ("DE".equals(country) ? "a" : "b").repeat(64));
+    }
 
     private ScheduledBatchService service() {
-        return new ScheduledBatchService(repository, pipeline, formatter, gateway, clock);
+        return new ScheduledBatchService(repository, pipeline, evaluations, formatter, gateway, clock);
+    }
+
+    private void successfulDependencies() {
+        when(repository.startInvocation(date)).thenReturn(true);
+        when(repository.start(date, "alex-de", "v1", "a".repeat(64))).thenReturn(true);
+        when(repository.start(date, "alex-at", "v1", "b".repeat(64))).thenReturn(true);
+        when(pipeline.runWithoutShortlist(eq(de), eq(50), any(), eq(20))).thenReturn(result("NO_NEW_VACANCIES"));
+        when(pipeline.snapshot(eq(de), eq(20))).thenReturn(result("NO_NEW_VACANCIES"));
+        when(pipeline.snapshot(eq(at), eq(20))).thenReturn(result("EVALUATION_SWEEP"));
+        when(evaluations.evaluate(any(), eq(0L), eq(500), eq("rules-v1")))
+                .thenReturn(new EvaluationBatchResultDTO(0, 0, 0, 0, false));
+        when(gateway.publish(any(), any())).thenReturn("message-id");
     }
 
     @Test
-    void duplicateSlotNeverRepeatsWorkOrEmail() {
-        when(repository.start(date, "fictional-demo", "v1")).thenReturn(false);
-        when(repository.exists(date)).thenReturn(true);
-        service().run(profile);
-        verify(pipeline, never()).run(any(), any(Integer.class), any(), any(Integer.class));
+    void twoReportsUseDistinctProfilesAfterOneImportAndIndependentSweeps() {
+        successfulDependencies();
+        service().run(List.of(de, at));
+        verify(pipeline).runWithoutShortlist(eq(de), eq(50), any(), eq(20));
+        verify(evaluations).evaluate(eq(de), eq(0L), eq(500), eq("rules-v1"));
+        verify(evaluations).evaluate(eq(at), eq(0L), eq(500), eq("rules-v1"));
+        var order = org.mockito.Mockito.inOrder(evaluations, pipeline);
+        order.verify(evaluations).evaluate(eq(de), eq(0L), eq(500), eq("rules-v1"));
+        order.verify(evaluations).evaluate(eq(at), eq(0L), eq(500), eq("rules-v1"));
+        order.verify(pipeline).snapshot(eq(de), eq(20));
+        verify(gateway).publish(eq("Job Agent alex-de batch 2026-11-05: NO_NEW_VACANCIES"),
+                org.mockito.ArgumentMatchers.contains("Profile: alex-de/v1"));
+        verify(gateway).publish(eq("Job Agent alex-at batch 2026-11-05: EVALUATION_SWEEP"),
+                org.mockito.ArgumentMatchers.contains("Profile: alex-at/v1"));
+        verify(repository).finishInvocation(date, "COMPLETE");
+    }
+
+    @Test
+    void pagedEvaluationCoversExistingVacanciesForBothProfilesEvenWithEmptyQueue() {
+        successfulDependencies();
+        when(evaluations.evaluate(eq(de), eq(0L), eq(500), eq("rules-v1")))
+                .thenReturn(new EvaluationBatchResultDTO(500, 500, 0, 500, true));
+        when(evaluations.evaluate(eq(de), eq(500L), eq(500), eq("rules-v1")))
+                .thenReturn(new EvaluationBatchResultDTO(1, 1, 0, 501, false));
+        when(evaluations.evaluate(eq(at), eq(0L), eq(500), eq("rules-v1")))
+                .thenReturn(new EvaluationBatchResultDTO(1, 1, 0, 1, false));
+        service().run(List.of(de, at));
+        verify(evaluations).evaluate(eq(de), eq(500L), eq(500), eq("rules-v1"));
+        verify(evaluations).evaluate(eq(at), eq(0L), eq(500), eq("rules-v1"));
+        verify(gateway).publish(org.mockito.ArgumentMatchers.contains("alex-at"),
+                org.mockito.ArgumentMatchers.contains("evaluated=1"));
+    }
+
+    @Test
+    void secondProfileEvaluationFailureStopsBeforeEitherPublication() {
+        successfulDependencies();
+        when(evaluations.evaluate(eq(at), eq(0L), eq(500), eq("rules-v1")))
+                .thenThrow(new IllegalStateException("synthetic evaluation failure"));
+        ScheduledBatchService scheduled = service();
+        assertThrows(IllegalStateException.class, () -> scheduled.run(List.of(de, at)));
+        verify(gateway, never()).publish(any(), any());
+        verify(repository).finishInvocation(date, "FAILED");
+    }
+
+    @Test
+    void futureProfileVersionsAreAcceptedWithoutChangingReviewedIdsOrCountries() {
+        LoadedProfileDTO deV2 = new LoadedProfileDTO(new SearchProfileDTO("alex-de", "v2", "DE",
+                List.of("Senior Java"), List.of(), List.of(), List.of(), List.of(), false, null), "c".repeat(64));
+        LoadedProfileDTO atV2 = new LoadedProfileDTO(new SearchProfileDTO("alex-at", "v2", "AT",
+                List.of("Senior Java"), List.of(), List.of(), List.of(), List.of(), false, null), "d".repeat(64));
+        when(repository.startInvocation(date)).thenReturn(true);
+        when(repository.start(date, "alex-de", "v2", "c".repeat(64))).thenReturn(true);
+        when(repository.start(date, "alex-at", "v2", "d".repeat(64))).thenReturn(true);
+        when(pipeline.runWithoutShortlist(eq(deV2), eq(50), any(), eq(20)))
+                .thenReturn(result("NO_NEW_VACANCIES"));
+        when(pipeline.snapshot(any(), eq(20))).thenReturn(result("EVALUATION_SWEEP"));
+        when(evaluations.evaluate(any(), eq(0L), eq(500), eq("rules-v1")))
+                .thenReturn(new EvaluationBatchResultDTO(0, 0, 0, 0, false));
+        when(gateway.publish(any(), any())).thenReturn("synthetic-message-id");
+        service().run(List.of(deV2, atV2));
+        verify(gateway).publish(org.mockito.ArgumentMatchers.contains("alex-de"),
+                org.mockito.ArgumentMatchers.contains("Profile: alex-de/v2"));
+        verify(gateway).publish(org.mockito.ArgumentMatchers.contains("alex-at"),
+                org.mockito.ArgumentMatchers.contains("Profile: alex-at/v2"));
+    }
+
+    @Test
+    void duplicateCompletedDateDoesNotRepeatImportOrEmail() {
+        when(repository.invocationStatus(date)).thenReturn("COMPLETE");
+        service().run(List.of(de, at));
+        verify(pipeline, never()).runWithoutShortlist(any(), any(Integer.class), any(), any(Integer.class));
         verify(gateway, never()).publish(any(), any());
     }
 
     @Test
-    void successfulReportPublishesAfterPreparedState() {
-        when(repository.start(date, "fictional-demo", "v1")).thenReturn(true);
-        when(pipeline.run(eq(profile), eq(50), any(), eq(20))).thenReturn(result("NO_NEW_VACANCIES"));
-        when(gateway.publish(any(), any())).thenAnswer(call -> {
-            assertFalse(TransactionSynchronizationManager.isActualTransactionActive());
-            return "synthetic-message-id";
-        });
-        service().run(profile);
-        var order = org.mockito.Mockito.inOrder(repository, gateway);
-        order.verify(repository).transition(eq(date), eq("RUNNING"), eq("PREPARED"), any(), isNull());
-        order.verify(repository).transition(date, "PREPARED", "PUBLISHING", null, null);
-        order.verify(gateway).publish(any(), any());
-        order.verify(repository).transition(date, "PUBLISHING", "PUBLISHED", null, "synthetic-message-id");
+    void publishedFirstProfileIsNotReplayedOnSecondProfileRestart() {
+        successfulDependencies();
+        when(repository.profileStatus(date, "alex-de", "v1", "a".repeat(64))).thenReturn("PUBLISHED");
+        when(repository.profileStatus(date, "alex-at", "v1", "b".repeat(64))).thenReturn("FAILED");
+        when(repository.retryFailedProfile(date, "alex-at", "v1", "b".repeat(64))).thenReturn(true);
+        service().run(List.of(de, at));
+        verify(pipeline, never()).runWithoutShortlist(any(), any(Integer.class), any(), any(Integer.class));
+        verify(gateway, never()).publish(org.mockito.ArgumentMatchers.contains("alex-de"), any());
+        verify(gateway).publish(org.mockito.ArgumentMatchers.contains("alex-at"), any());
     }
 
     @Test
-    void ambiguousPublicationRetainsIdentityAndDoesNotRetry() {
-        when(repository.start(date, "fictional-demo", "v1")).thenReturn(true);
-        when(pipeline.run(eq(profile), eq(50), any(), eq(20))).thenReturn(result("BACKLOG_REMAINS"));
-        when(gateway.publish(any(), any())).thenThrow(new IllegalStateException("synthetic provider timeout"));
+    void ambiguousSecondPublicationNeverReplaysFirstAndFailsInvocation() {
+        successfulDependencies();
+        when(gateway.publish(org.mockito.ArgumentMatchers.contains("alex-at"), any()))
+                .thenThrow(new IllegalStateException("synthetic timeout"));
         ScheduledBatchService scheduled = service();
-        assertThrows(IllegalStateException.class, () -> scheduled.run(profile));
-        verify(repository).transition(date, "PUBLISHING", "UNCERTAIN", null, null);
-        verify(gateway).publish(any(), any());
+        assertThrows(IllegalStateException.class, () -> scheduled.run(List.of(de, at)));
+        verify(repository).transition(date, "alex-de", "PUBLISHING", "PUBLISHED", null, "message-id");
+        verify(repository).transition(date, "alex-at", "PUBLISHING", "UNCERTAIN", null, null);
+        verify(repository).finishInvocation(date, "FAILED");
     }
 
     @Test
-    void failedProcessingDoesNotSendAReport() {
-        when(repository.start(date, "fictional-demo", "v1")).thenReturn(true);
-        when(pipeline.run(eq(profile), eq(50), any(), eq(20))).thenReturn(result("FAILED"));
+    void failedFirstPipelineSendsNeitherEmail() {
+        successfulDependencies();
+        when(pipeline.runWithoutShortlist(eq(de), eq(50), any(), eq(20))).thenReturn(result("FAILED"));
         ScheduledBatchService scheduled = service();
-        assertThrows(IllegalStateException.class, () -> scheduled.run(profile));
-        verify(repository).transition(date, "RUNNING", "FAILED", null, null);
+        assertThrows(IllegalStateException.class, () -> scheduled.run(List.of(de, at)));
         verify(gateway, never()).publish(any(), any());
+        verify(repository).finishInvocation(date, "FAILED");
     }
 
     @Test
-    void trackingFailureDoesNotReplaceOriginalProcessingFailure() {
-        when(repository.start(date, "fictional-demo", "v1")).thenReturn(true);
-        IllegalStateException original = new IllegalStateException("synthetic processing failure");
-        when(pipeline.run(eq(profile), eq(50), any(), eq(20))).thenThrow(original);
-        doThrow(new IllegalStateException("synthetic tracking failure")).when(repository)
-                .transition(date, "RUNNING", "FAILED", null, null);
+    void missingMessageIdentityIsUncertain() {
+        successfulDependencies();
+        when(gateway.publish(org.mockito.ArgumentMatchers.contains("alex-at"), any())).thenReturn("");
         ScheduledBatchService scheduled = service();
-        assertEquals(original, assertThrows(IllegalStateException.class, () -> scheduled.run(profile)));
-        verify(gateway, never()).publish(any(), any());
+        assertThrows(IllegalStateException.class, () -> scheduled.run(List.of(de, at)));
+        verify(repository).transition(date, "alex-at", "PUBLISHING", "UNCERTAIN", null, null);
     }
 
     @Test
-    void ambientTransactionIsRejectedBeforeRunReservation() {
+    void lostDatabaseAcknowledgementRemainsPublishingForReview() {
+        successfulDependencies();
+        doThrow(new IllegalStateException("synthetic database outage")).when(repository)
+                .transition(date, "alex-at", "PUBLISHING", "PUBLISHED", null, "message-id");
+        ScheduledBatchService scheduled = service();
+        assertThrows(IllegalStateException.class, () -> scheduled.run(List.of(de, at)));
+        verify(repository).transition(date, "alex-at", "PUBLISHING", "PUBLISHED", null, "message-id");
+        verify(repository).transition(date, "alex-at", "RUNNING", "FAILED", null, null);
+    }
+
+    @Test
+    void ambientTransactionAndWrongProfileStopBeforeReservation() {
+        ScheduledBatchService scheduled = service();
+        assertThrows(IllegalArgumentException.class, () -> scheduled.run(List.of(at, de)));
         TransactionSynchronizationManager.setActualTransactionActive(true);
-        ScheduledBatchService scheduled = service();
         try {
-            assertThrows(IllegalStateException.class, () -> scheduled.run(profile));
+            assertThrows(IllegalStateException.class, () -> scheduled.run(List.of(de, at)));
         } finally {
             TransactionSynchronizationManager.setActualTransactionActive(false);
         }
-        verify(repository, never()).start(any(), any(), any());
+        verify(repository, never()).startInvocation(any());
     }
 
     @Test
-    void anotherActiveDateStopsBeforeProcessingOrEmail() {
-        when(repository.start(date, "fictional-demo", "v1")).thenReturn(false);
-        when(repository.exists(date)).thenReturn(false);
+    void activeOrUncertainDateRequiresReview() {
         ScheduledBatchService scheduled = service();
-        assertThrows(IllegalStateException.class, () -> scheduled.run(profile));
-        verify(pipeline, never()).run(any(), any(Integer.class), any(), any(Integer.class));
+        assertThrows(IllegalStateException.class, () -> scheduled.run(List.of(de, at)));
         verify(gateway, never()).publish(any(), any());
-    }
-
-    @Test
-    void timeLimitFailsWithoutSendingAReport() {
-        when(repository.start(date, "fictional-demo", "v1")).thenReturn(true);
-        when(pipeline.run(eq(profile), eq(50), any(), eq(20))).thenReturn(result("TIME_LIMIT"));
-        ScheduledBatchService scheduled = service();
-        assertThrows(IllegalStateException.class, () -> scheduled.run(profile));
-        verify(repository).transition(date, "RUNNING", "FAILED", null, null);
-        verify(gateway, never()).publish(any(), any());
-    }
-
-    @Test
-    void missingProviderMessageIdentityIsUncertainAndNotReplayed() {
-        when(repository.start(date, "fictional-demo", "v1")).thenReturn(true);
-        when(pipeline.run(eq(profile), eq(50), any(), eq(20))).thenReturn(result("NO_NEW_VACANCIES"));
-        when(gateway.publish(any(), any())).thenReturn("");
-        ScheduledBatchService scheduled = service();
-        assertThrows(IllegalStateException.class, () -> scheduled.run(profile));
-        verify(repository).transition(date, "PUBLISHING", "UNCERTAIN", null, null);
-        verify(gateway).publish(any(), any());
-    }
-
-    @Test
-    void lostDatabaseAcknowledgementKeepsPublishingStatusForReview() {
-        when(repository.start(date, "fictional-demo", "v1")).thenReturn(true);
-        when(pipeline.run(eq(profile), eq(50), any(), eq(20))).thenReturn(result("NO_NEW_VACANCIES"));
-        when(gateway.publish(any(), any())).thenReturn("synthetic-message-id");
-        doThrow(new IllegalStateException("synthetic database outage")).when(repository)
-                .transition(date, "PUBLISHING", "PUBLISHED", null, "synthetic-message-id");
-        ScheduledBatchService scheduled = service();
-        assertThrows(IllegalStateException.class, () -> scheduled.run(profile));
-        verify(repository).transition(date, "PUBLISHING", "PUBLISHED", null, "synthetic-message-id");
-        verify(gateway).publish(any(), any());
     }
 
     @Test

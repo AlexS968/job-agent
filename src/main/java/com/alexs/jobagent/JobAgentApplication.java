@@ -365,8 +365,9 @@ public class JobAgentApplication {
         if (args.length != 1) {
             throw new IllegalArgumentException("Scheduled batch takes no command options");
         }
-        var profile = profiles.loadJson(context.getEnvironment().getProperty("JOBAGENT_EVALUATION_PROFILE_JSON"));
-        context.getBean(ScheduledBatchService.class).run(profile);
+        var de = profiles.loadJson(context.getEnvironment().getProperty("JOBAGENT_SCHEDULED_DE_PROFILE_JSON"));
+        var at = profiles.loadJson(context.getEnvironment().getProperty("JOBAGENT_SCHEDULED_AT_PROFILE_JSON"));
+        context.getBean(ScheduledBatchService.class).run(List.of(de, at));
     }
 
     private void runEvaluateRules(String[] args, ProfileFileService profiles, EvaluationService evaluations) {

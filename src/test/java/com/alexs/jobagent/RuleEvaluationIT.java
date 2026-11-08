@@ -11,8 +11,26 @@ import com.alexs.jobagent.evaluation.service.ExtractionOutputValidator;
 import com.alexs.jobagent.evaluation.service.ExtractionPolicy;
 import com.alexs.jobagent.evaluation.service.ProfileFileService;
 import com.alexs.jobagent.evaluation.service.RuleEvaluationPolicy;
+import com.alexs.jobagent.batch.repository.ScheduledBatchRepository;
+import com.alexs.jobagent.batch.service.BatchPipelineService;
+import com.alexs.jobagent.batch.service.BatchReportFormatter;
+import com.alexs.jobagent.batch.service.ReportGateway;
+import com.alexs.jobagent.batch.service.ScheduledBatchService;
+import com.alexs.jobagent.outbox.dto.SqsBatchResultDTO;
+import com.alexs.jobagent.outbox.dto.SqsQueueBacklogDTO;
+import com.alexs.jobagent.outbox.repository.ConsumerDeliveryRepository;
+import com.alexs.jobagent.outbox.service.OutboxService;
+import com.alexs.jobagent.outbox.service.SqsEvaluationConsumerService;
+import com.alexs.jobagent.outbox.service.SqsGateway;
+import com.alexs.jobagent.outbox.service.SqsProducerService;
+import com.alexs.jobagent.source.dto.ActiveSourceImportResultDTO;
+import com.alexs.jobagent.source.service.SourceRegistryService;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
@@ -29,6 +47,9 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import tools.jackson.databind.json.JsonMapper;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 @SpringBootTest
 class RuleEvaluationIT {
@@ -60,6 +81,8 @@ class RuleEvaluationIT {
     @Autowired ExtractionInputService extractionInputs;
     @Autowired ExtractionOutputValidator extractionValidator;
     @Autowired PlatformTransactionManager manager;
+    @Autowired OutboxService outbox;
+    @Autowired ConsumerDeliveryRepository deliveries;
     @TempDir Path directory;
 
     @BeforeEach
@@ -70,7 +93,7 @@ class RuleEvaluationIT {
 
     @Test
     void migrationReplayVersionsAndStaleEvaluations() throws Exception {
-        assertEquals(16, jdbc.queryForObject("SELECT count(*) FROM flyway_schema_history", Integer.class));
+        assertEquals(17, jdbc.queryForObject("SELECT count(*) FROM flyway_schema_history", Integer.class));
         long vacancy = insert("Backend Engineer", COUNTRY_REMOTE);
         LoadedProfileDTO v1 = profile("v1", "Backend Engineer");
         assertEquals(1, evaluation.evaluate(v1, 0, 100, RuleEvaluationPolicy.VERSION).created());
@@ -91,6 +114,77 @@ class RuleEvaluationIT {
         assertEquals(4, count("vacancy_evaluations"));
         assertEquals(vacancy, evaluation.shortlist(v1, 10, RuleEvaluationPolicy.VERSION)
                 .needsReview().getFirst().vacancyId());
+    }
+
+    @Test
+    void sameStoredVacancyIsEvaluatedIndependentlyForDeAndAtProfiles() {
+        long vacancy = insert("Backend Engineer", COUNTRY_REMOTE);
+        var de = profiles.loadJson(json.writeValueAsString(new SearchProfileDTO("alex-de", "v1", "DE",
+                List.of("Backend Engineer"), List.of(), List.of(), List.of(), List.of(), false, null)));
+        var at = profiles.loadJson(json.writeValueAsString(new SearchProfileDTO("alex-at", "v1", "AT",
+                List.of("Backend Engineer"), List.of(), List.of(), List.of(), List.of(), false, null)));
+        assertEquals(1, evaluation.evaluate(de, 0, 500, RuleEvaluationPolicy.VERSION).created());
+        assertEquals(1, evaluation.evaluate(at, 0, 500, RuleEvaluationPolicy.VERSION).created());
+        assertEquals(0, evaluation.evaluate(de, 0, 500, RuleEvaluationPolicy.VERSION).created());
+        assertEquals(0, evaluation.evaluate(at, 0, 500, RuleEvaluationPolicy.VERSION).created());
+        assertEquals(2, jdbc.queryForObject("SELECT count(*) FROM vacancy_evaluations WHERE vacancy_id = ?",
+                Integer.class, vacancy));
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM vacancy_evaluations "
+                + "WHERE vacancy_id = ? AND profile_id = 'alex-de' AND profile_version = 'v1'",
+                Integer.class, vacancy));
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM vacancy_evaluations "
+                + "WHERE vacancy_id = ? AND profile_id = 'alex-at' AND profile_version = 'v1'",
+                Integer.class, vacancy));
+        assertEquals(1, jdbc.queryForObject("SELECT count(DISTINCT source_item_id) FROM vacancy_evaluations "
+                + "WHERE vacancy_id = ?", Integer.class, vacancy));
+        assertEquals(1, jdbc.queryForObject("SELECT count(DISTINCT vacancy_revision) FROM vacancy_evaluations "
+                + "WHERE vacancy_id = ?", Integer.class, vacancy));
+    }
+
+    @Test
+    void emptyQueueStillPreparesBothReportsFromStoredVacancyAndAllowsNewProfileVersion() {
+        long vacancy = insert("Backend Engineer", COUNTRY_REMOTE);
+        var de = profiles.loadJson(json.writeValueAsString(new SearchProfileDTO("alex-de", "v1", "DE",
+                List.of("Backend Engineer"), List.of(), List.of(), List.of(), List.of(), false, null)));
+        var at = profiles.loadJson(json.writeValueAsString(new SearchProfileDTO("alex-at", "v1", "AT",
+                List.of("Backend Engineer"), List.of(), List.of(), List.of(), List.of(), false, null)));
+        assertEquals(0, count("evaluation_profiles"));
+        var sources = mock(SourceRegistryService.class);
+        var producer = mock(SqsProducerService.class);
+        var queue = mock(SqsGateway.class);
+        var reports = mock(ReportGateway.class);
+        var clock = Clock.fixed(Instant.parse("2026-11-05T18:00:00Z"), ZoneOffset.UTC);
+        when(sources.importActive()).thenReturn(new ActiveSourceImportResultDTO(0, 0, 0, 0, 0));
+        when(producer.publish(10)).thenReturn(new SqsBatchResultDTO(0, 0, 0, 0));
+        when(queue.receive()).thenReturn(List.of());
+        when(queue.backlog()).thenReturn(new SqsQueueBacklogDTO(0, 0, 0));
+        when(reports.publish(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+                .thenReturn("synthetic-message-id");
+        var consumer = new SqsEvaluationConsumerService(queue, outbox, deliveries, evaluation, json, clock, manager);
+        var pipeline = new BatchPipelineService(sources, outbox, producer, consumer, queue, evaluation, clock);
+        var scheduled = new ScheduledBatchService(new ScheduledBatchRepository(jdbc), pipeline, evaluation,
+                new BatchReportFormatter(), reports, clock);
+        scheduled.run(List.of(de, at));
+        assertEquals(2, jdbc.queryForObject("SELECT count(*) FROM vacancy_evaluations WHERE vacancy_id = ?",
+                Integer.class, vacancy));
+        assertEquals(2, jdbc.queryForObject("SELECT count(*) FROM scheduled_batch_reports "
+                + "WHERE schedule_date = ? AND status = 'PUBLISHED'", Integer.class, LocalDate.of(2026, 11, 5)));
+        assertTrue(jdbc.queryForObject("SELECT report_text FROM scheduled_batch_reports "
+                + "WHERE profile_id = 'alex-de'", String.class).contains("Profile: alex-de/v1"));
+        String atReport = jdbc.queryForObject("SELECT report_text FROM scheduled_batch_reports "
+                + "WHERE profile_id = 'alex-at'", String.class);
+        assertTrue(atReport.contains("Outcome: EVALUATION_SWEEP"));
+        assertTrue(atReport.contains("evaluated=1"));
+        assertTrue(atReport.contains("Import: sources=0"));
+        verify(sources).importActive();
+        verify(queue).receive();
+        var changed = profiles.loadJson(json.writeValueAsString(new SearchProfileDTO("alex-de", "v1", "DE",
+                List.of("Senior Java"), List.of(), List.of(), List.of(), List.of(), false, null)));
+        assertThrows(IllegalArgumentException.class,
+                () -> evaluation.evaluate(changed, 0, 500, RuleEvaluationPolicy.VERSION));
+        var nextVersion = profiles.loadJson(json.writeValueAsString(new SearchProfileDTO("alex-de", "v2", "DE",
+                List.of("Senior Java"), List.of(), List.of(), List.of(), List.of(), false, null)));
+        assertEquals(1, evaluation.evaluate(nextVersion, 0, 500, RuleEvaluationPolicy.VERSION).created());
     }
 
     @Test

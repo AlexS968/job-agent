@@ -56,12 +56,22 @@ class ScheduledRunnerTest(unittest.TestCase):
                                       {"containerDefinitions": [{"name": "job-agent"}]}, 0)
             self.assertEqual(1, idle.call_count)
 
-    def test_report_accepts_only_published_status_line(self):
+    def test_report_requires_both_profile_publications(self):
         definition = {"containerDefinitions": [{"name": "job-agent", "logConfiguration": {
             "options": {"awslogs-stream-prefix": "batch", "awslogs-group": "/ecs/synthetic"}}}]}
         with patch.object(runner, "SCHEDULED", True), patch.object(runner, "aws", return_value={
-                "events": [{"message": "Scheduled report: date=2026-11-05, status=PUBLISHED, outcome=BACKLOG_REMAINS"}]}):
+                "events": [{"message": "Scheduled report: date=2026-11-05, profile=alex-de, status=PUBLISHED, outcome=BACKLOG_REMAINS"},
+                           {"message": "Scheduled report: date=2026-11-05, profile=alex-at, status=PUBLISHED, outcome=NO_NEW_VACANCIES"}]}):
             runner.report("arn:aws:ecs:us-east-1:111111111111:task/reviewed/abc", definition, 0)
+
+    def test_one_published_profile_is_not_a_successful_scheduled_run(self):
+        definition = {"containerDefinitions": [{"name": "job-agent", "logConfiguration": {
+            "options": {"awslogs-stream-prefix": "batch", "awslogs-group": "/ecs/synthetic"}}}]}
+        with patch.object(runner, "SCHEDULED", True), patch.object(runner, "aws", return_value={
+                "events": [{"message": "Scheduled report: date=2026-11-05, profile=alex-de, status=PUBLISHED, outcome=BACKLOG_REMAINS"}]}), \
+                patch.object(runner.time, "sleep"):
+            with self.assertRaisesRegex(RuntimeError, "summary log unavailable"):
+                runner.report("arn:aws:ecs:us-east-1:111111111111:task/reviewed/abc", definition, 0)
 
 
 if __name__ == "__main__":
