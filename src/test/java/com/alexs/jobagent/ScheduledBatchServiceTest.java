@@ -81,10 +81,10 @@ class ScheduledBatchServiceTest {
         order.verify(evaluations).evaluate(eq(de), eq(0L), eq(500), eq("rules-v1"));
         order.verify(evaluations).evaluate(eq(at), eq(0L), eq(500), eq("rules-v1"));
         order.verify(pipeline).snapshot(eq(de), eq(20));
-        verify(gateway).publish(eq("Job Agent alex-de batch 2026-11-05: NO_NEW_VACANCIES"),
-                org.mockito.ArgumentMatchers.contains("Profile: alex-de/v1"));
-        verify(gateway).publish(eq("Job Agent alex-at batch 2026-11-05: EVALUATION_SWEEP"),
-                org.mockito.ArgumentMatchers.contains("Profile: alex-at/v1"));
+        verify(gateway).publish(eq("Job Agent Germany 2026-11-05: no relevant opportunities"),
+                org.mockito.ArgumentMatchers.contains("opportunities for Germany"));
+        verify(gateway).publish(eq("Job Agent Austria 2026-11-05: no relevant opportunities"),
+                org.mockito.ArgumentMatchers.contains("opportunities for Austria"));
         verify(repository).finishInvocation(date, "COMPLETE");
     }
 
@@ -100,8 +100,10 @@ class ScheduledBatchServiceTest {
         service().run(List.of(de, at));
         verify(evaluations).evaluate(eq(de), eq(500L), eq(500), eq("rules-v1"));
         verify(evaluations).evaluate(eq(at), eq(0L), eq(500), eq("rules-v1"));
-        verify(gateway).publish(org.mockito.ArgumentMatchers.contains("alex-at"),
-                org.mockito.ArgumentMatchers.contains("evaluated=1"));
+        verify(gateway).publish(org.mockito.ArgumentMatchers.contains("Austria"),
+                org.mockito.ArgumentMatchers.argThat(body -> body.contains("Evaluations stored: 1")
+                        && body.contains("Queue: 0 sent; 0 duplicate deliveries")
+                        && !body.matches("(?s).*Queue:[^\\n]*evaluat.*")));
     }
 
     @Test
@@ -131,10 +133,10 @@ class ScheduledBatchServiceTest {
                 .thenReturn(new EvaluationBatchResultDTO(0, 0, 0, 0, false));
         when(gateway.publish(any(), any())).thenReturn("synthetic-message-id");
         service().run(List.of(deV2, atV2));
-        verify(gateway).publish(org.mockito.ArgumentMatchers.contains("alex-de"),
-                org.mockito.ArgumentMatchers.contains("Profile: alex-de/v2"));
-        verify(gateway).publish(org.mockito.ArgumentMatchers.contains("alex-at"),
-                org.mockito.ArgumentMatchers.contains("Profile: alex-at/v2"));
+        verify(gateway).publish(org.mockito.ArgumentMatchers.contains("Germany"),
+                org.mockito.ArgumentMatchers.contains("opportunities for Germany"));
+        verify(gateway).publish(org.mockito.ArgumentMatchers.contains("Austria"),
+                org.mockito.ArgumentMatchers.contains("opportunities for Austria"));
     }
 
     @Test
@@ -153,14 +155,14 @@ class ScheduledBatchServiceTest {
         when(repository.retryFailedProfile(date, "alex-at", "v1", "b".repeat(64))).thenReturn(true);
         service().run(List.of(de, at));
         verify(pipeline, never()).runWithoutShortlist(any(), any(Integer.class), any(), any(Integer.class));
-        verify(gateway, never()).publish(org.mockito.ArgumentMatchers.contains("alex-de"), any());
-        verify(gateway).publish(org.mockito.ArgumentMatchers.contains("alex-at"), any());
+        verify(gateway, never()).publish(org.mockito.ArgumentMatchers.contains("Germany"), any());
+        verify(gateway).publish(org.mockito.ArgumentMatchers.contains("Austria"), any());
     }
 
     @Test
     void ambiguousSecondPublicationNeverReplaysFirstAndFailsInvocation() {
         successfulDependencies();
-        when(gateway.publish(org.mockito.ArgumentMatchers.contains("alex-at"), any()))
+        when(gateway.publish(org.mockito.ArgumentMatchers.contains("Austria"), any()))
                 .thenThrow(new IllegalStateException("synthetic timeout"));
         ScheduledBatchService scheduled = service();
         assertThrows(IllegalStateException.class, () -> scheduled.run(List.of(de, at)));
@@ -182,7 +184,7 @@ class ScheduledBatchServiceTest {
     @Test
     void missingMessageIdentityIsUncertain() {
         successfulDependencies();
-        when(gateway.publish(org.mockito.ArgumentMatchers.contains("alex-at"), any())).thenReturn("");
+        when(gateway.publish(org.mockito.ArgumentMatchers.contains("Austria"), any())).thenReturn("");
         ScheduledBatchService scheduled = service();
         assertThrows(IllegalStateException.class, () -> scheduled.run(List.of(de, at)));
         verify(repository).transition(date, "alex-at", "PUBLISHING", "UNCERTAIN", null, null);
@@ -222,8 +224,12 @@ class ScheduledBatchServiceTest {
     @Test
     void reportContainsBoundedEntriesAndExplicitEmptyResult() {
         String empty = formatter.format(date, profile, result("NO_NEW_VACANCIES"));
-        assertTrue(empty.contains("No suitable or needs-review vacancies"));
-        assertTrue(empty.contains("Backlog snapshot"));
+        assertTrue(empty.contains("No relevant opportunities found"));
+        assertTrue(empty.contains("Run diagnostics"));
+        assertEquals("Job Agent Germany 2026-11-05: no relevant opportunities",
+                formatter.subject(date, de, result("NO_NEW_VACANCIES")));
+        assertEquals("Job Agent Austria 2026-11-05: no relevant opportunities",
+                formatter.subject(date, at, result("NO_NEW_VACANCIES")));
         VacancyEvaluationDTO item = new VacancyEvaluationDTO(7, 8, "revision", "SUITABLE", 1, "PREFERRED",
                 List.of("ROLE_MATCH"), List.of("SALARY_UNKNOWN"), List.of(), "https://example.org/jobs/7",
                 null, "NONE", 0, "Java engineer");
@@ -232,8 +238,40 @@ class ScheduledBatchServiceTest {
                 new ShortlistDTO(List.of(item), List.of()));
         String text = formatter.format(date, profile, withItem);
         assertTrue(text.contains("https://example.org/jobs/7"));
-        assertTrue(text.contains("ROLE_MATCH"));
-        assertTrue(text.contains("SALARY_UNKNOWN"));
+        assertTrue(text.contains("preferred role title"));
+        assertTrue(text.contains("salary and its terms"));
+        assertFalse(text.contains("SALARY_UNKNOWN"));
+        assertFalse(text.contains("QUIESCENT_SNAPSHOT"));
+        assertEquals("Job Agent Germany 2026-11-05: 1 suitable, 0 to review",
+                formatter.subject(date, de, withItem));
+    }
+
+    @Test
+    void reportCountsRelevantEntriesOmittedByShortlistLimit() {
+        VacancyEvaluationDTO item = new VacancyEvaluationDTO(7, 8, "revision", "NEEDS_REVIEW", 9, "RESERVE",
+                List.of("RESERVE_ROLE"), List.of("WORK_ELIGIBILITY_UNCONFIRMED", "SALARY_UNKNOWN"), List.of(),
+                "https://example.org/jobs/7", null, "NONE", 0, "Java engineer");
+        var base = result("EVALUATION_SWEEP");
+        var report = new BatchPipelineResultDTO(base.outcome(), base.imported(), 0, 0, 0, 0, 0,
+                base.outbox(), base.queue(), new ShortlistDTO(List.of(), List.of(item), 0, 25));
+        String text = formatter.format(date, de, report);
+        assertTrue(text.contains("Roles needing review: 25"));
+        assertTrue(text.contains("24 relevant opportunities omitted"));
+        assertTrue(text.contains("work-country permission; salary and its terms"));
+        assertFalse(text.contains("WORK_ELIGIBILITY_UNCONFIRMED"));
+    }
+
+    @Test
+    void formatterNeverRendersMoreThanTwentyEvenIfCallerSuppliesMore() {
+        VacancyEvaluationDTO item = new VacancyEvaluationDTO(7, 8, "revision", "SUITABLE", 1, "PREFERRED",
+                List.of("PREFERRED_ROLE"), List.of(), List.of(), "https://example.org/jobs/7",
+                null, "NONE", 0, "Backend Engineer");
+        var base = result("EVALUATION_SWEEP");
+        var report = new BatchPipelineResultDTO(base.outcome(), base.imported(), 0, 0, 0, 0, 0,
+                base.outbox(), base.queue(), new ShortlistDTO(java.util.Collections.nCopies(21, item), List.of()));
+        String text = formatter.format(date, de, report);
+        assertEquals(20, text.split("Suitable: Backend Engineer", -1).length - 1);
+        assertTrue(text.contains("1 relevant opportunities omitted"));
     }
 
     @Test
@@ -247,7 +285,7 @@ class ScheduledBatchServiceTest {
                 base.queue(), new ShortlistDTO(items, List.of()));
         String text = formatter.format(date, profile, full);
         assertTrue(text.getBytes(StandardCharsets.UTF_8).length <= 10_000);
-        assertTrue(text.matches("(?s).*Omitted entries due to message size: [1-9][0-9]*\\n"));
+        assertTrue(text.matches("(?s).*[1-9][0-9]* relevant opportunities omitted.*"));
     }
 
     @Test
@@ -266,10 +304,10 @@ class ScheduledBatchServiceTest {
         var withItems = new BatchPipelineResultDTO(base.outcome(), base.imported(), 0, 0, 0, 0, 0, base.outbox(),
                 base.queue(), new ShortlistDTO(List.of(), List.of(unsafe, malformed, nonHttps, tooLong)));
         String text = formatter.format(date, profile, withItems);
-        assertTrue(text.contains("NEEDS_REVIEW vacancy 8: Backend  Hidden header"));
+        assertTrue(text.contains("Needs review: Backend  Hidden header"));
         assertFalse(text.contains("user:secret"));
         assertFalse(text.contains("http://example.org/job"));
-        assertTrue(text.contains("NEEDS_REVIEW vacancy 9: unknown"));
+        assertTrue(text.contains("Needs review: unknown"));
         assertTrue(text.contains("[public link unavailable]"));
     }
 

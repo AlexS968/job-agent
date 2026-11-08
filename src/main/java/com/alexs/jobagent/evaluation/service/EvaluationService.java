@@ -108,6 +108,15 @@ public class EvaluationService {
     }
 
     public ShortlistDTO shortlist(LoadedProfileDTO profile, int limit, String policyVersion) {
+        return shortlist(profile, limit, policyVersion, false);
+    }
+
+    /** Report projection: trusted live source identities and established roles only. */
+    public ShortlistDTO reportShortlist(LoadedProfileDTO profile, int limit, String policyVersion) {
+        return shortlist(profile, limit, policyVersion, true);
+    }
+
+    private ShortlistDTO shortlist(LoadedProfileDTO profile, int limit, String policyVersion, boolean reportOnly) {
         rejectAmbient();
         if (limit < 1 || limit > MAX_REPORT || !validVersion(policyVersion)) {
             throw new IllegalArgumentException("Invalid shortlist arguments");
@@ -115,6 +124,8 @@ public class EvaluationService {
         evaluations.requireRegisteredProfile(profile);
         List<VacancyEvaluationDTO> suitable = new ArrayList<>();
         List<VacancyEvaluationDTO> review = new ArrayList<>();
+        int totalSuitable = 0;
+        int totalReview = 0;
         long cursor = 0;
         while (true) {
             List<Long> ids = vacancies.idsAfter(cursor, PAGE_SIZE);
@@ -122,11 +133,14 @@ public class EvaluationService {
                 break;
             }
             for (long id : ids) {
-                VacancyEvaluationDTO current = transaction.execute(status -> current(id, profile, policyVersion));
-                if (current != null) {
+                VacancyEvaluationDTO current = transaction.execute(status -> current(id, profile, policyVersion,
+                        reportOnly));
+                if (current != null && (!reportOnly || !"UNMATCHED".equals(current.roleClassification()))) {
                     if ("SUITABLE".equals(current.decision())) {
+                        totalSuitable++;
                         addBounded(suitable, current, limit);
                     } else if ("NEEDS_REVIEW".equals(current.decision())) {
+                        totalReview++;
                         addBounded(review, current, limit);
                     }
                 }
@@ -135,7 +149,7 @@ public class EvaluationService {
         }
         int remaining = Math.max(0, limit - suitable.size());
         return new ShortlistDTO(List.copyOf(suitable), List.copyOf(review.subList(0,
-                Math.min(remaining, review.size()))));
+                Math.min(remaining, review.size()))), totalSuitable, totalReview);
     }
 
     private boolean evaluateOne(long id, LoadedProfileDTO profile, String policyVersion) {
@@ -166,19 +180,35 @@ public class EvaluationService {
         return evaluations.insert(result, profile, policyVersion, selected);
     }
 
-    private VacancyEvaluationDTO current(long id, LoadedProfileDTO profile, String policyVersion) {
+    private VacancyEvaluationDTO current(long id, LoadedProfileDTO profile, String policyVersion,
+                                         boolean reportOnly) {
         VacancyReadDTO vacancy = vacancies.lock(id);
         if (vacancy == null) {
+            return null;
+        }
+        if (reportOnly && !trustedLiveSource(vacancy.sourceNamespace())) {
             return null;
         }
         SourceEvidenceDTO source = sources.latestForVacancy(id);
         if (source == null) {
             return null;
         }
+        if (reportOnly && !trustedLiveEvidence(vacancy.sourceNamespace(), source.inputVersion())) {
+            return null;
+        }
         String revision = policy.revision(vacancy, source);
         SelectedExtractionDTO selected = select(policyVersion, id, source.sourceItemId(), revision);
         return evaluations.current(id, revision, profile, policyVersion,
                 selected == null ? null : selected.workId(), selected == null ? "NONE" : selected.status());
+    }
+
+    private static boolean trustedLiveSource(String namespace) {
+        return namespace != null && (namespace.startsWith("greenhouse:") || namespace.startsWith("lever:"));
+    }
+
+    private static boolean trustedLiveEvidence(String namespace, String version) {
+        return namespace.startsWith("greenhouse:") && "greenhouse-board-v1".equals(version)
+                || namespace.startsWith("lever:") && "lever-postings-v1".equals(version);
     }
 
     private SelectedExtractionDTO select(String version, long vacancyId, long sourceId, String revision) {

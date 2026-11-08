@@ -170,12 +170,13 @@ class RuleEvaluationIT {
         assertEquals(2, jdbc.queryForObject("SELECT count(*) FROM scheduled_batch_reports "
                 + "WHERE schedule_date = ? AND status = 'PUBLISHED'", Integer.class, LocalDate.of(2026, 11, 5)));
         assertTrue(jdbc.queryForObject("SELECT report_text FROM scheduled_batch_reports "
-                + "WHERE profile_id = 'alex-de'", String.class).contains("Profile: alex-de/v1"));
+                + "WHERE profile_id = 'alex-de'", String.class).contains("opportunities for Germany"));
         String atReport = jdbc.queryForObject("SELECT report_text FROM scheduled_batch_reports "
                 + "WHERE profile_id = 'alex-at'", String.class);
-        assertTrue(atReport.contains("Outcome: EVALUATION_SWEEP"));
-        assertTrue(atReport.contains("evaluated=1"));
-        assertTrue(atReport.contains("Import: sources=0"));
+        assertTrue(atReport.contains("opportunities for Austria"));
+        assertTrue(atReport.contains("Evaluations stored: 1"));
+        assertTrue(atReport.contains("Queue: 0 sent; 0 duplicate deliveries"));
+        assertTrue(atReport.contains("Import: 0 created"));
         verify(sources).importActive();
         verify(queue).receive();
         var changed = profiles.loadJson(json.writeValueAsString(new SearchProfileDTO("alex-de", "v1", "DE",
@@ -455,6 +456,32 @@ class RuleEvaluationIT {
                 List.of(role), List.of("Application Manager"), List.of("Intern"), List.of("ONSITE"),
                 List.of("Berlin"), true, new SearchProfileDTO.SalaryPreferenceDTO(60000, "EUR", "YEAR"))));
         return profiles.load(file.toString());
+    }
+
+    @Test
+    void reportShortlistSkipsUnmatchedAndSyntheticBeforeLimitButKeepsTheirEvaluations() throws Exception {
+        var de = profile("v1", "Backend Engineer");
+        for (int i = 0; i < 21; i++) {
+            live(insert("Audit Specialist " + i, "{}"));
+        }
+        long synthetic = insert("Backend Engineer synthetic", "{}");
+        long relevant = live(insert("Backend Engineer", "{}"));
+        assertEquals(23, evaluation.evaluate(de, 0, 100, RuleEvaluationPolicy.VERSION).created());
+        var report = evaluation.reportShortlist(de, 20, RuleEvaluationPolicy.VERSION);
+        assertEquals(0, report.totalSuitable());
+        assertEquals(1, report.totalNeedsReview());
+        assertEquals(relevant, report.needsReview().getFirst().vacancyId());
+        assertEquals(23, count("vacancy_evaluations"));
+        assertTrue(evaluation.shortlist(de, 20, RuleEvaluationPolicy.VERSION).needsReview().stream()
+                .anyMatch(item -> item.vacancyId() == synthetic));
+    }
+
+    private long live(long vacancy) {
+        jdbc.update("UPDATE vacancies SET source_namespace = 'greenhouse:fictional' WHERE id = ?", vacancy);
+        jdbc.update("UPDATE source_items SET source_namespace = 'greenhouse:fictional', "
+                + "listing_namespace = 'greenhouse:fictional', input_version = 'greenhouse-board-v1' WHERE id = "
+                + "(SELECT source_item_id FROM vacancy_sources WHERE vacancy_id = ?)", vacancy);
+        return vacancy;
     }
 
     private long insert(String title, String raw) {

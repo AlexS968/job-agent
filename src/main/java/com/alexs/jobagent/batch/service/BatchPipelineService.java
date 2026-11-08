@@ -81,7 +81,7 @@ public class BatchPipelineService {
     public BatchPipelineResultDTO snapshot(LoadedProfileDTO profile, int shortlistLimit) {
         var pending = outbox.backlog();
         var queued = queue.backlog();
-        ShortlistDTO shortlist = evaluations.shortlist(profile, shortlistLimit, RuleEvaluationPolicy.VERSION);
+        ShortlistDTO shortlist = evaluations.reportShortlist(profile, shortlistLimit, RuleEvaluationPolicy.VERSION);
         boolean remaining = pending.ready() + pending.futureRetries() + pending.activeClaims()
                 + pending.expiredClaims() + pending.terminalFailures()
                 + queued.visible() + queued.inFlight() + queued.delayed() > 0;

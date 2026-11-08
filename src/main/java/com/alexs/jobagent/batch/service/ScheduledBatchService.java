@@ -109,7 +109,7 @@ public class ScheduledBatchService {
             String body = formatter.format(date, profile, result);
             repository.transition(date, id, "RUNNING", "PREPARED", body, null);
             repository.transition(date, id, "PREPARED", PUBLISHING, null, null);
-            publishPrepared(date, id, result.outcome(), body);
+            publishPrepared(date, id, formatter.subject(date, profile, result), body);
             LOGGER.info("Scheduled report: date={}, profile={}, status=PUBLISHED, outcome={}",
                     date, id, result.outcome());
         } catch (RuntimeException failure) {
@@ -145,10 +145,10 @@ public class ScheduledBatchService {
         }
     }
 
-    private void publishPrepared(LocalDate date, String profileId, String outcome, String body) {
+    private void publishPrepared(LocalDate date, String profileId, String subject, String body) {
         String messageId;
         try {
-            messageId = gateway.publish("Job Agent " + profileId + " batch " + date + ": " + outcome, body);
+            messageId = gateway.publish(subject, body);
             if (messageId == null || messageId.isBlank()) {
                 throw new IllegalStateException("SNS did not return a message identity");
             }
