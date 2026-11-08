@@ -13,6 +13,7 @@ import com.alexs.jobagent.outbox.dto.SqsEvaluationBatchDTO;
 import com.alexs.jobagent.outbox.dto.BacklogDTO;
 import com.alexs.jobagent.outbox.dto.SqsQueueBacklogDTO;
 import com.alexs.jobagent.source.dto.ActiveSourceImportResultDTO;
+import com.alexs.jobagent.evaluation.dto.ShortlistDTO;
 import com.alexs.jobagent.source.service.SourceRegistryService;
 import java.time.Clock;
 import java.time.Duration;
@@ -46,6 +47,16 @@ public class BatchPipelineService {
     }
 
     public BatchPipelineResultDTO run(LoadedProfileDTO profile, int maxEvents, Duration duration, int shortlistLimit) {
+        BatchPipelineResultDTO processed = runWithoutShortlist(profile, maxEvents, duration, shortlistLimit);
+        ShortlistDTO shortlist = evaluations.shortlist(profile, shortlistLimit, RuleEvaluationPolicy.VERSION);
+        return new BatchPipelineResultDTO(processed.outcome(), processed.imported(), processed.published(),
+                processed.evaluated(), processed.duplicates(), processed.stale(), processed.failed(),
+                processed.outbox(), processed.queue(), shortlist);
+    }
+
+    /** Scheduled processing defers shortlist selection until every profile has been evaluated. */
+    public BatchPipelineResultDTO runWithoutShortlist(LoadedProfileDTO profile, int maxEvents,
+                                                      Duration duration, int shortlistLimit) {
         validateArguments(profile, maxEvents, duration, shortlistLimit);
         Instant deadline = clock.instant().plus(duration);
         var imported = sources.importActive();
@@ -59,11 +70,24 @@ public class BatchPipelineService {
         }
         var pending = outbox.backlog();
         var queued = queue.backlog();
-        var shortlist = evaluations.shortlist(profile, shortlistLimit, RuleEvaluationPolicy.VERSION);
         int failures = imported.failures() + publication.failed() + publication.deferred() + consumption.failed();
         String outcome = outcome(imported, publication, consumption, failures, pending, queued, deadline);
         return new BatchPipelineResultDTO(outcome, imported, publication.processed(), consumption.evaluated(),
-                consumption.duplicates(), consumption.stale(), failures, pending, queued, shortlist);
+                consumption.duplicates(), consumption.stale(), failures, pending, queued,
+                new ShortlistDTO(java.util.List.of(), java.util.List.of()));
+    }
+
+    /** Read-only report snapshot for a profile after its independent evaluation sweep. */
+    public BatchPipelineResultDTO snapshot(LoadedProfileDTO profile, int shortlistLimit) {
+        var pending = outbox.backlog();
+        var queued = queue.backlog();
+        ShortlistDTO shortlist = evaluations.shortlist(profile, shortlistLimit, RuleEvaluationPolicy.VERSION);
+        boolean remaining = pending.ready() + pending.futureRetries() + pending.activeClaims()
+                + pending.expiredClaims() + pending.terminalFailures()
+                + queued.visible() + queued.inFlight() + queued.delayed() > 0;
+        return new BatchPipelineResultDTO(remaining ? "BACKLOG_REMAINS" : "EVALUATION_SWEEP",
+                new ActiveSourceImportResultDTO(0, 0, 0, 0, 0),
+                0, 0, 0, 0, 0, pending, queued, shortlist);
     }
 
     private static void validateArguments(LoadedProfileDTO profile, int maxEvents, Duration duration,

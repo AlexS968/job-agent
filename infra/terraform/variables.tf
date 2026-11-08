@@ -168,6 +168,28 @@ variable "evaluation_profile_secret_arn" {
   }
 }
 
+variable "scheduled_de_profile_secret_arn" {
+  description = "Private alex-de/v1 profile JSON secret ARN for the scheduled task. Supply through ignored local tfvars."
+  type        = string
+  default     = null
+  validation {
+    condition = !var.enable_scheduled_batch || (var.scheduled_de_profile_secret_arn != null &&
+    can(regex("^arn:aws:secretsmanager:us-east-1:[0-9]{12}:secret:", var.scheduled_de_profile_secret_arn)))
+    error_message = "Scheduled batch requires a reviewed DE profile secret ARN."
+  }
+}
+
+variable "scheduled_at_profile_secret_arn" {
+  description = "Private alex-at/v1 profile JSON secret ARN for the scheduled task. Supply through ignored local tfvars."
+  type        = string
+  default     = null
+  validation {
+    condition = !var.enable_scheduled_batch || (var.scheduled_at_profile_secret_arn != null &&
+    can(regex("^arn:aws:secretsmanager:us-east-1:[0-9]{12}:secret:", var.scheduled_at_profile_secret_arn)))
+    error_message = "Scheduled batch requires a reviewed AT profile secret ARN."
+  }
+}
+
 variable "restore_drill_id" {
   description = "Unique lowercase identifier for one restore drill; never reuse it."
   type        = string

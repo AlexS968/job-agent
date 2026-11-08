@@ -62,6 +62,29 @@ class BatchPipelineServiceTest {
     }
 
     @Test
+    void secondProfileSnapshotDoesNotImportOrConsumeQueue() {
+        when(outbox.backlog()).thenReturn(new BacklogDTO(0, 1, 0, 0, 0));
+        var result = pipeline.snapshot(profile, 20);
+        assertEquals("BACKLOG_REMAINS", result.outcome());
+        assertEquals(0, result.imported().sources());
+        verify(sources, never()).importActive();
+        verify(producer, never()).publish(anyInt());
+        verify(consumer, never()).consume(anyInt(), any());
+    }
+
+    @Test
+    void scheduledProcessingDefersShortlistUntilProfilesAreRegistered() {
+        when(sources.importActive()).thenReturn(new ActiveSourceImportResultDTO(0, 0, 0, 0, 0));
+        when(producer.publish(10)).thenReturn(new SqsBatchResultDTO(0, 0, 0, 0));
+        when(consumer.consume(10, profile)).thenReturn(new SqsEvaluationBatchDTO(0, 0, 0, 0));
+        var processed = pipeline.runWithoutShortlist(profile, 10, Duration.ofMinutes(10), 20);
+        assertEquals("NO_NEW_VACANCIES", processed.outcome());
+        verify(evaluations, never()).shortlist(any(), anyInt(), any());
+        var snapshot = pipeline.snapshot(profile, 20);
+        assertEquals("EVALUATION_SWEEP", snapshot.outcome());
+    }
+
+    @Test
     void emptyReceiveDoesNotHideFutureAndInflightWork() {
         when(sources.importActive()).thenReturn(new ActiveSourceImportResultDTO(1, 0, 2, 1, 3));
         when(producer.publish(10)).thenReturn(new SqsBatchResultDTO(2, 0, 0, 0));

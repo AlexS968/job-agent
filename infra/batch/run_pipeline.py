@@ -111,8 +111,11 @@ def report(arn, definition, code):
                          "--log-stream-names", stream, "--filter-pattern", '"Scheduled report"')
             published = [event["message"].strip() for event in events.get("events", [])
                          if "Scheduled report: date=" in event["message"] and "status=PUBLISHED" in event["message"]]
-            if published:
-                print(published[-1], flush=True)
+            de = [line for line in published if "profile=alex-de, status=PUBLISHED" in line]
+            at = [line for line in published if "profile=alex-at, status=PUBLISHED" in line]
+            if de and at:
+                print(de[-1], flush=True)
+                print(at[-1], flush=True)
                 return
             if attempt < 6:
                 time.sleep(10)
@@ -220,7 +223,7 @@ def main():
         state["idle_verified"] = True
         save(state)
     if SCHEDULED:
-        print("Scheduled report publication confirmed by task log; owner must confirm email receipt", flush=True)
+        print("Two scheduled report publications confirmed by task logs; owner must confirm both emails", flush=True)
     else:
         print("Batch acceptance complete; inspect reported backlog before another invocation", flush=True)
 

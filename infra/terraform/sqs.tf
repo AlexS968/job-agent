@@ -270,6 +270,39 @@ resource "aws_iam_role_policy" "batch_report_publish" {
   })
 }
 
+resource "aws_iam_role" "batch_execution" {
+  count              = var.enable_scheduled_batch ? 1 : 0
+  name               = "${var.name_prefix}-batch-execution"
+  assume_role_policy = aws_iam_role.execution.assume_role_policy
+}
+
+resource "aws_iam_role_policy" "batch_execution" {
+  count = var.enable_scheduled_batch ? 1 : 0
+  name  = "${var.name_prefix}-batch-pull-logs-private-profiles"
+  role  = aws_iam_role.batch_execution[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow", Action = ["ecr:GetAuthorizationToken"], Resource = "*"
+      },
+      {
+        Effect   = "Allow", Action = ["ecr:BatchCheckLayerAvailability", "ecr:GetDownloadUrlForLayer", "ecr:BatchGetImage"]
+        Resource = aws_ecr_repository.app.arn
+      },
+      {
+        Effect   = "Allow", Action = ["logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = "${aws_cloudwatch_log_group.task.arn}:*"
+      },
+      {
+        Effect = "Allow", Action = ["secretsmanager:GetSecretValue"]
+        Resource = [var.app_db_secret_arn, var.evaluation_profile_secret_arn,
+        var.scheduled_de_profile_secret_arn, var.scheduled_at_profile_secret_arn]
+      }
+    ]
+  })
+}
+
 resource "aws_ecs_task_definition" "batch_pipeline" {
   count                    = var.enable_batch_pipeline ? 1 : 0
   family                   = "${var.name_prefix}-batch-pipeline"
@@ -277,7 +310,7 @@ resource "aws_ecs_task_definition" "batch_pipeline" {
   requires_compatibilities = ["FARGATE"]
   cpu                      = "1024"
   memory                   = "2048"
-  execution_role_arn       = aws_iam_role.sqs_evaluation_execution[0].arn
+  execution_role_arn       = var.enable_scheduled_batch ? aws_iam_role.batch_execution[0].arn : aws_iam_role.sqs_evaluation_execution[0].arn
   task_role_arn            = aws_iam_role.batch_pipeline[0].arn
   runtime_platform {
     operating_system_family = "LINUX"
@@ -297,13 +330,16 @@ resource "aws_ecs_task_definition" "batch_pipeline" {
       { name = "JOBAGENT_REPORT_ENABLED", value = "true" },
       { name = "JOBAGENT_REPORT_TOPICARN", value = aws_sns_topic.batch_report[0].arn }
     ] : [])
-    secrets = [
+    secrets = concat([
       { name = "DB_PASSWORD", valueFrom = "${var.app_db_secret_arn}:password::" },
       { name = "JOBAGENT_EVALUATION_PROFILE_JSON", valueFrom = var.evaluation_profile_secret_arn }
-    ]
+      ], var.enable_scheduled_batch ? [
+      { name = "JOBAGENT_SCHEDULED_DE_PROFILE_JSON", valueFrom = var.scheduled_de_profile_secret_arn },
+      { name = "JOBAGENT_SCHEDULED_AT_PROFILE_JSON", valueFrom = var.scheduled_at_profile_secret_arn }
+    ] : [])
     logConfiguration = local.log_configuration
     stopTimeout      = 120
   }])
   depends_on = [aws_iam_role_policy.sqs_evaluation_execution, aws_iam_role_policy.batch_pipeline,
-  aws_iam_role_policy.batch_report_publish]
+  aws_iam_role_policy.batch_report_publish, aws_iam_role_policy.batch_execution]
 }
