@@ -4,6 +4,7 @@
   <groupId>com.alexs</groupId><artifactId>job-agent</artifactId><version>0.1.0-SNAPSHOT</version>
   <properties>
     <java.version>21</java.version>
+    <jackson-bom.version>3.1.7</jackson-bom.version>
     <argLine></argLine>
     <testcontainers.version>2.0.4</testcontainers.version>
     <archunit.version>1.4.1</archunit.version>
