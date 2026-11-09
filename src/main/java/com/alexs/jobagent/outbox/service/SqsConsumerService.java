@@ -5,6 +5,7 @@ import com.alexs.jobagent.outbox.dto.SqsEventDTO;
 import com.alexs.jobagent.outbox.dto.SqsMessageDTO;
 import com.alexs.jobagent.outbox.dto.SqsStatusDTO;
 import com.alexs.jobagent.outbox.entity.OutboxEventEntity;
+import com.alexs.jobagent.outbox.mapper.SqsEventMapper;
 import com.alexs.jobagent.outbox.repository.ConsumerDeliveryRepository;
 import java.time.Clock;
 import java.nio.charset.StandardCharsets;
@@ -27,15 +28,17 @@ public class SqsConsumerService {
     private final OutboxService outbox;
     private final ConsumerDeliveryRepository repository;
     private final JsonMapper json;
+    private final SqsEventMapper mapper;
     private final Clock clock;
     private final TransactionTemplate transaction;
 
     public SqsConsumerService(SqsGateway gateway, OutboxService outbox, ConsumerDeliveryRepository repository,
-                              JsonMapper json, Clock clock, PlatformTransactionManager manager) {
+                              JsonMapper json, Clock clock, PlatformTransactionManager manager, SqsEventMapper mapper) {
         this.gateway = gateway;
         this.outbox = outbox;
         this.repository = repository;
         this.json = json;
+        this.mapper = mapper;
         this.clock = clock;
         this.transaction = new TransactionTemplate(manager);
     }
@@ -93,6 +96,6 @@ public class SqsConsumerService {
     }
 
     private OutboxEventEntity validStoredEvent(SqsEventDTO envelope) {
-        return SqsEventValidation.stored(envelope, outbox, json, false);
+        return SqsEventValidation.stored(envelope, outbox, json, mapper, false);
     }
 }

@@ -7,6 +7,7 @@ import com.alexs.jobagent.outbox.dto.SqsEventDTO;
 import com.alexs.jobagent.outbox.dto.SqsMessageDTO;
 import com.alexs.jobagent.outbox.dto.SqsEvaluationStatusDTO;
 import com.alexs.jobagent.outbox.repository.ConsumerDeliveryRepository;
+import com.alexs.jobagent.outbox.mapper.SqsEventMapper;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.util.UUID;
@@ -29,17 +30,20 @@ public class SqsEvaluationConsumerService {
     private final ConsumerDeliveryRepository deliveries;
     private final EvaluationService evaluations;
     private final JsonMapper json;
+    private final SqsEventMapper mapper;
     private final Clock clock;
     private final TransactionTemplate transaction;
 
     public SqsEvaluationConsumerService(SqsGateway gateway, OutboxService outbox,
                                         ConsumerDeliveryRepository deliveries, EvaluationService evaluations,
-                                        JsonMapper json, Clock clock, PlatformTransactionManager manager) {
+                                        JsonMapper json, Clock clock, PlatformTransactionManager manager,
+                                        SqsEventMapper mapper) {
         this.gateway = gateway;
         this.outbox = outbox;
         this.deliveries = deliveries;
         this.evaluations = evaluations;
         this.json = json;
+        this.mapper = mapper;
         this.clock = clock;
         this.transaction = new TransactionTemplate(manager);
     }
@@ -109,7 +113,7 @@ public class SqsEvaluationConsumerService {
             throw new IllegalArgumentException("Invalid SQS envelope size");
         }
         SqsEventDTO envelope = json.readValue(message.body(), SqsEventDTO.class);
-        var stored = SqsEventValidation.stored(envelope, outbox, json, true);
+        var stored = SqsEventValidation.stored(envelope, outbox, json, mapper, true);
         var payload = json.readTree(stored.payload());
         long sourceId = payload.path("source_item_id").asLong();
         String revision = payload.path("vacancy_revision").asText();

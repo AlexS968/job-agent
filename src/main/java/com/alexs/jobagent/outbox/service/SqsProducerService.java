@@ -1,9 +1,8 @@
 package com.alexs.jobagent.outbox.service;
 
-import com.alexs.jobagent.outbox.dto.ClaimResultDTO;
 import com.alexs.jobagent.outbox.dto.SqsBatchResultDTO;
 import com.alexs.jobagent.outbox.entity.OutboxEventEntity;
-import com.alexs.jobagent.outbox.dto.SqsEventDTO;
+import com.alexs.jobagent.outbox.mapper.SqsEventMapper;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -18,11 +17,13 @@ public class SqsProducerService {
     private final OutboxService outbox;
     private final SqsGateway gateway;
     private final JsonMapper json;
+    private final SqsEventMapper mapper;
 
-    public SqsProducerService(OutboxService outbox, SqsGateway gateway, JsonMapper json) {
+    public SqsProducerService(OutboxService outbox, SqsGateway gateway, JsonMapper json, SqsEventMapper mapper) {
         this.outbox = outbox;
         this.gateway = gateway;
         this.json = json;
+        this.mapper = mapper;
     }
 
     public SqsBatchResultDTO publish(int limit) {
@@ -34,7 +35,7 @@ public class SqsProducerService {
         int deferred = 0;
         int failed = 0;
         for (int i = 0; i < limit; i++) {
-            ClaimResultDTO claim = outbox.claimWithRecovery(worker);
+            ClaimResult claim = outbox.claimWithRecovery(worker);
             failed += claim.exhaustedClaims();
             OutboxEventEntity event = claim.event();
             if (event == null) {
@@ -56,7 +57,7 @@ public class SqsProducerService {
     }
 
     private PublishOutcome sendClaim(OutboxEventEntity event) {
-        String body = json.writeValueAsString(SqsEventDTO.from(event));
+        String body = json.writeValueAsString(mapper.toDTO(event));
         try {
             gateway.send(body);
         } catch (RuntimeException sendFailure) {

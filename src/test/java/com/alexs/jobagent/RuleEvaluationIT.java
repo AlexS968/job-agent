@@ -21,6 +21,7 @@ import com.alexs.jobagent.outbox.dto.SqsQueueBacklogDTO;
 import com.alexs.jobagent.outbox.repository.ConsumerDeliveryRepository;
 import com.alexs.jobagent.outbox.service.OutboxService;
 import com.alexs.jobagent.outbox.service.SqsEvaluationConsumerService;
+import com.alexs.jobagent.outbox.mapper.SqsEventMapper;
 import com.alexs.jobagent.outbox.service.SqsGateway;
 import com.alexs.jobagent.outbox.service.SqsProducerService;
 import com.alexs.jobagent.source.dto.ActiveSourceImportResultDTO;
@@ -76,6 +77,7 @@ class RuleEvaluationIT {
 
     @Autowired JdbcTemplate jdbc;
     @Autowired JsonMapper json;
+    @Autowired SqsEventMapper mapper;
     @Autowired ProfileFileService profiles;
     @Autowired EvaluationService evaluation;
     @Autowired ExtractionInputService extractionInputs;
@@ -160,7 +162,7 @@ class RuleEvaluationIT {
         when(queue.backlog()).thenReturn(new SqsQueueBacklogDTO(0, 0, 0));
         when(reports.publish(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
                 .thenReturn("synthetic-message-id");
-        var consumer = new SqsEvaluationConsumerService(queue, outbox, deliveries, evaluation, json, clock, manager);
+        var consumer = new SqsEvaluationConsumerService(queue, outbox, deliveries, evaluation, json, clock, manager, mapper);
         var pipeline = new BatchPipelineService(sources, outbox, producer, consumer, queue, evaluation, clock);
         var scheduled = new ScheduledBatchService(new ScheduledBatchRepository(jdbc), pipeline, evaluation,
                 new BatchReportFormatter(), reports, clock);

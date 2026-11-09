@@ -8,6 +8,7 @@ import com.alexs.jobagent.outbox.service.OutboxService;
 import com.alexs.jobagent.outbox.service.SyntheticVacancyConsumer;
 import com.alexs.jobagent.outbox.service.SqsGateway;
 import com.alexs.jobagent.outbox.service.SqsProducerService;
+import com.alexs.jobagent.outbox.mapper.SqsEventMapper;
 import com.alexs.jobagent.outbox.service.SqsConsumerService;
 import com.alexs.jobagent.outbox.dto.SqsMessageDTO;
 import com.alexs.jobagent.outbox.dto.SqsEventDTO;
@@ -66,6 +67,7 @@ class OutboxIT {
     @Autowired JsonMapper json;
     @Autowired PlatformTransactionManager manager;
     @Autowired MutableClock clock;
+    @Autowired SqsEventMapper mapper;
 
     @BeforeEach
     void clear() {
@@ -334,9 +336,9 @@ class OutboxIT {
         ingestion.ingest(fixture());
         TestSqsGateway queue = new TestSqsGateway();
         queue.failAfterSend = true;
-        var producer = new SqsProducerService(outbox, queue, json);
+        var producer = new SqsProducerService(outbox, queue, json, mapper);
         var sqsConsumer = new SqsConsumerService(queue, outbox,
-                new com.alexs.jobagent.outbox.repository.ConsumerDeliveryRepository(jdbc), json, clock, manager);
+                new com.alexs.jobagent.outbox.repository.ConsumerDeliveryRepository(jdbc), json, clock, manager, mapper);
         assertEquals(1, producer.publish(1).deferred());
         assertEquals("PENDING", state());
         assertEquals(1, sqsConsumer.consume(1).processed());
@@ -357,7 +359,7 @@ class OutboxIT {
         ingestion.ingest(fixture());
         TestSqsGateway queue = new TestSqsGateway();
         queue.failBeforeSend = true;
-        var producer = new SqsProducerService(outbox, queue, json);
+        var producer = new SqsProducerService(outbox, queue, json, mapper);
         assertEquals(1, producer.publish(1).deferred());
         assertNull(queue.body);
         assertEquals("PENDING", state());
@@ -371,11 +373,11 @@ class OutboxIT {
     void deleteFailureAfterCommitAndConcurrentRedeliveryDoNotRepeatEffect() throws Exception {
         ingestion.ingest(fixture());
         TestSqsGateway queue = new TestSqsGateway();
-        new SqsProducerService(outbox, queue, json).publish(1);
+        new SqsProducerService(outbox, queue, json, mapper).publish(1);
         queue.failDelete = true;
         var repo = new com.alexs.jobagent.outbox.repository.ConsumerDeliveryRepository(jdbc);
-        var first = new SqsConsumerService(queue, outbox, repo, json, clock, manager);
-        var second = new SqsConsumerService(queue, outbox, repo, json, clock, manager);
+        var first = new SqsConsumerService(queue, outbox, repo, json, clock, manager, mapper);
+        var second = new SqsConsumerService(queue, outbox, repo, json, clock, manager, mapper);
         assertEquals(1, first.consume(1).failed());
         assertEquals(1, count("consumer_deliveries"));
         assertEquals(1, count("sqs_vacancy_observations"));
@@ -394,9 +396,9 @@ class OutboxIT {
     void invalidEnvelopeAndEffectFailureRemainRetryable() throws Exception {
         ingestion.ingest(fixture());
         TestSqsGateway queue = new TestSqsGateway();
-        new SqsProducerService(outbox, queue, json).publish(1);
+        new SqsProducerService(outbox, queue, json, mapper).publish(1);
         var sqsConsumer = new SqsConsumerService(queue, outbox,
-                new com.alexs.jobagent.outbox.repository.ConsumerDeliveryRepository(jdbc), json, clock, manager);
+                new com.alexs.jobagent.outbox.repository.ConsumerDeliveryRepository(jdbc), json, clock, manager, mapper);
         String valid = queue.body;
         queue.body = valid.replace("\"schemaVersion\":1", "\"schemaVersion\":2");
         assertEquals(1, sqsConsumer.consume(1).failed());
@@ -421,9 +423,9 @@ class OutboxIT {
     void invalidEnvelopeIdentitiesAndOversizedMessagesNeverRecordAnEffect() throws Exception {
         ingestion.ingest(fixture());
         TestSqsGateway queue = new TestSqsGateway();
-        new SqsProducerService(outbox, queue, json).publish(1);
+        new SqsProducerService(outbox, queue, json, mapper).publish(1);
         var sqsConsumer = new SqsConsumerService(queue, outbox,
-                new com.alexs.jobagent.outbox.repository.ConsumerDeliveryRepository(jdbc), json, clock, manager);
+                new com.alexs.jobagent.outbox.repository.ConsumerDeliveryRepository(jdbc), json, clock, manager, mapper);
         SqsEventDTO valid = json.readValue(queue.body, SqsEventDTO.class);
         String original = queue.body;
         queue.body = null;
@@ -464,9 +466,9 @@ class OutboxIT {
     void persistedPayloadMismatchAndAmbientTransactionDoNotCommitReceipt() throws Exception {
         ingestion.ingest(fixture());
         TestSqsGateway queue = new TestSqsGateway();
-        new SqsProducerService(outbox, queue, json).publish(1);
+        new SqsProducerService(outbox, queue, json, mapper).publish(1);
         var sqsConsumer = new SqsConsumerService(queue, outbox,
-                new com.alexs.jobagent.outbox.repository.ConsumerDeliveryRepository(jdbc), json, clock, manager);
+                new com.alexs.jobagent.outbox.repository.ConsumerDeliveryRepository(jdbc), json, clock, manager, mapper);
         var tx = new TransactionTemplate(manager);
         assertThrows(IllegalStateException.class, () -> tx.execute(status -> sqsConsumer.consume(1)));
         jdbc.update("UPDATE outbox_events SET payload = '{\"vacancy_id\":0}'::jsonb WHERE event_id = ?", eventId());
@@ -484,7 +486,7 @@ class OutboxIT {
     void repeatedSendFailuresExhaustTheCycleUntilControlledReplay() throws Exception {
         ingestion.ingest(fixture());
         TestSqsGateway queue = new TestSqsGateway();
-        var producer = new SqsProducerService(outbox, queue, json);
+        var producer = new SqsProducerService(outbox, queue, json, mapper);
         assertThrows(IllegalArgumentException.class, () -> producer.publish(0));
         assertThrows(IllegalArgumentException.class, () -> producer.publish(21));
         for (int attempt = 0; attempt < 3; attempt++) {
@@ -506,11 +508,11 @@ class OutboxIT {
         ingestion.ingest(fixture());
         TestSqsGateway queue = new TestSqsGateway();
         queue.afterSend = () -> clock.advance(Duration.ofMinutes(3));
-        var producer = new SqsProducerService(outbox, queue, json);
+        var producer = new SqsProducerService(outbox, queue, json, mapper);
         assertThrows(IllegalStateException.class, () -> producer.publish(1));
         assertEquals("CLAIMED", state());
         var sqsConsumer = new SqsConsumerService(queue, outbox,
-                new com.alexs.jobagent.outbox.repository.ConsumerDeliveryRepository(jdbc), json, clock, manager);
+                new com.alexs.jobagent.outbox.repository.ConsumerDeliveryRepository(jdbc), json, clock, manager, mapper);
         assertEquals(1, sqsConsumer.consume(1).processed());
         queue.afterSend = null;
         assertEquals(1, producer.publish(1).processed());
@@ -557,7 +559,7 @@ class OutboxIT {
         return outbox.claim(worker);
     }
 
-    private com.alexs.jobagent.outbox.dto.ClaimResultDTO awaitRecovery(CountDownLatch start, String worker) {
+    private com.alexs.jobagent.outbox.service.ClaimResult awaitRecovery(CountDownLatch start, String worker) {
         try { start.await(); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
         return outbox.claimWithRecovery(worker);
     }

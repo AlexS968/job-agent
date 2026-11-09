@@ -1,6 +1,6 @@
 # Phase 5 AWS architecture and batch data flow
 
-This is a public-safe view of the Terraform configuration and the bounded application path. It describes the owner-reported deployment as of 2026-11-08, not a live AWS inventory. The recurring Tuesday/Thursday 19:00 `Europe/Berlin` schedule is enabled in AWS. The first recurring run is due 2026-11-10 and has not yet been observed.
+This is a public-safe view of the Terraform configuration and the bounded application path. It describes owner-reported deployment evidence through 2026-11-09, not a live AWS inventory. The recurring Tuesday/Thursday 19:00 `Europe/Berlin` schedule is enabled in AWS. The first recurring run is due 2026-11-10 and has not yet been observed.
 
 ```mermaid
 flowchart LR
@@ -57,7 +57,7 @@ Outbox sends and SQS receives can repeat. Database claim fencing, unique identit
 
 The owner reported one controlled two-profile task on 2026-11-08: exit 0, separate DE and AT `PUBLISHED` markers, both emails received and two subsequent writer-capacity periods at 0 ACU. Earlier bounded AWS checks covered migration and restricted database access, one diagnostic SQS delivery/duplicate/DLQ smoke, one rules evaluation with a synthetic profile, and an isolated Aurora point-in-time restore against a largely empty reference. The 2026-11-08 Germany email exposed unrelated and synthetic entries plus technical codes; successful delivery was not content acceptance.
 
-The clearer report formatter and local application-image security remediation are merged in `main` but **not yet verified in AWS**. The deployed task definition still references the older image. The first recurring run on 2026-11-10, revised report content, failure-alert behavior under a real failure, sustained reliability and a full populated-data recovery remain unverified. The local security scan is not the future ECR scan; inspect the published digest and its findings before changing the task definition.
+The replacement image is deployed and its ECR basic scan reported zero findings. A controlled invalid-argument ECS task exited 1, delivered a failure email, left no running task and was followed by Aurora at 0 ACU. The clearer report content is **not yet verified in AWS**. The first recurring run on 2026-11-10, revised report content, sustained reliability and a full populated-data recovery remain unverified. The ECR basic scan is not a complete application dependency audit.
 
 ## Cost and controls
 
