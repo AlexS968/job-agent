@@ -2,7 +2,6 @@ package com.alexs.jobagent.outbox.service;
 
 import com.alexs.jobagent.outbox.entity.OutboxEventEntity;
 import com.alexs.jobagent.outbox.dto.BacklogDTO;
-import com.alexs.jobagent.outbox.dto.ClaimResultDTO;
 import com.alexs.jobagent.outbox.repository.OutboxRepository;
 import com.alexs.jobagent.evaluation.service.RuleEvaluationPolicy;
 import com.alexs.jobagent.source.service.SourceEvidenceService;
@@ -68,7 +67,7 @@ public class OutboxService {
         return claimWithRecovery(worker).event();
     }
 
-    public ClaimResultDTO claimWithRecovery(String worker) {
+    public ClaimResult claimWithRecovery(String worker) {
         requireNoAmbientTransaction();
         if (worker == null || worker.isBlank() || worker.length() > 120) {
             throw new IllegalArgumentException("Invalid worker identity");
@@ -78,7 +77,7 @@ public class OutboxService {
             int exhausted = repository.expireExhaustedClaims(now, retryPolicy.maxAttempts(), RECOVERY_BATCH_SIZE);
             OutboxEventEntity event = repository.claim(worker, UUID.randomUUID(), now, now.plus(LEASE),
                     retryPolicy.maxAttempts());
-            return new ClaimResultDTO(event, exhausted);
+            return new ClaimResult(event, exhausted);
         });
     }
 

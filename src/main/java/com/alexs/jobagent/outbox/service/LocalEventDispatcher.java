@@ -1,7 +1,6 @@
 package com.alexs.jobagent.outbox.service;
 
 import com.alexs.jobagent.outbox.dto.DispatchResultDTO;
-import com.alexs.jobagent.outbox.dto.ClaimResultDTO;
 import com.alexs.jobagent.outbox.entity.OutboxEventEntity;
 import com.alexs.jobagent.outbox.exception.UnsupportedEventContractException;
 import java.util.UUID;
@@ -24,7 +23,7 @@ public class LocalEventDispatcher {
         DispatchCounts counts = new DispatchCounts();
         String worker = UUID.randomUUID().toString();
         for (int i = 0; i < limit; i++) {
-            ClaimResultDTO claim = outbox.claimWithRecovery(worker);
+            ClaimResult claim = outbox.claimWithRecovery(worker);
             counts.failed += claim.exhaustedClaims();
             OutboxEventEntity event = claim.event();
             if (event == null && claim.exhaustedClaims() == 0) {

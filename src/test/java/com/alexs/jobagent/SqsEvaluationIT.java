@@ -11,6 +11,7 @@ import com.alexs.jobagent.outbox.service.OutboxService;
 import com.alexs.jobagent.outbox.service.SqsEvaluationConsumerService;
 import com.alexs.jobagent.outbox.service.SqsGateway;
 import com.alexs.jobagent.outbox.service.SqsProducerService;
+import com.alexs.jobagent.outbox.mapper.SqsEventMapper;
 import com.alexs.jobagent.outbox.repository.ConsumerDeliveryRepository;
 import com.alexs.jobagent.source.dto.SyntheticInputDTO;
 import com.alexs.jobagent.source.service.SyntheticIngestionService;
@@ -58,6 +59,7 @@ class SqsEvaluationIT {
     @Autowired JsonMapper json;
     @Autowired Clock clock;
     @Autowired PlatformTransactionManager manager;
+    @Autowired SqsEventMapper mapper;
     @Autowired SourceRegistryService registry;
 
     @BeforeEach
@@ -74,7 +76,7 @@ class SqsEvaluationIT {
             ingestion.ingest(json.readValue(stream, SyntheticInputDTO.class));
         }
         Queue queue = new Queue();
-        var pipeline = new BatchPipelineService(registry, outbox, new SqsProducerService(outbox, queue, json),
+        var pipeline = new BatchPipelineService(registry, outbox, new SqsProducerService(outbox, queue, json, mapper),
                 consumer(queue), queue, evaluations, clock);
         var selected = profile("v1");
         var first = pipeline.run(selected, 10, Duration.ofMinutes(10), 5);
@@ -192,7 +194,7 @@ class SqsEvaluationIT {
         assertEquals(2, count("consumer_deliveries"));
         var newEvent = new Queue();
         new TransactionTemplate(manager).executeWithoutResult(status -> outbox.vacancyUpdated(1, 1));
-        assertEquals(1, new SqsProducerService(outbox, newEvent, json).publish(1).processed());
+        assertEquals(1, new SqsProducerService(outbox, newEvent, json, mapper).publish(1).processed());
         assertEquals(1, consumer(newEvent).consume(1, first).evaluated());
         assertEquals(1, count("vacancy_evaluations"));
         assertNotEquals(json.readValue(queue.sent, com.alexs.jobagent.outbox.dto.SqsEventDTO.class).eventId(),
@@ -247,14 +249,14 @@ class SqsEvaluationIT {
             ingestion.ingest(json.readValue(stream, SyntheticInputDTO.class));
         }
         Queue queue = new Queue();
-        assertEquals(1, new SqsProducerService(outbox, queue, json).publish(1).processed());
+        assertEquals(1, new SqsProducerService(outbox, queue, json, mapper).publish(1).processed());
         assertEquals(1, jdbc.queryForObject("SELECT schema_version FROM outbox_events", Integer.class));
         return queue;
     }
 
     private SqsEvaluationConsumerService consumer(Queue queue) {
         return new SqsEvaluationConsumerService(queue, outbox, new ConsumerDeliveryRepository(jdbc),
-                evaluations, json, clock, manager);
+                evaluations, json, clock, manager, mapper);
     }
 
     private LoadedProfileDTO profile(String version) {

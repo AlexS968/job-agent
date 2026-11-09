@@ -2,13 +2,14 @@ package com.alexs.jobagent.outbox.service;
 
 import com.alexs.jobagent.outbox.dto.SqsEventDTO;
 import com.alexs.jobagent.outbox.entity.OutboxEventEntity;
+import com.alexs.jobagent.outbox.mapper.SqsEventMapper;
 import tools.jackson.databind.json.JsonMapper;
 
 final class SqsEventValidation {
     private SqsEventValidation() { }
 
     static OutboxEventEntity stored(SqsEventDTO envelope, OutboxService outbox, JsonMapper json,
-                                    boolean requireSnapshot) {
+                                    SqsEventMapper mapper, boolean requireSnapshot) {
         if (envelope == null || envelope.eventId() == null || envelope.aggregateId() <= 0
                 || envelope.runId() <= 0 || envelope.occurredAt() == null
                 || !("VacancyDiscovered".equals(envelope.eventType())
@@ -17,7 +18,7 @@ final class SqsEventValidation {
             throw new IllegalArgumentException("Unsupported SQS event envelope");
         }
         OutboxEventEntity stored = outbox.findById(envelope.eventId());
-        if (stored == null || !SqsEventDTO.from(stored).equals(envelope)) {
+        if (stored == null || !mapper.toDTO(stored).equals(envelope)) {
             throw new IllegalArgumentException("SQS event does not match persisted outbox");
         }
         var payload = json.readTree(stored.payload());
