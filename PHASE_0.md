@@ -26,7 +26,7 @@ Phase 0 requirements/design support starting development. Paid deployment requir
 
 The agent independently discovers vacancies and employers, persists, normalizes and deduplicates results, evaluates explicit criteria and produces an explained shortlist with source links. Gmail/LinkedIn are additional inputs; legacy migration does not replace independent search.
 
-First useful MVP: non-Gmail discovery → PostgreSQL → criteria-based evaluation → reviewable shortlist. Feedback follows. Applications, CV generation, semantic matching, analytics and later intelligence follow MASTER_PLAN.md. Request CVs only after private S3 is ready.
+First useful MVP: non-Gmail discovery → PostgreSQL → criteria-based evaluation → reviewable shortlist. Feedback follows. Vacancy-backed analytics may follow feedback without waiting for old-pipeline cutover or optional semantic matching; applications and CV generation remain later phases in MASTER_PLAN.md. Request CVs only after private S3 is ready.
 
 ## Requirements recovered from the existing workflow
 
