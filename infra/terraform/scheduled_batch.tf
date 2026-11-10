@@ -133,7 +133,7 @@ resource "aws_iam_role_policy" "batch_scheduler" {
       {
         Effect    = "Allow"
         Action    = ["iam:PassRole"]
-        Resource  = [aws_iam_role.sqs_evaluation_execution[0].arn, aws_iam_role.batch_pipeline[0].arn]
+        Resource  = [aws_iam_role.batch_execution[0].arn, aws_iam_role.batch_pipeline[0].arn]
         Condition = { StringEquals = { "iam:PassedToService" = "ecs-tasks.amazonaws.com" } }
       },
       {
