@@ -1,6 +1,6 @@
 package com.alexs.jobagent.config;
 
-import org.flywaydb.core.Flyway;
+import javax.sql.DataSource;
 import org.springframework.boot.flyway.autoconfigure.FlywayMigrationStrategy;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -10,7 +10,10 @@ import org.springframework.context.annotation.Profile;
 @Profile("cloud-app")
 public class CloudFlywayConfig {
     @Bean
-    FlywayMigrationStrategy validateOnlyMigrations() {
-        return Flyway::validate;
+    FlywayMigrationStrategy validateOnlyMigrations(DataSource dataSource) {
+        return flyway -> {
+            new StartupConnectionRetry(dataSource).awaitConnection();
+            flyway.validate();
+        };
     }
 }
