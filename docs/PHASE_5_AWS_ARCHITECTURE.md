@@ -1,6 +1,6 @@
 # Phase 5 AWS architecture and batch data flow
 
-This is a public-safe view of the Terraform configuration and the bounded application path. It describes owner-reported deployment evidence through 2026-11-09, not a live AWS inventory. The recurring Tuesday/Thursday 19:00 `Europe/Berlin` schedule is enabled in AWS. The first recurring launch failed at Scheduler IAM on 2026-11-10. After that was fixed, a controlled task launched but failed during database startup; no successful recurring run has been observed.
+This public-safe view describes Terraform wiring and owner-reported AWS evidence, not a live inventory. Phase 5 closed for its agreed AWS delivery scope on 2026-11-12. A controlled 2026-11-11 batch exited 0 and delivered both DE/AT reports. EventBridge Scheduler invoked RunTask at 19:00:49 Europe/Berlin on 2026-11-12; CloudWatch logged both `PUBLISHED` markers, both emails arrived, the launch DLQ was empty and Aurora returned to 0 ACU. The stopped-task record was unavailable, so its exit code was not independently checked. The earlier PassRole launch failure was fixed; its reviewed historical DLQ message was deleted and the alarm reset with an explicit reason.
 
 ```mermaid
 flowchart LR
@@ -57,7 +57,7 @@ Outbox sends and SQS receives can repeat. Database claim fencing, unique identit
 
 The owner reported one controlled two-profile task on 2026-11-08: exit 0, separate DE and AT `PUBLISHED` markers, both emails received and two subsequent writer-capacity periods at 0 ACU. Earlier bounded AWS checks covered migration and restricted database access, one diagnostic SQS delivery/duplicate/DLQ smoke, one rules evaluation with a synthetic profile, and an isolated Aurora point-in-time restore against a largely empty reference. The 2026-11-08 Germany email exposed unrelated and synthetic entries plus technical codes; successful delivery was not content acceptance.
 
-The replacement image is deployed and its ECR basic scan reported zero findings. A controlled invalid-argument ECS task exited 1, delivered a failure email, left no running task and was followed by Aurora at 0 ACU. The clearer report content is **not yet verified in AWS**. A successful recurring run, revised report content, sustained reliability and a full populated-data recovery remain unverified. The ECR basic scan is not a complete application dependency audit.
+An earlier replacement-image ECR basic scan reported zero findings. The latest deployed-image basic scan reported one HIGH residual finding, CVE-2026-82560; `perl-base` is present in the runtime but `Pod::Text` is absent. This reviewed finding is neither a clean scan nor a permanent waiver; reassess it at the next planned image update. A controlled invalid-argument task previously exited 1 and delivered a failure email. The 2026-11-11 controlled run verified the corrected reports; the 2026-11-12 scheduled publication and receipt are observed with the exit-code limitation above. Sustained reliability, complete operating cost and populated-data recovery remain unverified. The Google Sheet remains the old pipeline master until verified cutover.
 
 ## Cost and controls
 
