@@ -3,6 +3,21 @@ output "ecr_repository_url" {
   value       = aws_ecr_repository.app.repository_url
 }
 
+output "vacancy_page_url" {
+  description = "Public sign-in shell; data route requires Cognito access token and owner group."
+  value       = var.enable_vacancy_page ? "${aws_apigatewayv2_api.page[0].api_endpoint}/" : null
+}
+
+output "database_cluster_arn" {
+  description = "Cluster identifier for reviewed Data API reader bootstrap; contains no credential value."
+  value       = aws_rds_cluster.db.arn
+}
+
+output "migration_role_secret_arn" {
+  description = "Existing migrator secret ARN, for reviewed column grants; contains no credential value."
+  value       = var.migration_db_secret_arn
+}
+
 output "ecs_cluster_name" {
   value = aws_ecs_cluster.batch.name
 }
