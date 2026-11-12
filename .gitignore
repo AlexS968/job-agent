@@ -20,6 +20,7 @@ target/
 *.tfstate
 *.tfstate.*
 *.tfplan
+infra/terraform/.vacancy-page.zip
 backend.hcl
 *.tfvars
 !*.tfvars.example

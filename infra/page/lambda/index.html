@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Job Agent vacancies</title>
+<link rel="stylesheet" href="/style.css">
+<main>
+  <h1>Job Agent vacancies</h1>
+  <p>Current stored evaluations. Eligibility and salary marked unknown still need verification.</p>
+  <button id="signin">Sign in</button>
+  <button id="signout" hidden>Sign out</button>
+  <nav hidden id="profiles"><button data-profile="alex-de">Germany</button>
+    <button data-profile="alex-at">Austria</button></nav>
+  <p id="state" role="status">Sign in to view vacancies.</p>
+  <div id="items"></div>
+  <button id="more" hidden>More</button>
+</main>
+<script src="/app.js" defer></script>
+</html>

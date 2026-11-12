@@ -8,6 +8,44 @@ variable "aws_region" {
   }
 }
 
+variable "enable_vacancy_page" {
+  description = "Opt in to the owner-only read page and Aurora Data API. Defaults off."
+  type        = bool
+  default     = false
+}
+
+variable "enable_data_api" {
+  description = "Separate reviewed prerequisite: enable Data API before creating the dedicated reader role."
+  type        = bool
+  default     = false
+}
+
+variable "page_access_enabled" {
+  description = "Remove the protected read route on rollback without deleting the protected Cognito pool."
+  type        = bool
+  default     = true
+}
+
+variable "page_auth_domain_prefix" {
+  description = "Globally unique Cognito classic hosted-UI prefix; set in ignored tfvars."
+  type        = string
+  default     = null
+  validation {
+    condition     = !var.enable_vacancy_page || (var.page_auth_domain_prefix != null && can(regex("^[a-z][a-z0-9-]{5,50}$", var.page_auth_domain_prefix)))
+    error_message = "Enabled vacancy page needs a unique Cognito domain prefix."
+  }
+}
+
+variable "page_reader_secret_arn" {
+  description = "Existing Secrets Manager secret for a dedicated SELECT-only database role. No value enters Terraform."
+  type        = string
+  default     = null
+  validation {
+    condition     = !var.enable_vacancy_page || (var.page_reader_secret_arn != null && can(regex("^arn:aws:secretsmanager:us-east-1:[0-9]{12}:secret:", var.page_reader_secret_arn)))
+    error_message = "Enabled vacancy page needs a dedicated reader secret ARN."
+  }
+}
+
 variable "availability_zones" {
   description = "Two account-mapped us-east-1 AZ names that support Aurora PostgreSQL 17.11 db.serverless."
   type        = list(string)

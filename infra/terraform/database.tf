@@ -38,6 +38,7 @@ resource "aws_rds_cluster" "db" {
   vpc_security_group_ids          = [aws_security_group.db.id]
   storage_encrypted               = true
   storage_type                    = "aurora"
+  enable_http_endpoint            = var.enable_data_api || var.enable_vacancy_page
   backup_retention_period         = 1
   preferred_backup_window         = "08:00-09:00"
   deletion_protection             = true

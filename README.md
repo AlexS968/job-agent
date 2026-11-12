@@ -1,5 +1,7 @@
 # Job Agent
 
+Phase 6A.1 prepares an [owner-only read-only vacancy page](docs/PHASE_6A_PAGE.md) with separate Germany and Austria stored shortlists. It is locally prepared, not AWS-deployed. The two scheduled country emails remain unchanged in this increment; a later Phase 6A task will replace them with one short result email after each run, including zero-new-opportunity runs, with separate country counts and links to the page. Failure alerts remain separate.
+
 A portfolio project for an autonomous job-search assistant built with Java 21, Spring Boot and PostgreSQL. Its first controlled AWS database check has run; the scheduled business pipeline is still in preparation.
 
 The planned agent discovers vacancies and employers, normalizes and deduplicates results, evaluates explicit criteria, and produces an explained shortlist. Feedback, application drafts and outcome tracking follow in later phases. Applications require human approval.
