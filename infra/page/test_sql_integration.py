@@ -1,6 +1,7 @@
 """Exercise the page projection and reader grants against project migrations."""
 
 import importlib.util
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -88,10 +89,22 @@ INSERT INTO vacancy_evaluations(vacancy_id,source_item_id,vacancy_revision,profi
   '["ROLE_PREFERRED"]','[]','[]','https://jobs.example.test/2'),
  (3,3,repeat('c',64),'alex-de','v1',repeat('d',64),'rules-v1','SUITABLE',1,'PREFERRED',
   '[]','[]','[]','https://example.test/3');
-CREATE ROLE job_agent_page_reader NOLOGIN;
+CREATE ROLE job_agent_page_reader LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
 """)
-        for grant in reader.GRANTS:
+        before = json.loads(self.sql(reader.ROLE_STATE_SQL + ";")[0])
+        reader.validate_role(before)
+        self.assertEqual([], before["selectedColumns"])
+        self.sql("CREATE ROLE job_agent_migrator LOGIN; GRANT USAGE ON SCHEMA public TO job_agent_migrator;")
+        for table in reader.TABLE_COLUMNS:
+            self.sql(f"ALTER TABLE public.{table} OWNER TO job_agent_migrator;")
+        for grant in reader.GRANTS[:2]:
             self.sql(grant + ";")
+        for grant in reader.GRANTS[2:]:
+            self.sql("SET ROLE job_agent_migrator; " + grant + ";")
+        after = json.loads(self.sql(reader.ROLE_STATE_SQL + ";")[0])
+        reader.validate_role(after)
+        self.assertEqual(reader.EXPECTED_COLUMNS, set(after["selectedColumns"]))
+        self.assertEqual(set(reader.TABLE_COLUMNS), set(json.loads(self.sql(reader.OWNER_SQL + ";")[0])))
         def query(profile, limit, offset):
             statement = page.SQL.replace(":profile", f"'{profile}'").replace(":limit", str(limit))
             statement = statement.replace(":offset", str(offset))
