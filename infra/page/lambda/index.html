@@ -9,11 +9,21 @@
   <p>Current stored evaluations. Eligibility and salary marked unknown still need verification.</p>
   <button id="signin">Sign in</button>
   <button id="signout" hidden>Sign out</button>
-  <nav hidden id="profiles"><button data-profile="alex-de">Germany</button>
-    <button data-profile="alex-at">Austria</button></nav>
+  <nav hidden id="profiles" aria-label="Work country"><button data-profile="alex-de" aria-pressed="true">Germany</button>
+    <button data-profile="alex-at" aria-pressed="false">Austria</button></nav>
+  <h2 id="selected-country">Germany opportunities</h2>
   <p id="state" role="status">Sign in to view vacancies.</p>
+  <button id="retry" hidden>Retry this read</button>
   <div id="items"></div>
   <button id="more" hidden>More</button>
+  <section aria-labelledby="yield-heading">
+    <h2 id="yield-heading">Source and profile diagnostic</h2>
+    <p>All stored observations from currently active sources. Germany and Austria counts overlap and must not be added as distinct vacancies. Loss categories can also overlap. Unknown conditions are separate from exclusions.</p>
+    <p id="yield-state" role="status">Sign in to view source counts.</p>
+    <button id="yield-retry" hidden>Retry source counts</button>
+    <div id="yield-items"></div>
+    <button id="yield-more" hidden>More sources</button>
+  </section>
 </main>
 <script src="/app.js" defer></script>
 </html>

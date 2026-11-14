@@ -94,6 +94,29 @@ class PageTest(unittest.TestCase):
         self.assertEqual(503, result["statusCode"])
         self.assertNotIn("synthetic secret", result["body"])
 
+    def test_null_database_cell_does_not_become_boolean_true(self):
+        item = row()
+        item[3] = {"isNull": True}
+        self.assertIsNone(page.decode_row(item)["employer"])
+
+    def test_diagnostics_are_owner_only_paginated_and_keep_unknowns_separate(self):
+        values = ["greenhouse:demo", "alex-at", "v1", 3, 2, 1, 0, 1, 0, 0,
+                  "{}", '{"WORK_ELIGIBILITY_UNCONFIRMED":1}', 1, "2026-11-14 12:00:00+00"]
+        record = [{"longValue": value} if isinstance(value, int) else {"stringValue": value}
+                  for value in values]
+        db = FakeDataApi([record, record, record])
+        denied = {**event(owner=False), "rawPath": "/yield"}
+        self.assertEqual(403, page.read_yield(denied, db)["statusCode"])
+        self.assertEqual([], db.calls)
+        permitted = {**event(), "rawPath": "/yield"}
+        permitted["queryStringParameters"] = {"limit": "1", "offset": "0"}
+        result = json.loads(page.read_yield(permitted, db)["body"])
+        self.assertEqual(1, result["rows"][0]["unknowns"]["WORK_ELIGIBILITY_UNCONFIRMED"])
+        self.assertEqual({}, result["rows"][0]["exclusions"])
+        self.assertEqual(1, result["nextOffset"])
+        self.assertEqual(2, db.calls[0]["parameters"][0]["value"]["longValue"])
+        self.assertIn("active", result["window"])
+
 
 if __name__ == "__main__":
     unittest.main()

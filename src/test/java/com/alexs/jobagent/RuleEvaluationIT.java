@@ -95,7 +95,7 @@ class RuleEvaluationIT {
 
     @Test
     void migrationReplayVersionsAndStaleEvaluations() throws Exception {
-        assertEquals(17, jdbc.queryForObject("SELECT count(*) FROM flyway_schema_history", Integer.class));
+        assertEquals(18, jdbc.queryForObject("SELECT count(*) FROM flyway_schema_history", Integer.class));
         long vacancy = insert("Backend Engineer", COUNTRY_REMOTE);
         LoadedProfileDTO v1 = profile("v1", "Backend Engineer");
         assertEquals(1, evaluation.evaluate(v1, 0, 100, RuleEvaluationPolicy.VERSION).created());
@@ -478,10 +478,40 @@ class RuleEvaluationIT {
                 .anyMatch(item -> item.vacancyId() == synthetic));
     }
 
+    @Test
+    void countryReportsUsePersistedSourceLocationEvidenceRatherThanUnknownPermission() {
+        long berlin = live(insert("Backend Engineer Berlin", "{}"));
+        jdbc.update("UPDATE source_items SET raw_payload = "
+                + "'{\"location\":{\"name\":\"Berlin\"},\"content\":\"Work from Austria "
+                + "for 12 weeks per year\"}'::jsonb WHERE id = "
+                + "(SELECT source_item_id FROM vacancy_sources WHERE vacancy_id = ?)", berlin);
+        long vienna = live(insert("Backend Engineer Vienna", "{}"));
+        jdbc.update("UPDATE vacancies SET location = 'Vienna, Austria' WHERE id = ?", vienna);
+        jdbc.update("UPDATE source_items SET raw_payload = "
+                + "'{\"location\":{\"name\":\"Vienna, Austria\"}}'::jsonb WHERE id = "
+                + "(SELECT source_item_id FROM vacancy_sources WHERE vacancy_id = ?)", vienna);
+        var de = profiles.loadJson(json.writeValueAsString(new SearchProfileDTO("alex-de", "v1", "DE",
+                List.of("Backend Engineer"), List.of(), List.of(), List.of(), List.of(), false, null)));
+        var at = profiles.loadJson(json.writeValueAsString(new SearchProfileDTO("alex-at", "v1", "AT",
+                List.of("Backend Engineer"), List.of(), List.of(), List.of(), List.of(), false, null)));
+        assertEquals(2, evaluation.evaluate(de, 0, 100, RuleEvaluationPolicy.VERSION).created());
+        assertEquals(2, evaluation.evaluate(at, 0, 100, RuleEvaluationPolicy.VERSION).created());
+        assertEquals(List.of(berlin), evaluation.reportShortlist(de, 20, RuleEvaluationPolicy.VERSION)
+                .needsReview().stream().map(item -> item.vacancyId()).toList());
+        assertEquals(List.of(vienna), evaluation.reportShortlist(at, 20, RuleEvaluationPolicy.VERSION)
+                .needsReview().stream().map(item -> item.vacancyId()).toList());
+        assertEquals("UNKNOWN", jdbc.queryForObject("SELECT country_eligibility FROM vacancy_evaluations "
+                + "WHERE vacancy_id = ? AND profile_id = 'alex-at'", String.class, berlin));
+        assertEquals("CONFIRMED", jdbc.queryForObject("SELECT country_eligibility FROM vacancy_evaluations "
+                + "WHERE vacancy_id = ? AND profile_id = 'alex-at'", String.class, vienna));
+    }
+
     private long live(long vacancy) {
-        jdbc.update("UPDATE vacancies SET source_namespace = 'greenhouse:fictional' WHERE id = ?", vacancy);
+        jdbc.update("UPDATE vacancies SET source_namespace = 'greenhouse:fictional', location = 'Berlin' "
+                + "WHERE id = ?", vacancy);
         jdbc.update("UPDATE source_items SET source_namespace = 'greenhouse:fictional', "
-                + "listing_namespace = 'greenhouse:fictional', input_version = 'greenhouse-board-v1' WHERE id = "
+                + "listing_namespace = 'greenhouse:fictional', input_version = 'greenhouse-board-v1', "
+                + "raw_payload = '{\"location\":{\"name\":\"Berlin\"}}'::jsonb WHERE id = "
                 + "(SELECT source_item_id FROM vacancy_sources WHERE vacancy_id = ?)", vacancy);
         return vacancy;
     }

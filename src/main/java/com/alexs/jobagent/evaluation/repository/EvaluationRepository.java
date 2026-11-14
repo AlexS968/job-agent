@@ -69,6 +69,35 @@ public class EvaluationRepository {
         return insert(result, profile, policyVersion, null);
     }
 
+    public void recordCountryEvidence(long vacancyId, String revision, LoadedProfileDTO profile,
+                                      String policyVersion, Long extractionWorkId, String extractionBasis,
+                                      String status, String evidence) {
+        int updated = jdbc.update("UPDATE vacancy_evaluations SET country_evidence_policy = ?, "
+                        + "country_eligibility = ?, country_evidence = ? WHERE vacancy_id = ? "
+                        + "AND vacancy_revision = ? AND profile_id = ? AND profile_version = ? "
+                        + "AND criteria_hash = ? AND policy_version = ? "
+                        + "AND extraction_work_id IS NOT DISTINCT FROM ? AND extraction_basis = ?",
+                "country-v1", status, evidence, vacancyId, revision, profile.profile().profileId(),
+                profile.profile().version(), profile.criteriaHash(), policyVersion,
+                extractionWorkId, extractionBasis);
+        if (updated != 1) {
+            throw new IllegalStateException("Country evidence has no evaluation identity");
+        }
+    }
+
+    public boolean countryConfirmed(VacancyEvaluationDTO current, LoadedProfileDTO profile,
+                                    String policyVersion) {
+        Integer count = jdbc.queryForObject("SELECT count(*) FROM vacancy_evaluations WHERE vacancy_id = ? "
+                        + "AND vacancy_revision = ? AND profile_id = ? AND profile_version = ? "
+                        + "AND criteria_hash = ? AND policy_version = ? "
+                        + "AND extraction_work_id IS NOT DISTINCT FROM ? AND extraction_basis = ? "
+                        + "AND country_evidence_policy = 'country-v1' AND country_eligibility = 'CONFIRMED'",
+                Integer.class, current.vacancyId(), current.vacancyRevision(), profile.profile().profileId(),
+                profile.profile().version(), profile.criteriaHash(), policyVersion,
+                current.extractionWorkId(), current.extractionStatus());
+        return count != null && count == 1;
+    }
+
     public long idFor(long vacancyId, String revision, LoadedProfileDTO profile, String policyVersion) {
         Long id = jdbc.queryForObject("SELECT id FROM vacancy_evaluations WHERE vacancy_id = ? "
                         + "AND vacancy_revision = ? AND profile_id = ? AND profile_version = ? "
