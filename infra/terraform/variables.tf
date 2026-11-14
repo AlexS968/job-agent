@@ -168,8 +168,8 @@ variable "enable_scheduled_batch" {
   type        = bool
   default     = false
   validation {
-    condition     = !var.enable_scheduled_batch || var.enable_batch_pipeline
-    error_message = "Scheduled batch preparation requires the existing batch task."
+    condition     = !var.enable_scheduled_batch || (var.enable_batch_pipeline && var.enable_vacancy_page && var.page_access_enabled)
+    error_message = "Scheduled results require the batch task and an accessible protected vacancy page."
   }
 }
 

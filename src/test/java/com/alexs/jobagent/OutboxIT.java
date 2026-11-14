@@ -79,7 +79,7 @@ class OutboxIT {
 
     @Test
     void migrationFromEmptyDatabaseAndAtomicEmission() throws Exception {
-        assertEquals(18, count("flyway_schema_history"));
+        assertEquals(19, count("flyway_schema_history"));
         ingestion.ingest(fixture());
         assertEquals(1, count("vacancies"));
         assertEquals(1, count("outbox_events"));

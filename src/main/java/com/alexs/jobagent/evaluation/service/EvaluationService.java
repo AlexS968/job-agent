@@ -24,6 +24,7 @@ public class EvaluationService {
     private static final int PAGE_SIZE = 100;
     private static final int MAX_BATCH = 500;
     private static final int MAX_REPORT = 50;
+    private static final int MAX_REPORT_CANDIDATES = 500;
     private static final Comparator<VacancyEvaluationDTO> ORDER = Comparator
             .comparingInt(VacancyEvaluationDTO::preferenceRank)
             .thenComparingInt(item -> roleOrder(item.roleClassification()))
@@ -116,6 +117,37 @@ public class EvaluationService {
     /** Report projection: trusted live source identities and established roles only. */
     public ShortlistDTO reportShortlist(LoadedProfileDTO profile, int limit, String policyVersion) {
         return shortlist(profile, limit, policyVersion, true);
+    }
+
+    /** All current, source-backed country recommendations for a bounded publication snapshot. */
+    public List<VacancyEvaluationDTO> reportCandidates(LoadedProfileDTO profile, String policyVersion) {
+        rejectAmbient();
+        if (!validVersion(policyVersion)) {
+            throw new IllegalArgumentException("Invalid report policy version");
+        }
+        evaluations.requireRegisteredProfile(profile);
+        List<VacancyEvaluationDTO> candidates = new ArrayList<>();
+        long cursor = 0;
+        while (true) {
+            List<Long> ids = vacancies.idsAfter(cursor, PAGE_SIZE);
+            if (ids.isEmpty()) {
+                return List.copyOf(candidates);
+            }
+            for (long id : ids) {
+                VacancyEvaluationDTO candidate = transaction.execute(status -> current(id, profile,
+                        policyVersion, true));
+                if (candidate != null && !"UNMATCHED".equals(candidate.roleClassification())
+                        && evaluations.countryConfirmed(candidate, profile, policyVersion)
+                        && ("SUITABLE".equals(candidate.decision())
+                        || "NEEDS_REVIEW".equals(candidate.decision()))) {
+                    candidates.add(candidate);
+                    if (candidates.size() > MAX_REPORT_CANDIDATES) {
+                        throw new IllegalStateException("Report candidate limit exceeded; review before publishing");
+                    }
+                }
+            }
+            cursor = ids.getLast();
+        }
     }
 
     private ShortlistDTO shortlist(LoadedProfileDTO profile, int limit, String policyVersion, boolean reportOnly) {

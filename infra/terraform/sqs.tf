@@ -328,7 +328,8 @@ resource "aws_ecs_task_definition" "batch_pipeline" {
       { name = "JOBAGENT_SQS_QUEUEURL", value = aws_sqs_queue.vacancy[0].id }
       ], var.enable_scheduled_batch ? [
       { name = "JOBAGENT_REPORT_ENABLED", value = "true" },
-      { name = "JOBAGENT_REPORT_TOPICARN", value = aws_sns_topic.batch_report[0].arn }
+      { name = "JOBAGENT_REPORT_TOPICARN", value = aws_sns_topic.batch_report[0].arn },
+      { name = "JOBAGENT_REPORT_PAGEURL", value = "${aws_apigatewayv2_api.page[0].api_endpoint}/" }
     ] : [])
     secrets = concat([
       { name = "DB_PASSWORD", valueFrom = "${var.app_db_secret_arn}:password::" },

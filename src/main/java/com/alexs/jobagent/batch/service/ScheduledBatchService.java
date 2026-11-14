@@ -1,137 +1,112 @@
 package com.alexs.jobagent.batch.service;
 
+import com.alexs.jobagent.batch.dto.PreparedResultDTO;
 import com.alexs.jobagent.batch.repository.ScheduledBatchRepository;
-import com.alexs.jobagent.batch.dto.BatchPipelineResultDTO;
 import com.alexs.jobagent.evaluation.dto.LoadedProfileDTO;
 import com.alexs.jobagent.evaluation.service.EvaluationService;
 import com.alexs.jobagent.evaluation.service.RuleEvaluationPolicy;
 import java.time.Clock;
 import java.time.Duration;
-import java.time.LocalDate;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.List;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 @Service
 @ConditionalOnProperty(name = "jobagent.report.enabled", havingValue = "true")
 public class ScheduledBatchService {
     private static final Logger LOGGER = LoggerFactory.getLogger(ScheduledBatchService.class);
     private static final ZoneId BERLIN = ZoneId.of("Europe/Berlin");
-    private static final String PUBLISHING = "PUBLISHING";
     private final ScheduledBatchRepository repository;
+    private final ScheduledResultService results;
     private final BatchPipelineService pipeline;
     private final EvaluationService evaluations;
     private final BatchReportFormatter formatter;
     private final ReportGateway gateway;
     private final Clock clock;
+    private final String pageUrl;
 
-    public ScheduledBatchService(ScheduledBatchRepository repository, BatchPipelineService pipeline,
-                                 EvaluationService evaluations, BatchReportFormatter formatter,
-                                 ReportGateway gateway, Clock clock) {
+    public ScheduledBatchService(ScheduledBatchRepository repository, ScheduledResultService results,
+                                 BatchPipelineService pipeline, EvaluationService evaluations,
+                                 BatchReportFormatter formatter, ReportGateway gateway, Clock clock,
+                                 @Value("${JOBAGENT_REPORT_PAGEURL:}") String pageUrl) {
         this.repository = repository;
+        this.results = results;
         this.pipeline = pipeline;
         this.evaluations = evaluations;
         this.formatter = formatter;
         this.gateway = gateway;
         this.clock = clock;
+        this.pageUrl = pageUrl;
     }
 
-    /** One Berlin-date invocation; report and SNS acknowledgement state is independent by profile. */
+    /** One Berlin-date slot and one SNS result publication for both profiles. */
     public void run(List<LoadedProfileDTO> profiles) {
         if (TransactionSynchronizationManager.isActualTransactionActive()) {
             throw new IllegalStateException("Scheduled batch requires no ambient transaction");
         }
         requireProfiles(profiles);
+        formatter.requirePageUrl(pageUrl);
         LocalDate date = LocalDate.now(clock.withZone(BERLIN));
+        if ("COMPLETE".equals(repository.invocationStatus(date))) {
+            LOGGER.info("Scheduled batch slot {} already completed; no processing or report replay", date);
+            return;
+        }
+        if (repository.hasLegacyReportOn(date)) {
+            throw new IllegalStateException("Historical profile publication occupies this date; review required");
+        }
+        results.requireNoUnresolvedPublication();
         if (!repository.startInvocation(date)) {
-            if ("COMPLETE".equals(repository.invocationStatus(date))) {
-                LOGGER.info("Scheduled batch slot {} already completed; no processing or report replay", date);
-                return;
-            }
-            throw new IllegalStateException("Scheduled batch requires manual review of active or uncertain work");
+            throw new IllegalStateException("Scheduled batch requires manual review of active work");
         }
         Instant deadline = clock.instant().plus(Duration.ofMinutes(24));
         try {
-            List<String> prior = profiles.stream().map(profile -> repository.profileStatus(date,
-                    profile.profile().profileId(), profile.profile().version(), profile.criteriaHash())).toList();
-            if (prior.stream().anyMatch(status -> status != null
-                    && !"FAILED".equals(status) && !"PUBLISHED".equals(status))) {
-                throw new IllegalStateException("Scheduled profile requires manual review");
+            if ("PUBLISHED".equals(repository.resultStatus(date))) {
+                repository.finishInvocation(date, "COMPLETE");
+                return;
             }
-            BatchPipelineResultDTO base = null;
-            if (!"PUBLISHED".equals(prior.getFirst())) {
-                base = pipeline.runWithoutShortlist(profiles.getFirst(), 50, Duration.ofMinutes(10), 20);
-                if ("FAILED".equals(base.outcome()) || "TIME_LIMIT".equals(base.outcome())) {
-                    throw new IllegalStateException("Batch pipeline failed or reached its time limit");
-                }
+            var base = pipeline.runWithoutShortlist(profiles.getFirst(), 50, Duration.ofMinutes(10), 20);
+            if ("FAILED".equals(base.outcome()) || "TIME_LIMIT".equals(base.outcome())) {
+                throw new IllegalStateException("Batch pipeline failed or reached its time limit");
             }
-            int[] created = new int[profiles.size()];
-            for (int index = 0; index < profiles.size(); index++) {
-                if (!"PUBLISHED".equals(prior.get(index))) {
-                    created[index] = evaluateAll(profiles.get(index), deadline);
-                }
+            evaluateAll(profiles.getFirst(), deadline);
+            evaluateAll(profiles.get(1), deadline);
+            var deCandidates = evaluations.reportCandidates(profiles.getFirst(), RuleEvaluationPolicy.VERSION);
+            var atCandidates = evaluations.reportCandidates(profiles.get(1), RuleEvaluationPolicy.VERSION);
+            if (!clock.instant().isBefore(deadline)) {
+                throw new IllegalStateException("Scheduled report reached its time limit");
             }
-            for (int index = 0; index < profiles.size(); index++) {
-                if (!"PUBLISHED".equals(prior.get(index))) {
-                    runProfile(date, profiles.get(index), prior.get(index), index == 0 ? base : null,
-                            created[index]);
-                }
-            }
+            PreparedResultDTO prepared = results.prepare(date, profiles.getFirst(), profiles.get(1),
+                    deCandidates, atCandidates, pageUrl, base);
+            results.markPublishing(date);
+            publishPrepared(date, prepared);
             repository.finishInvocation(date, "COMPLETE");
+            LOGGER.info("Scheduled result: date={}, status=PUBLISHED, new_distinct={}, new_de={}, new_at={}, "
+                            + "newly_relevant_distinct={}", date, prepared.distinctNew(),
+                    prepared.germanyNew(), prepared.austriaNew(), prepared.distinctRelevant());
         } catch (RuntimeException failure) {
             markInvocationFailed(date);
             throw failure;
         }
     }
 
-    private void runProfile(LocalDate date, LoadedProfileDTO profile, String prior,
-                            BatchPipelineResultDTO base, int created) {
-        String id = profile.profile().profileId();
-        if (prior == null) {
-            if (!repository.start(date, id, profile.profile().version(), profile.criteriaHash())) {
-                throw new IllegalStateException("Scheduled profile slot changed unexpectedly");
-            }
-        } else if (!"FAILED".equals(prior)
-                || !repository.retryFailedProfile(date, id, profile.profile().version(), profile.criteriaHash())) {
-            throw new IllegalStateException("Scheduled profile requires manual review");
-        }
-        try {
-            BatchPipelineResultDTO snapshot = pipeline.snapshot(profile, 20);
-            BatchPipelineResultDTO metrics = base == null ? snapshot : base;
-            BatchPipelineResultDTO result = new BatchPipelineResultDTO(metrics.outcome(), metrics.imported(),
-                    metrics.published(), metrics.evaluated() + created, metrics.duplicates(), metrics.stale(),
-                    metrics.failed(), snapshot.outbox(), snapshot.queue(), snapshot.shortlist());
-            String body = formatter.format(date, profile, result);
-            repository.transition(date, id, "RUNNING", "PREPARED", body, null);
-            repository.transition(date, id, "PREPARED", PUBLISHING, null, null);
-            publishPrepared(date, id, formatter.subject(date, profile, result), body);
-            LOGGER.info("Scheduled report: date={}, profile={}, status=PUBLISHED, outcome={}",
-                    date, id, result.outcome());
-        } catch (RuntimeException failure) {
-            markIfPossible(date, id, "RUNNING", "FAILED");
-            throw failure;
-        }
-    }
-
-    private int evaluateAll(LoadedProfileDTO profile, Instant deadline) {
+    private void evaluateAll(LoadedProfileDTO profile, Instant deadline) {
         long after = 0;
-        int created = 0;
         boolean more;
         do {
             if (!clock.instant().isBefore(deadline)) {
                 throw new IllegalStateException("Scheduled evaluation reached its time limit");
             }
             var page = evaluations.evaluate(profile, after, 500, RuleEvaluationPolicy.VERSION);
-            created += page.created();
             after = page.lastVacancyId();
             more = page.moreAvailable();
         } while (more);
-        return created;
     }
 
     private static void requireProfiles(List<LoadedProfileDTO> profiles) {
@@ -145,27 +120,23 @@ public class ScheduledBatchService {
         }
     }
 
-    private void publishPrepared(LocalDate date, String profileId, String subject, String body) {
+    private void publishPrepared(LocalDate date, PreparedResultDTO prepared) {
         String messageId;
         try {
-            messageId = gateway.publish(subject, body);
+            messageId = gateway.publish(prepared.subject(), prepared.body());
             if (messageId == null || messageId.isBlank()) {
                 throw new IllegalStateException("SNS did not return a message identity");
             }
         } catch (RuntimeException uncertain) {
-            markIfPossible(date, profileId, PUBLISHING, "UNCERTAIN");
-            throw new IllegalStateException("Report publication outcome is uncertain; review before any replay", uncertain);
+            try {
+                results.markUncertain(date);
+            } catch (RuntimeException trackingFailure) {
+                LOGGER.warn("Publication uncertainty could not be recorded; inspect the database before retrying");
+            }
+            throw new IllegalStateException("Report publication outcome is uncertain; review before replay", uncertain);
         }
-        repository.transition(date, profileId, PUBLISHING, "PUBLISHED", null, messageId);
-    }
-
-    private void markIfPossible(LocalDate date, String profileId, String from, String to) {
-        try {
-            repository.transition(date, profileId, from, to, null, null);
-        } catch (RuntimeException trackingFailure) {
-            // Preserve the original error. A DB outage can also prevent status recording.
-            LOGGER.warn("Scheduled profile status could not be recorded; inspect the database before retrying");
-        }
+        // A failed acknowledgement leaves PUBLISHING in the database; a rerun must not republish.
+        results.markPublished(date, messageId);
     }
 
     private void markInvocationFailed(LocalDate date) {
