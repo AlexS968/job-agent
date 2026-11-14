@@ -73,6 +73,18 @@ class SchedulerPassRolesTest(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "ECS service condition"):
             pass_roles(broadened)
 
+    def test_scheduled_result_link_uses_the_deployed_protected_page(self):
+        task_source = (TERRAFORM / "sqs.tf").read_text()
+        variables = (TERRAFORM / "variables.tf").read_text()
+        task = resource(task_source, "aws_ecs_task_definition", "batch_pipeline")
+        page_url = '${aws_apigatewayv2_api.page[0].api_endpoint}/'
+        self.assertIn('{ name = "JOBAGENT_REPORT_PAGEURL", value = "' + page_url + '" }', task)
+        self.assertRegex(
+            variables,
+            r"!var\.enable_scheduled_batch\s*\|\|\s*\(var\.enable_batch_pipeline\s*"
+            r"&&\s*var\.enable_vacancy_page\s*&&\s*var\.page_access_enabled\)",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

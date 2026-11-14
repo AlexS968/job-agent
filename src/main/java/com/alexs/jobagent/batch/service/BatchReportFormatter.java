@@ -1,6 +1,7 @@
 package com.alexs.jobagent.batch.service;
 
 import com.alexs.jobagent.batch.dto.BatchPipelineResultDTO;
+import com.alexs.jobagent.batch.dto.PreparedResultDTO;
 import com.alexs.jobagent.evaluation.dto.LoadedProfileDTO;
 import com.alexs.jobagent.evaluation.dto.VacancyEvaluationDTO;
 import java.net.URI;
@@ -13,6 +14,67 @@ import org.springframework.stereotype.Component;
 @Component
 public class BatchReportFormatter {
     static final int MAX_BYTES = 10_000;
+
+    public PreparedResultDTO combined(LocalDate date, int distinct, int germany, int austria,
+                                      int distinctRelevant, int germanRelevant, int austrianRelevant,
+                                      boolean germanBaseline, boolean austrianBaseline,
+                                      String pageUrl, BatchPipelineResultDTO run) {
+        String link = requirePageUrl(pageUrl);
+        if (distinct < 0 || germany < 0 || austria < 0 || distinct > germany + austria
+                || distinctRelevant < 0 || germanRelevant < 0 || austrianRelevant < 0
+                || distinctRelevant > germanRelevant + austrianRelevant || run == null) {
+            throw new IllegalArgumentException("Invalid combined report counts");
+        }
+        String subject = "Job Agent " + date + ": " + distinct + " new "
+                + (distinct == 1 ? "opportunity" : "opportunities");
+        StringBuilder body = new StringBuilder("Job Agent result — " + date + "\n\n");
+        body.append(distinct).append(distinct == 1 ? " newly stored opportunity" : " newly stored opportunities")
+                .append(" now relevant in the current sample.\n");
+        if (distinct == 0) {
+            body.append("No newly stored opportunities since the last successfully published result.\n");
+        }
+        body.append("\nGermany: ").append(germany).append(" new; ").append(germanRelevant)
+                .append(" newly relevant from previously stored vacancies.\n")
+                .append("Current Germany shortlist: ").append(link).append(" (select Germany).\n");
+        body.append("Austria: ").append(austria).append(" new; ").append(austrianRelevant)
+                .append(" newly relevant from previously stored vacancies.\n")
+                .append("Current Austria shortlist: ").append(link).append(" (select Austria).\n");
+        body.append("A vacancy may count for both countries; headline counts are distinct vacancies. ")
+                .append("The page shows the full current shortlist. Verify work authorization and unknown salary details; ")
+                .append("a posting location is not legal eligibility.\n");
+        if (germanBaseline || austrianBaseline) {
+            body.append("First combined report baseline: current candidates for ")
+                    .append(germanBaseline ? "Germany" : "")
+                    .append(germanBaseline && austrianBaseline ? " and " : "")
+                    .append(austrianBaseline ? "Austria" : "")
+                    .append(" were treated as previously seen because older emails lack complete item identities. ")
+                    .append("Review the full shortlist on the page.\n");
+        }
+        body.append("\nRun: ").append(run.imported().created()).append(" imported, ")
+                .append(run.imported().updated()).append(" updated; ")
+                .append(run.failed()).append(" processing failures.\n");
+        String text = body.toString();
+        if (bytes(text) > 4000 || bytes(subject) > 160) {
+            throw new IllegalArgumentException("Combined result email is too large");
+        }
+        return new PreparedResultDTO(subject, text, distinct, germany, austria,
+                distinctRelevant, germanRelevant, austrianRelevant);
+    }
+
+    public String requirePageUrl(String value) {
+        try {
+            URI uri = URI.create(value);
+            if (!"https".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null
+                    || uri.getUserInfo() != null || uri.getRawQuery() != null || uri.getRawFragment() != null
+                    || value.length() > 1000 || !value.equals(uri.toASCIIString())
+                    || value.chars().anyMatch(Character::isISOControl)) {
+                throw new IllegalArgumentException("A reviewed HTTPS vacancy page URL is required");
+            }
+            return value;
+        } catch (IllegalArgumentException | NullPointerException invalid) {
+            throw new IllegalArgumentException("A reviewed HTTPS vacancy page URL is required", invalid);
+        }
+    }
 
     public String subject(LocalDate date, LoadedProfileDTO profile, BatchPipelineResultDTO result) {
         int suitable = result.shortlist().totalSuitable();
