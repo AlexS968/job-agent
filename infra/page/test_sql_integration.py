@@ -3,6 +3,7 @@
 import importlib.util
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import time
@@ -21,6 +22,81 @@ reader = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(reader)
 
 
+def safe_error(stderr):
+    excerpt = re.sub(r"[\x00-\x1f\x7f]", " ", stderr or "")[:800]
+    return re.sub(r"(?i)(password|secret|token)\s*[:=]\s*\S+", r"\1=<redacted>", excerpt)
+
+
+def startup_connection_failure(stderr):
+    message = (stderr or "").lower()
+    return ("connection to server" in message and
+            ("failed" in message or "starting up" in message)) or \
+        "server closed the connection unexpectedly" in message
+
+
+def create_database(container, run=subprocess.run, pause=time.sleep, now=time.monotonic):
+    deadline = now() + 10
+    command = ["docker", "exec", container, "createdb", "-U", "postgres", "job_agent"]
+    last_detail = "no response"
+    while True:
+        remaining = deadline - now()
+        if remaining <= 0:
+            raise AssertionError(f"Isolated PostgreSQL database creation timed out: {last_detail}")
+        try:
+            result = run(command, capture_output=True, text=True, timeout=min(2, remaining))
+        except subprocess.TimeoutExpired as error:
+            stderr = error.stderr.decode(errors="replace") if isinstance(error.stderr, bytes) else error.stderr
+            raise AssertionError(f"Isolated PostgreSQL createdb command timed out: {safe_error(stderr)}") from error
+        if result.returncode == 0:
+            return
+        detail = safe_error(result.stderr)
+        last_detail = detail
+        if not startup_connection_failure(result.stderr) or now() >= deadline:
+            raise AssertionError(f"Isolated PostgreSQL database creation failed: {detail}")
+        pause(max(0, min(0.25, deadline - now())))
+
+
+class DatabaseStartupTest(unittest.TestCase):
+    def test_transient_restart_error_is_retried(self):
+        replies = iter((subprocess.CompletedProcess([], 1, "", "connection to server failed: starting up"),
+                        subprocess.CompletedProcess([], 0, "", "")))
+        calls = []
+
+        def run(command, **kwargs):
+            calls.append((command, kwargs))
+            return next(replies)
+
+        create_database("synthetic-container", run=run, pause=lambda _: None)
+        self.assertEqual(2, len(calls))
+        self.assertEqual("createdb", calls[0][0][3])
+
+    def test_unrelated_error_fails_immediately_with_redacted_stderr(self):
+        calls = []
+
+        def run(command, **_kwargs):
+            calls.append(command)
+            return subprocess.CompletedProcess([], 1, "", "database already exists password=synthetic-secret")
+
+        with self.assertRaisesRegex(AssertionError, "database already exists password=<redacted>"):
+            create_database("synthetic-container", run=run)
+        self.assertEqual(1, len(calls))
+
+    def test_persistent_connection_error_stops_at_deadline_with_stderr(self):
+        elapsed = [0.0]
+        calls = []
+
+        def run(command, **_kwargs):
+            calls.append(command)
+            return subprocess.CompletedProcess([], 1, "", "connection to server failed: starting up")
+
+        def pause(seconds):
+            elapsed[0] += seconds
+
+        with self.assertRaisesRegex(AssertionError, "timed out: connection to server failed: starting up"):
+            create_database("synthetic-container", run=run, pause=pause, now=lambda: elapsed[0])
+        self.assertLessEqual(len(calls), 41)
+
+
 class SqlIntegrationTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -37,8 +113,7 @@ class SqlIntegrationTest(unittest.TestCase):
                 time.sleep(0.25)
             else:
                 raise RuntimeError("Isolated PostgreSQL did not become ready")
-            subprocess.run(["docker", "exec", cls.container, "createdb", "-U", "postgres", "job_agent"],
-                           check=True, capture_output=True)
+            create_database(cls.container)
             for migration in sorted((ROOT / "src/main/resources/db/migration").glob("V*.sql"),
                                     key=lambda p: int(p.name.split("__")[0][1:])):
                 cls.sql(migration.read_text())
