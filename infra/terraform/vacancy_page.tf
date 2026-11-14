@@ -172,6 +172,16 @@ resource "aws_apigatewayv2_route" "vacancies" {
   authorization_scopes = ["openid"]
 }
 
+resource "aws_apigatewayv2_route" "vacancy_yield" {
+  count                = var.enable_vacancy_page && var.page_access_enabled ? 1 : 0
+  api_id               = aws_apigatewayv2_api.page[0].id
+  route_key            = "GET /yield"
+  target               = "integrations/${aws_apigatewayv2_integration.page[0].id}"
+  authorization_type   = "JWT"
+  authorizer_id        = aws_apigatewayv2_authorizer.page[0].id
+  authorization_scopes = ["openid"]
+}
+
 resource "aws_apigatewayv2_stage" "page" {
   count       = var.enable_vacancy_page ? 1 : 0
   api_id      = aws_apigatewayv2_api.page[0].id

@@ -1,3 +1,5 @@
 body{font:1rem/1.5 system-ui,sans-serif;max-width:48rem;margin:2rem auto;padding:0 1rem;color:#17212b;background:#f7f9fb}
 main{background:white;padding:1.5rem;border-radius:.5rem}button{margin:.3rem;padding:.5rem .8rem}
 article{border-top:1px solid #ccd6df;padding:1rem 0}a{overflow-wrap:anywhere}ul{margin:.3rem 0 1rem}
+button[aria-pressed="true"]{background:#153e75;color:white;font-weight:700}
+button:focus-visible,a:focus-visible{outline:3px solid #b75b00;outline-offset:2px}

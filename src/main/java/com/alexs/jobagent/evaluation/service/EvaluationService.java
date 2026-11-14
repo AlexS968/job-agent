@@ -34,12 +34,13 @@ public class EvaluationService {
     private final RuleEvaluationPolicy policy;
     private final ExtractionAwareEvaluationPolicy extractionPolicy;
     private final ExtractionEvidenceService extractionEvidence;
+    private final CountryEvidencePolicy countryEvidence;
     private final TransactionTemplate transaction;
 
     public EvaluationService(VacancyReadService vacancies, SourceEvidenceService sources,
                              EvaluationRepository evaluations, RuleEvaluationPolicy policy,
                              ExtractionAwareEvaluationPolicy extractionPolicy,
-                             ExtractionEvidenceService extractionEvidence,
+                             ExtractionEvidenceService extractionEvidence, CountryEvidencePolicy countryEvidence,
                              PlatformTransactionManager manager) {
         this.vacancies = vacancies;
         this.sources = sources;
@@ -47,6 +48,7 @@ public class EvaluationService {
         this.policy = policy;
         this.extractionPolicy = extractionPolicy;
         this.extractionEvidence = extractionEvidence;
+        this.countryEvidence = countryEvidence;
         this.transaction = new TransactionTemplate(manager);
     }
 
@@ -135,7 +137,8 @@ public class EvaluationService {
             for (long id : ids) {
                 VacancyEvaluationDTO current = transaction.execute(status -> current(id, profile, policyVersion,
                         reportOnly));
-                if (current != null && (!reportOnly || !"UNMATCHED".equals(current.roleClassification()))) {
+                if (current != null && (!reportOnly || !"UNMATCHED".equals(current.roleClassification())
+                        && evaluations.countryConfirmed(current, profile, policyVersion))) {
                     if ("SUITABLE".equals(current.decision())) {
                         totalSuitable++;
                         addBounded(suitable, current, limit);
@@ -171,13 +174,17 @@ public class EvaluationService {
         SelectedExtractionDTO selected = select(policyVersion, id, source.sourceItemId(), revision);
         Long workId = selected == null ? null : selected.workId();
         String basis = selected == null ? "NONE" : selected.status();
-        if (evaluations.current(id, revision, profile, policyVersion, workId, basis) != null) {
-            return false;
+        boolean created = false;
+        if (evaluations.current(id, revision, profile, policyVersion, workId, basis) == null) {
+            VacancyEvaluationDTO result = ExtractionAwareEvaluationPolicy.VERSION.equals(policyVersion)
+                    ? extractionPolicy.evaluate(vacancy, source, profile, revision, selected)
+                    : policy.evaluate(vacancy, source, profile, revision);
+            created = evaluations.insert(result, profile, policyVersion, selected);
         }
-        VacancyEvaluationDTO result = ExtractionAwareEvaluationPolicy.VERSION.equals(policyVersion)
-                ? extractionPolicy.evaluate(vacancy, source, profile, revision, selected)
-                : policy.evaluate(vacancy, source, profile, revision);
-        return evaluations.insert(result, profile, policyVersion, selected);
+        var country = countryEvidence.assess(vacancy, source, profile.profile().workCountry());
+        evaluations.recordCountryEvidence(id, revision, profile, policyVersion, workId, basis,
+                country.status(), country.evidence());
+        return created;
     }
 
     private VacancyEvaluationDTO current(long id, LoadedProfileDTO profile, String policyVersion,

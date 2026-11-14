@@ -92,7 +92,7 @@ Phase 6 is three bounded increments. **6A** produces a reproducible diagnostic v
 
 Phase 6A also requires country-specific work-eligibility evidence: a Berlin vacancy without evidence of permanent work from Austria must not be an AT recommendation. The later result email goes out after every run but lists only new or materially changed opportunities; the full current shortlist stays on the protected page. Preserve original exception causes in `StartupConnectionRetry`. Reassess and document residual CVE-2026-82560 at the next planned image update. These follow-ups do not reopen Phase 5.
 
-Phase 6A.1 prepares the [protected read-only vacancy page](docs/PHASE_6A_PAGE.md) for DE/AT stored shortlists. A later 6A increment will replace the two country emails with one short result email after **every** scheduled run, including zero-new-opportunity runs, with separate DE/AT counts and links to that page. Error alerts remain separate. This does not change the Phase 5 closure record or implement email changes in 6A.1.
+Phase 6A.1 deployed the [protected read-only vacancy page](docs/PHASE_6A_PAGE.md): owner sign-in and a later vacancy read worked, while an initial read failed for an undetermined reason. Phase 6A.2 locally prepares source/profile yield diagnostics and conservative, persisted country evidence for page/report recommendations; AWS verification remains pending. A later 6A increment will replace the two country emails with one short result email after **every** scheduled run, including zero-new-opportunity runs, with separate DE/AT counts and links to that page. Error alerts remain separate. These increments do not change the Phase 5 closure record.
 
 ## 7. Small PRs
 
