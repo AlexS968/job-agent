@@ -12,14 +12,20 @@
   <button id="signout" hidden>Sign out</button>
   <nav hidden id="profiles" aria-label="Work country"><button data-profile="alex-de" aria-pressed="true">Germany</button>
     <button data-profile="alex-at" aria-pressed="false">Austria</button></nav>
+  <section id="quality-section" aria-labelledby="quality-heading" hidden>
+    <h2 id="quality-heading">Why are there few opportunities?</h2>
+    <p id="quality-state" role="status"></p>
+    <button id="quality-retry" hidden>Retry explanation</button>
+    <details><summary>See counts, evidence and examples</summary><div id="quality-details"></div></details>
+  </section>
   <h2 id="selected-country">Germany opportunities</h2>
   <p id="state" role="status">Sign in to view vacancies.</p>
   <button id="retry" hidden>Retry this read</button>
   <div id="items"></div>
   <button id="more" hidden>More</button>
-  <section aria-labelledby="yield-heading">
+  <section id="yield-section" aria-labelledby="yield-heading" hidden>
     <h2 id="yield-heading">Source and profile diagnostic</h2>
-    <p>All stored observations from currently active sources. Germany and Austria counts overlap and must not be added as distinct vacancies. Loss categories can also overlap. Unknown conditions are separate from exclusions.</p>
+    <p>Selected country only. All stored observations from currently active sources; source counts can overlap. Unknown conditions are separate from exclusions.</p>
     <p id="yield-state" role="status">Sign in to view source counts.</p>
     <button id="yield-retry" hidden>Retry source counts</button>
     <div id="yield-items"></div>
