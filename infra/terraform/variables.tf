@@ -46,6 +46,26 @@ variable "page_reader_secret_arn" {
   }
 }
 
+variable "enable_vacancy_feedback" {
+  description = "Opt in to the owner-only feedback write route after its dedicated database role and secret are reviewed."
+  type        = bool
+  default     = false
+  validation {
+    condition     = !var.enable_vacancy_feedback || (var.enable_vacancy_page && var.page_access_enabled && var.enable_data_api)
+    error_message = "Feedback requires the protected page and Data API."
+  }
+}
+
+variable "page_feedback_secret_arn" {
+  description = "Existing Secrets Manager secret for the INSERT-only feedback database role; values stay outside Terraform."
+  type        = string
+  default     = null
+  validation {
+    condition     = !var.enable_vacancy_feedback || (var.page_feedback_secret_arn != null && can(regex("^arn:aws:secretsmanager:us-east-1:[0-9]{12}:secret:", var.page_feedback_secret_arn)))
+    error_message = "Enabled feedback requires its dedicated writer secret ARN."
+  }
+}
+
 variable "availability_zones" {
   description = "Two account-mapped us-east-1 AZ names that support Aurora PostgreSQL 17.11 db.serverless."
   type        = list(string)

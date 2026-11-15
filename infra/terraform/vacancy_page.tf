@@ -125,11 +125,12 @@ resource "aws_lambda_function" "vacancy_page" {
   memory_size      = 128
   environment {
     variables = {
-      DB_CLUSTER_ARN       = aws_rds_cluster.db.arn
-      DB_READER_SECRET_ARN = var.page_reader_secret_arn
-      COGNITO_CLIENT_ID    = aws_cognito_user_pool_client.page[0].id
-      COGNITO_DOMAIN       = "https://${aws_cognito_user_pool_domain.page[0].domain}.auth.${var.aws_region}.amazoncognito.com"
-      PAGE_URL             = "${aws_apigatewayv2_api.page[0].api_endpoint}/"
+      DB_CLUSTER_ARN        = aws_rds_cluster.db.arn
+      DB_READER_SECRET_ARN  = var.page_reader_secret_arn
+      COGNITO_CLIENT_ID     = aws_cognito_user_pool_client.page[0].id
+      COGNITO_DOMAIN        = "https://${aws_cognito_user_pool_domain.page[0].domain}.auth.${var.aws_region}.amazoncognito.com"
+      PAGE_URL              = "${aws_apigatewayv2_api.page[0].api_endpoint}/"
+      PAGE_FEEDBACK_ENABLED = tostring(var.enable_vacancy_feedback)
     }
   }
   depends_on = [aws_iam_role_policy.vacancy_page, aws_cloudwatch_log_group.vacancy_page]
@@ -180,6 +181,81 @@ resource "aws_apigatewayv2_route" "vacancy_yield" {
   authorization_type   = "JWT"
   authorizer_id        = aws_apigatewayv2_authorizer.page[0].id
   authorization_scopes = ["openid"]
+}
+
+resource "aws_cloudwatch_log_group" "vacancy_feedback" {
+  count             = var.enable_vacancy_feedback ? 1 : 0
+  name              = "/aws/lambda/${var.name_prefix}-vacancy-feedback"
+  retention_in_days = 7
+}
+
+resource "aws_iam_role" "vacancy_feedback" {
+  count = var.enable_vacancy_feedback ? 1 : 0
+  name  = "${var.name_prefix}-vacancy-feedback"
+  assume_role_policy = jsonencode({
+    Version   = "2012-10-17"
+    Statement = [{ Effect = "Allow", Action = "sts:AssumeRole", Principal = { Service = "lambda.amazonaws.com" } }]
+  })
+}
+
+resource "aws_iam_role_policy" "vacancy_feedback" {
+  count = var.enable_vacancy_feedback ? 1 : 0
+  name  = "write-owner-feedback"
+  role  = aws_iam_role.vacancy_feedback[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      { Effect = "Allow", Action = ["rds-data:ExecuteStatement"], Resource = aws_rds_cluster.db.arn },
+      { Effect = "Allow", Action = ["secretsmanager:GetSecretValue"], Resource = var.page_feedback_secret_arn },
+      { Effect = "Allow", Action = ["logs:CreateLogStream", "logs:PutLogEvents"], Resource = "${aws_cloudwatch_log_group.vacancy_feedback[0].arn}:*" }
+    ]
+  })
+}
+
+resource "aws_lambda_function" "vacancy_feedback" {
+  count            = var.enable_vacancy_feedback ? 1 : 0
+  function_name    = "${var.name_prefix}-vacancy-feedback"
+  role             = aws_iam_role.vacancy_feedback[0].arn
+  filename         = data.archive_file.vacancy_page[0].output_path
+  source_code_hash = data.archive_file.vacancy_page[0].output_base64sha256
+  handler          = "handler.handler"
+  runtime          = "python3.12"
+  timeout          = 30
+  memory_size      = 128
+  environment {
+    variables = {
+      DB_CLUSTER_ARN         = aws_rds_cluster.db.arn
+      DB_FEEDBACK_SECRET_ARN = var.page_feedback_secret_arn
+    }
+  }
+  depends_on = [aws_iam_role_policy.vacancy_feedback, aws_cloudwatch_log_group.vacancy_feedback]
+}
+
+resource "aws_apigatewayv2_integration" "vacancy_feedback" {
+  count                  = var.enable_vacancy_feedback ? 1 : 0
+  api_id                 = aws_apigatewayv2_api.page[0].id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.vacancy_feedback[0].invoke_arn
+  payload_format_version = "2.0"
+}
+
+resource "aws_apigatewayv2_route" "vacancy_feedback" {
+  count                = var.enable_vacancy_feedback ? 1 : 0
+  api_id               = aws_apigatewayv2_api.page[0].id
+  route_key            = "POST /feedback"
+  target               = "integrations/${aws_apigatewayv2_integration.vacancy_feedback[0].id}"
+  authorization_type   = "JWT"
+  authorizer_id        = aws_apigatewayv2_authorizer.page[0].id
+  authorization_scopes = ["openid"]
+}
+
+resource "aws_lambda_permission" "vacancy_feedback" {
+  count         = var.enable_vacancy_feedback ? 1 : 0
+  statement_id  = "AllowOwnerFeedbackHttpApi"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.vacancy_feedback[0].function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.page[0].execution_arn}/*/POST/feedback"
 }
 
 resource "aws_apigatewayv2_stage" "page" {

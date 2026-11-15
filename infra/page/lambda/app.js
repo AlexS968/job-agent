@@ -48,8 +48,76 @@ function line(label, values) {
   p.textContent = `${label}: ${values.length ? values.join(", ").replaceAll("_", " ").toLowerCase() : "none recorded"}`;
   return p;
 }
+const decisionReasons = {
+  INTERESTED: [],
+  NOT_INTERESTED: ["ROLE_MISMATCH", "SENIORITY", "LOCATION_OR_WORK_COUNTRY", "REMOTE_POLICY",
+    "SALARY", "TECH_STACK", "COMPANY_OR_BUSINESS_MODEL", "OTHER"],
+  NEED_MORE_INFO: ["WORK_COUNTRY_UNCONFIRMED", "SALARY_UNKNOWN", "REMOTE_POLICY_UNKNOWN",
+    "ROLE_DETAILS_UNKNOWN", "OTHER"]
+};
+const readable = value => value.replaceAll("_", " ").toLowerCase();
+function feedbackEditor(item, selectedProfile) {
+  const section = document.createElement("section");
+  const heading = document.createElement("h3"); heading.textContent = "Your decision";
+  const latest = document.createElement("p");
+  latest.textContent = item.ownerDecision ?
+    `${readable(item.ownerDecision)}${item.ownerReason ? " — " + readable(item.ownerReason) : ""}` +
+      (item.feedbackEvaluationId !== item.evaluationId ? " (recorded for an earlier evaluation)" : "") :
+    "No owner decision recorded.";
+  section.append(heading, latest);
+  if (!config.feedbackEnabled) return section;
+  const choice = document.createElement("select");
+  const reason = document.createElement("select");
+  const button = document.createElement("button"); button.type = "button"; button.textContent = "Save decision";
+  const status = document.createElement("p"); status.setAttribute("role", "status");
+  const choiceLabel = document.createElement("label"); choiceLabel.textContent = "Decision "; choiceLabel.append(choice);
+  const reasonLabel = document.createElement("label"); reasonLabel.textContent = "Reason "; reasonLabel.append(reason);
+  for (const value of ["", ...Object.keys(decisionReasons)]) {
+    const option = document.createElement("option"); option.value = value;
+    option.textContent = value ? readable(value) : "Choose a decision"; choice.append(option);
+  }
+  let requestId;
+  function updateReasons() {
+    requestId = undefined;
+    reason.replaceChildren();
+    for (const value of ["", ...(decisionReasons[choice.value] || [])]) {
+      const option = document.createElement("option"); option.value = value;
+      option.textContent = value ? readable(value) : "Choose a reason"; reason.append(option);
+    }
+    reasonLabel.hidden = choice.value === "INTERESTED";
+  }
+  choice.addEventListener("change", updateReasons);
+  reason.addEventListener("change", () => { requestId = undefined; });
+  updateReasons();
+  button.addEventListener("click", async () => {
+    if (!choice.value || (choice.value !== "INTERESTED" && !reason.value)) {
+      status.textContent = "Choose a decision and its reason."; return;
+    }
+    requestId ||= crypto.randomUUID();
+    button.disabled = true; status.textContent = "Saving decision…";
+    try {
+      const response = await fetch("/feedback", {method: "POST", cache: "no-store",
+        headers: {Authorization: "Bearer " + token, "Content-Type": "application/json"},
+        body: JSON.stringify({requestId, profile: selectedProfile, vacancyId: item.vacancyId,
+          evaluationId: item.evaluationId, profileVersion: item.profileVersion, revision: item.revision,
+          decision: choice.value, reason: choice.value === "INTERESTED" ? null : reason.value})});
+      if (!response.ok) throw Error(response.status === 409 ?
+        "This evaluation changed or the request was reused. Reload before another decision." :
+        "Decision was not confirmed. Retry the same selection; it will not create a duplicate.");
+      const saved = await response.json();
+      latest.textContent = `${readable(saved.decision)}` +
+        (saved.reason ? ` — ${readable(saved.reason)}` : "");
+      status.textContent = "Decision saved. Earlier decisions remain in history.";
+      requestId = undefined;
+    } catch (error) { status.textContent = error.message; }
+    finally { button.disabled = false; }
+  });
+  section.append(choiceLabel, reasonLabel, button, status);
+  return section;
+}
 async function load() {
-  const country = profile === "alex-de" ? "Germany" : "Austria";
+  const selectedProfile = profile, requestedOffset = offset;
+  const country = selectedProfile === "alex-de" ? "Germany" : "Austria";
   document.querySelector("#selected-country").textContent = `${country} opportunities`;
   document.querySelectorAll("[data-profile]").forEach(button =>
     button.setAttribute("aria-pressed", String(button.dataset.profile === profile)));
@@ -57,12 +125,13 @@ async function load() {
   more.hidden = true;
   retry.hidden = true;
   try {
-    const query = new URLSearchParams({profile,offset:String(offset),limit:"20"});
+    const query = new URLSearchParams({profile:selectedProfile,offset:String(requestedOffset),limit:"20"});
     const response = await fetch("/vacancies?" + query, {headers:{Authorization:"Bearer " + token},cache:"no-store"});
     if (response.status === 401 || response.status === 403) throw Error("Access expired or denied. Sign in again.");
     if (!response.ok) throw Error("Vacancies could not be loaded. Please retry later.");
     const page = await response.json();
-    if (offset === 0) items.replaceChildren();
+    if (selectedProfile !== profile || requestedOffset !== offset) return;
+    if (requestedOffset === 0) items.replaceChildren();
     for (const item of page.items) {
       const card = document.createElement("article");
       const heading = document.createElement("h2");
@@ -71,13 +140,14 @@ async function load() {
       heading.append(link); card.append(heading);
       const employer = document.createElement("p"); employer.textContent = item.employer || "Employer unknown";
       card.append(employer, line("Evaluation", [item.decision]), line("Reasons", item.reasons),
-        line("Needs verification", item.unknowns));
+        line("Needs verification", item.unknowns), feedbackEditor(item, selectedProfile));
       items.append(card);
     }
-    state.textContent = items.children.length ? `Showing ${items.children.length} ${profile === "alex-de" ? "Germany" : "Austria"} opportunities.` :
+    state.textContent = items.children.length ? `Showing ${items.children.length} ${country} opportunities.` :
       "No currently confirmed recommendations in this stored sample. See source counts and unknown conditions below.";
     if (page.nextOffset !== null) { offset = page.nextOffset; more.hidden = false; }
   } catch (error) {
+    if (selectedProfile !== profile) return;
     state.textContent = `${country} vacancies could not be loaded. ${error.message}`;
     retry.hidden = false;
   }

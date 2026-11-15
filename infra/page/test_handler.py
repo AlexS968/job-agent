@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 import types
 import unittest
+import uuid
 from unittest.mock import patch
 
 sys.modules.setdefault("boto3", types.SimpleNamespace(client=lambda _: None))
@@ -26,8 +27,9 @@ def row(url="https://jobs.example.test/posting/1", reasons=None, unknowns=None):
     values = [1, 10, "Senior Java Engineer", "Example Employer", url, "NEEDS_REVIEW", "PREFERRED",
               json.dumps(reasons or ["ROLE_PREFERRED"]),
               json.dumps(unknowns or ["WORK_ELIGIBILITY_UNCONFIRMED", "SALARY_UNKNOWN"]),
-              "v1", "a" * 64]
-    return [{"longValue": v} if isinstance(v, int) else {"stringValue": v} for v in values]
+              "v1", "a" * 64, None, None, None, None]
+    return [{"isNull": True} if v is None else {"longValue": v} if isinstance(v, int)
+            else {"stringValue": v} for v in values]
 
 
 class FakeDataApi:
@@ -116,6 +118,70 @@ class PageTest(unittest.TestCase):
         self.assertEqual(1, result["nextOffset"])
         self.assertEqual(2, db.calls[0]["parameters"][0]["value"]["longValue"])
         self.assertIn("active", result["window"])
+
+    def feedback_event(self, **changes):
+        values = {"requestId": str(uuid.uuid4()), "profile": "alex-de", "vacancyId": 10,
+                  "evaluationId": 1, "profileVersion": "v1", "revision": "a" * 64,
+                  "decision": "INTERESTED", "reason": None}
+        values.update(changes)
+        return {**event(), "rawPath": "/feedback", "body": json.dumps(values),
+                "requestContext": {**event()["requestContext"], "http": {"method": "POST"}}}
+
+    def test_feedback_auth_and_decision_reason_contract(self):
+        db = FakeDataApi()
+        denied = self.feedback_event()
+        denied["requestContext"]["authorizer"]["jwt"]["claims"] = {}
+        self.assertEqual(403, page.write_feedback(denied, db)["statusCode"])
+        self.assertEqual([], db.calls)
+        valid = self.feedback_event(decision="NOT_INTERESTED", reason="SALARY")
+        self.assertEqual("NOT_INTERESTED", page.feedback_input(valid)["decision"])
+        for wrong in (self.feedback_event(decision="NOT_INTERESTED", reason=None),
+                      self.feedback_event(decision="NEED_MORE_INFO", reason="TECH_STACK"),
+                      self.feedback_event(decision="INTERESTED", reason="OTHER"),
+                      self.feedback_event(profile="other"),
+                      self.feedback_event(vacancyId=True),
+                      self.feedback_event(revision="wrong")):
+            self.assertEqual(400, page.write_feedback(wrong, db)["statusCode"])
+        self.assertEqual([], db.calls)
+
+    def test_feedback_request_is_parameterized_and_retry_uses_same_identity(self):
+        request = self.feedback_event(decision="NEED_MORE_INFO", reason="SALARY_UNKNOWN")
+        payload = json.loads(request["body"])
+        values = [3, 10, 1, "alex-de", "v1", "a" * 64, "NEED_MORE_INFO", "SALARY_UNKNOWN"]
+        record = [{"longValue": value} if isinstance(value, int) else {"stringValue": value}
+                  for value in values]
+        class FeedbackDb:
+            def __init__(self):
+                self.calls = []
+            def execute_statement(self, **kwargs):
+                self.calls.append(kwargs)
+                if len(self.calls) % 2:
+                    return {"numberOfRecordsUpdated": 1 if len(self.calls) == 1 else 0}
+                return {"records": [record]}
+        db = FeedbackDb()
+        with patch.dict(os.environ, {"DB_FEEDBACK_SECRET_ARN": "writer-secret-test"}):
+            first = page.write_feedback(request, db)
+            second = page.write_feedback(request, db)
+        self.assertEqual(201, first["statusCode"])
+        self.assertEqual(200, second["statusCode"])
+        self.assertEqual(3, json.loads(first["body"])["feedbackId"])
+        self.assertEqual(payload["requestId"], db.calls[0]["parameters"][0]["value"]["stringValue"])
+        self.assertEqual("writer-secret-test", db.calls[0]["secretArn"])
+        self.assertNotIn("alex-de", db.calls[0]["sql"])
+        changed = {**request, "body": json.dumps({**payload, "decision": "INTERESTED", "reason": None})}
+        with patch.dict(os.environ, {"DB_FEEDBACK_SECRET_ARN": "writer-secret-test"}):
+            self.assertEqual(409, page.write_feedback(changed, db)["statusCode"])
+
+    def test_feedback_stale_or_failed_write_never_claims_success(self):
+        request = self.feedback_event()
+        class StaleDb:
+            def execute_statement(self, **kwargs):
+                return {"numberOfRecordsUpdated": 0} if "INSERT INTO" in kwargs["sql"] else {"records": []}
+        with patch.dict(os.environ, {"DB_FEEDBACK_SECRET_ARN": "writer-secret-test"}):
+            self.assertEqual(409, page.write_feedback(request, StaleDb())["statusCode"])
+            failed = page.write_feedback(request, FakeDataApi(fail=True))
+        self.assertEqual(503, failed["statusCode"])
+        self.assertNotIn("synthetic secret", failed["body"])
 
 
 if __name__ == "__main__":
