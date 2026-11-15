@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import uuid
 from pathlib import Path
 import re
 import subprocess
@@ -20,6 +21,10 @@ spec.loader.exec_module(page)
 spec = importlib.util.spec_from_file_location("reader_grants", Path(__file__).with_name("prepare_reader.py"))
 reader = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(reader)
+sys.modules["prepare_reader"] = reader
+spec = importlib.util.spec_from_file_location("feedback_grants", Path(__file__).with_name("prepare_feedback.py"))
+feedback = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(feedback)
 
 
 def safe_error(stderr):
@@ -178,6 +183,7 @@ CREATE ROLE job_agent_page_reader LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NORE
         self.sql("CREATE ROLE job_agent_migrator LOGIN; GRANT USAGE ON SCHEMA public TO job_agent_migrator;")
         for table in reader.TABLE_COLUMNS:
             self.sql(f"ALTER TABLE public.{table} OWNER TO job_agent_migrator;")
+        self.sql("ALTER TABLE public.review_feedback OWNER TO job_agent_migrator;")
         for grant in reader.GRANTS[:2]:
             self.sql(grant + ";")
         for grant in reader.GRANTS[2:]:
@@ -186,6 +192,9 @@ CREATE ROLE job_agent_page_reader LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NORE
         reader.validate_role(after)
         self.assertEqual(reader.EXPECTED_COLUMNS, set(after["selectedColumns"]))
         self.assertEqual(set(reader.TABLE_COLUMNS), set(json.loads(self.sql(reader.OWNER_SQL + ";")[0])))
+        self.sql("SET ROLE job_agent_migrator; GRANT SELECT "
+                 "(id, vacancy_id, profile_id, evaluation_id, owner_decision, owner_reason, recorded_at) "
+                 "ON public.review_feedback TO job_agent_page_reader;")
         def query(profile, limit, offset):
             statement = page.SQL.replace(":profile", f"'{profile}'").replace(":limit", str(limit))
             statement = statement.replace(":offset", str(offset))
@@ -197,6 +206,48 @@ CREATE ROLE job_agent_page_reader LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NORE
         self.assertIn("Java Engineer", de[0])
         self.assertIn("Backend Engineer", at[0])
         self.assertEqual(0, len(query("alex-de", 1, 1)))
+        self.sql("CREATE ROLE job_agent_feedback_writer LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION; "
+                 "GRANT CONNECT ON DATABASE job_agent TO job_agent_feedback_writer; "
+                 "GRANT USAGE ON SCHEMA public TO job_agent_feedback_writer;")
+        for table, columns in feedback.WRITER_SELECT.items():
+            self.sql("SET ROLE job_agent_migrator; GRANT SELECT (" + ", ".join(columns) +
+                     f") ON public.{table} TO job_agent_feedback_writer;")
+        self.sql("SET ROLE job_agent_migrator; GRANT INSERT (" + ", ".join(feedback.WRITER_INSERT) +
+                 ") ON public.review_feedback TO job_agent_feedback_writer; "
+                 "GRANT USAGE ON SEQUENCE public.review_feedback_id_seq TO job_agent_feedback_writer;")
+
+        def submit(evaluation, vacancy, profile, decision, reason, request_id=None, version="v1"):
+            identity = request_id or str(uuid.uuid4())
+            statement = page.INSERT_FEEDBACK_SQL
+            for name, value in {"request": f"'{identity}'", "profile": f"'{profile}'",
+                                "vacancy": str(vacancy), "evaluation": str(evaluation),
+                                "version": f"'{version}'", "revision": f"'{('a' if vacancy == 1 else 'b') * 64}'",
+                                "decision": f"'{decision}'", "reason": "NULL" if reason is None else f"'{reason}'"}.items():
+                statement = statement.replace(":" + name, value)
+            self.sql("SET ROLE job_agent_feedback_writer; " + statement + ";")
+            return identity
+
+        request = submit(1, 1, "alex-de", "INTERESTED", None)
+        submit(1, 1, "alex-de", "INTERESTED", None, request)
+        self.assertEqual(["1"], self.sql("SELECT count(*) FROM review_feedback;"))
+        submit(1, 1, "alex-at", "INTERESTED", None)  # Forged profile/evaluation combination.
+        self.assertEqual(["1"], self.sql("SELECT count(*) FROM review_feedback;"))
+        submit(1, 1, "alex-de", "NOT_INTERESTED", "TECH_STACK")
+        submit(3, 2, "alex-at", "NEED_MORE_INFO", "SALARY_UNKNOWN")
+        self.assertEqual(["3"], self.sql("SELECT count(*) FROM review_feedback;"))
+        with self.assertRaisesRegex(AssertionError, "review_feedback_reason"):
+            self.sql("SET ROLE job_agent_feedback_writer; INSERT INTO review_feedback "
+                     "(request_id,vacancy_id,evaluation_id,profile_id,profile_version,"
+                     "vacancy_revision,owner_decision,owner_reason) VALUES "
+                     f"('{uuid.uuid4()}',1,1,'alex-de','v1',repeat('a',64),'INTERESTED','SALARY');")
+        self.assertEqual(["3"], self.sql("SELECT count(*) FROM review_feedback;"))
+        self.assertIn("NOT_INTERESTED", query("alex-de", 20, 0)[0])
+        self.assertIn("NEED_MORE_INFO", query("alex-at", 20, 0)[0])
+        self.assertEqual(["false", "false", "false"], self.sql("SELECT "
+            "has_table_privilege('job_agent_page_reader','public.review_feedback','INSERT')::text, "
+            "has_table_privilege('job_agent_feedback_writer','public.review_feedback','UPDATE')::text, "
+            "has_column_privilege('job_agent_feedback_writer','public.source_items','raw_payload','SELECT')::text;"
+            )[0].split("|"))
         diagnostic = self.sql("SET ROLE job_agent_page_reader; " +
                               page.YIELD_SQL.replace(":limit", "20").replace(":offset", "0") + ";")
         self.assertEqual(2, len(diagnostic))
@@ -215,6 +266,9 @@ UPDATE vacancy_evaluations SET country_eligibility = 'CONFIRMED'
         updated = query("alex-de", 20, 0)
         self.assertEqual(1, len(updated))  # Do not mix v1 into a partially evaluated v2 shortlist.
         self.assertIn("v2", updated[0])
+        self.assertIn("NOT_INTERESTED", updated[0])  # Latest owner judgment remains visible after reevaluation.
+        submit(1, 1, "alex-de", "INTERESTED", None)  # Historical v1 is no longer the displayed evaluation.
+        self.assertEqual(["3"], self.sql("SELECT count(*) FROM review_feedback;"))
         self.sql("""
 INSERT INTO verified_source_registry(platform,region,source_id,employer_domain,employer_name,
  official_page_url,evidence_url,evidence_hash,verified_at,status,active)

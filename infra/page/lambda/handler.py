@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 from urllib.parse import urlsplit
+import uuid
 
 import boto3
 
@@ -11,7 +12,7 @@ MAX_PAGE = 20
 MAX_OFFSET = 1000
 MAX_BODY = 64_000
 
-SQL = """
+CURRENT_CTE = """
 WITH current_profile AS (
   SELECT profile_id, profile_version, criteria_hash,
          row_number() OVER (PARTITION BY profile_id ORDER BY first_seen_at DESC,
@@ -46,13 +47,79 @@ WITH current_profile AS (
     AND ((v.source_namespace LIKE 'greenhouse:%' AND si.input_version = 'greenhouse-board-v1')
       OR (v.source_namespace LIKE 'lever:%' AND si.input_version = 'lever-postings-v1'))
 )
-SELECT id, vacancy_id, title, employer, original_url, decision, role_classification,
-       reasons, unknowns, profile_version, vacancy_revision
-FROM current_evaluation WHERE evaluation_rank = 1
-ORDER BY CASE decision WHEN 'SUITABLE' THEN 0 ELSE 1 END, preference_rank,
-         CASE role_classification WHEN 'PREFERRED' THEN 0 ELSE 1 END, vacancy_id
+"""
+
+SQL = CURRENT_CTE + """
+SELECT ce.id, ce.vacancy_id, ce.title, ce.employer, ce.original_url, ce.decision,
+       ce.role_classification, ce.reasons, ce.unknowns, ce.profile_version, ce.vacancy_revision,
+       f.id, f.owner_decision, f.owner_reason, f.evaluation_id
+FROM current_evaluation ce
+LEFT JOIN LATERAL (
+  SELECT id, owner_decision, owner_reason, evaluation_id FROM review_feedback
+  WHERE vacancy_id = ce.vacancy_id AND profile_id = :profile ORDER BY id DESC LIMIT 1
+) f ON TRUE
+WHERE ce.evaluation_rank = 1
+ORDER BY CASE ce.decision WHEN 'SUITABLE' THEN 0 ELSE 1 END, ce.preference_rank,
+         CASE ce.role_classification WHEN 'PREFERRED' THEN 0 ELSE 1 END, ce.vacancy_id
 LIMIT :limit OFFSET :offset
 """
+
+FEEDBACK_CTE = """
+WITH current_profile AS (
+  SELECT profile_id, profile_version, criteria_hash,
+         row_number() OVER (PARTITION BY profile_id ORDER BY first_seen_at DESC,
+                            profile_version DESC) AS profile_rank
+  FROM evaluation_profiles WHERE profile_id = :profile
+), current_source AS (
+  SELECT vs.vacancy_id, si.id AS source_item_id,
+         row_number() OVER (PARTITION BY vs.vacancy_id ORDER BY si.id DESC) AS source_rank
+  FROM vacancy_sources vs JOIN source_items si ON si.id = vs.source_item_id
+  JOIN vacancies v ON v.id = vs.vacancy_id
+  WHERE si.content_digest IS NOT DISTINCT FROM v.content_digest
+), current_evaluation AS (
+  SELECT e.id, e.vacancy_id, e.profile_version, e.vacancy_revision,
+         row_number() OVER (PARTITION BY e.vacancy_id ORDER BY e.evaluated_at DESC,
+                           e.id DESC) AS evaluation_rank
+  FROM vacancy_evaluations e
+  JOIN current_profile cp ON cp.profile_id = e.profile_id AND cp.profile_version = e.profile_version
+      AND cp.criteria_hash = e.criteria_hash AND cp.profile_rank = 1
+  JOIN current_source cs ON cs.vacancy_id = e.vacancy_id
+      AND cs.source_item_id = e.source_item_id AND cs.source_rank = 1
+  JOIN vacancies v ON v.id = e.vacancy_id
+  JOIN source_items si ON si.id = e.source_item_id
+  WHERE e.policy_version = 'rules-v1'
+    AND e.country_evidence_policy = 'country-v1'
+    AND e.country_eligibility = 'CONFIRMED'
+    AND e.decision IN ('SUITABLE', 'NEEDS_REVIEW')
+    AND e.role_classification IN ('PREFERRED', 'RESERVE')
+    AND ((v.source_namespace LIKE 'greenhouse:%' AND si.input_version = 'greenhouse-board-v1')
+      OR (v.source_namespace LIKE 'lever:%' AND si.input_version = 'lever-postings-v1'))
+)
+"""
+
+INSERT_FEEDBACK_SQL = FEEDBACK_CTE + """
+INSERT INTO review_feedback(request_id, vacancy_id, evaluation_id, profile_id,
+                            profile_version, vacancy_revision, owner_decision, owner_reason)
+SELECT CAST(:request AS uuid), ce.vacancy_id, ce.id, :profile,
+       ce.profile_version, ce.vacancy_revision, :decision, :reason
+FROM current_evaluation ce
+WHERE ce.evaluation_rank = 1 AND ce.id = :evaluation AND ce.vacancy_id = :vacancy
+  AND ce.profile_version = :version AND ce.vacancy_revision = :revision
+ON CONFLICT (request_id) DO NOTHING
+"""
+
+READ_FEEDBACK_SQL = """
+SELECT id, vacancy_id, evaluation_id, profile_id, profile_version, vacancy_revision,
+       owner_decision, owner_reason FROM review_feedback WHERE request_id = CAST(:request AS uuid)
+"""
+
+REASONS = {
+    "INTERESTED": {None},
+    "NOT_INTERESTED": {"ROLE_MISMATCH", "SENIORITY", "LOCATION_OR_WORK_COUNTRY",
+                       "REMOTE_POLICY", "SALARY", "TECH_STACK", "COMPANY_OR_BUSINESS_MODEL", "OTHER"},
+    "NEED_MORE_INFO": {"WORK_COUNTRY_UNCONFIRMED", "SALARY_UNKNOWN", "REMOTE_POLICY_UNKNOWN",
+                       "ROLE_DETAILS_UNKNOWN", "OTHER"},
+}
 
 YIELD_SQL = """
 WITH active_sources AS (
@@ -168,7 +235,8 @@ def integer(value, low, high):
 def decode_row(row):
     values = [cell_value(cell) for cell in row]
     keys = ("evaluationId", "vacancyId", "title", "employer", "url", "decision",
-            "roleClassification", "reasons", "unknowns", "profileVersion", "revision")
+            "roleClassification", "reasons", "unknowns", "profileVersion", "revision",
+            "feedbackId", "ownerDecision", "ownerReason", "feedbackEvaluationId")
     item = dict(zip(keys, values))
     url = urlsplit(item["url"] or "")
     if url.scheme != "https" or not url.hostname or url.username or url.password:
@@ -248,6 +316,87 @@ def read_yield(event, client):
         return response(503, {"error": "Diagnostics are temporarily unavailable"})
 
 
+def feedback_input(event):
+    body = event.get("body")
+    if (event.get("isBase64Encoded") or not isinstance(body, str)
+            or len(body.encode("utf-8")) > 2048):
+        raise ValueError("Invalid feedback request")
+
+    def unique_pairs(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("Duplicate feedback field")
+            result[key] = value
+        return result
+
+    data = json.loads(body, object_pairs_hook=unique_pairs)
+    if not isinstance(data, dict) or set(data) != {
+            "requestId", "profile", "vacancyId", "evaluationId", "profileVersion",
+            "revision", "decision", "reason"}:
+        raise ValueError("Invalid feedback fields")
+    try:
+        request_id = str(uuid.UUID(data["requestId"], version=4))
+    except (ValueError, TypeError, AttributeError) as error:
+        raise ValueError("Invalid feedback request identity") from error
+    if data["requestId"] != request_id or data["profile"] not in ("alex-de", "alex-at"):
+        raise ValueError("Invalid feedback identity")
+    if (type(data["vacancyId"]) is not int or data["vacancyId"] < 1
+            or type(data["evaluationId"]) is not int or data["evaluationId"] < 1
+            or not isinstance(data["profileVersion"], str)
+            or not 1 <= len(data["profileVersion"]) <= 40
+            or not all(char.isalnum() or char in "._-" for char in data["profileVersion"])
+            or not isinstance(data["revision"], str)
+            or len(data["revision"]) != 64
+            or any(char not in "0123456789abcdef" for char in data["revision"])
+            or data["decision"] not in REASONS
+            or data["reason"] not in REASONS[data["decision"]]):
+        raise ValueError("Invalid feedback decision or evaluation identity")
+    return data
+
+
+def parameter(name, value):
+    if value is None:
+        encoded = {"isNull": True}
+    elif type(value) is int:
+        encoded = {"longValue": value}
+    else:
+        encoded = {"stringValue": value}
+    return {"name": name, "value": encoded}
+
+
+def write_feedback(event, client):
+    if not authorized(event):
+        return response(403, {"error": "Owner access required"})
+    try:
+        data = feedback_input(event)
+    except (ValueError, TypeError, UnicodeError):
+        return response(400, {"error": "Choose a valid decision and reason for this evaluation"})
+    request = parameter("request", data["requestId"])
+    try:
+        connection = {"resourceArn": os.environ["DB_CLUSTER_ARN"],
+                      "secretArn": os.environ["DB_FEEDBACK_SECRET_ARN"], "database": "job_agent"}
+        inserted = client.execute_statement(**connection, sql=INSERT_FEEDBACK_SQL, parameters=[
+            request, parameter("profile", data["profile"]),
+            parameter("vacancy", data["vacancyId"]), parameter("evaluation", data["evaluationId"]),
+            parameter("version", data["profileVersion"]), parameter("revision", data["revision"]),
+            parameter("decision", data["decision"]), parameter("reason", data["reason"])])
+        found = client.execute_statement(**connection, sql=READ_FEEDBACK_SQL, parameters=[request])
+        records = found.get("records", [])
+        if len(records) != 1:
+            return response(409, {"error": "Evaluation is no longer current; reload the page"})
+        values = [cell_value(cell) for cell in records[0]]
+        expected = [data[key] for key in ("vacancyId", "evaluationId", "profile", "profileVersion",
+                                           "revision", "decision", "reason")]
+        if values[1:] != expected:
+            return response(409, {"error": "Request identity was already used for another decision"})
+        return response(201 if inserted.get("numberOfRecordsUpdated") == 1 else 200,
+                        {"feedbackId": values[0], "decision": values[6], "reason": values[7],
+                         "evaluationId": values[2]})
+    except Exception:  # Do not log tokens, SQL, vacancy data or database diagnostics.
+        return response(503, {"error": "Decision could not be confirmed; retry the same request"})
+
+
 def handler(event, _context):
     path = event.get("rawPath", "/")
     if path == "/":
@@ -259,9 +408,14 @@ def handler(event, _context):
     if path == "/config":
         return response(200, {"clientId": os.environ["COGNITO_CLIENT_ID"],
                               "domain": os.environ["COGNITO_DOMAIN"],
-                              "redirect": os.environ["PAGE_URL"]})
+                              "redirect": os.environ["PAGE_URL"],
+                              "feedbackEnabled": os.environ.get("PAGE_FEEDBACK_ENABLED") == "true"})
     if path == "/vacancies":
         return read_page(event, boto3.client("rds-data"))
     if path == "/yield":
         return read_yield(event, boto3.client("rds-data"))
+    if path == "/feedback" and event.get("requestContext", {}).get("http", {}).get("method") == "POST":
+        if not authorized(event):
+            return response(403, {"error": "Owner access required"})
+        return write_feedback(event, boto3.client("rds-data"))
     return response(404, {"error": "Not found"})
