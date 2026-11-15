@@ -40,10 +40,11 @@ final class StartupConnectionRetry {
                 FailureKind kind = classify(failure);
                 if (kind != FailureKind.TRANSIENT_CONNECTION) {
                     throw new IllegalStateException("Database startup connection failed without retry: "
-                            + kind.label());
+                            + kind.label(), failure);
                 }
                 if (attempt == MAX_ATTEMPTS) {
-                    throw new IllegalStateException("Database startup connection unavailable after three attempts");
+                    throw new IllegalStateException("Database startup connection unavailable after three attempts",
+                            failure);
                 }
                 Duration delay = Duration.ofSeconds(attempt * 10L);
                 LOGGER.warn("Transient database startup connection failure; retrying after {} seconds (attempt {}/{})",
@@ -52,14 +53,14 @@ final class StartupConnectionRetry {
                     wait.pause(delay);
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
-                    throw new IllegalStateException("Database startup connection retry interrupted");
+                    throw new IllegalStateException("Database startup connection retry interrupted", interrupted);
                 }
                 continue;
             }
             try (established) {
                 return;
             } catch (SQLException closeFailure) {
-                throw new IllegalStateException("Database startup connection could not be closed");
+                throw new IllegalStateException("Database startup connection could not be closed", closeFailure);
             }
         }
     }
