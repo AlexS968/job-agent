@@ -17,6 +17,10 @@ STATE = Path("/tmp/job-agent-scheduled-batch-progress.json" if SCHEDULED
              else "/tmp/job-agent-batch-pipeline-progress.json")
 PROFILE = "job-agent"
 REGION = "us-east-1"
+SCHEDULED_RESULT = re.compile(
+    r"Scheduled result: date=\d{4}-\d{2}-\d{2}, status=PUBLISHED, "
+    r"new_distinct=\d+, new_de=\d+, new_at=\d+, newly_relevant_distinct=\d+\b"
+)
 
 
 def call(args):
@@ -108,14 +112,13 @@ def report(arn, definition, code):
     for attempt in range(7):
         if SCHEDULED:
             events = aws("logs", "filter-log-events", "--log-group-name", options["awslogs-group"],
-                         "--log-stream-names", stream, "--filter-pattern", '"Scheduled report"')
-            published = [event["message"].strip() for event in events.get("events", [])
-                         if "Scheduled report: date=" in event["message"] and "status=PUBLISHED" in event["message"]]
-            de = [line for line in published if "profile=alex-de, status=PUBLISHED" in line]
-            at = [line for line in published if "profile=alex-at, status=PUBLISHED" in line]
-            if de and at:
-                print(de[-1], flush=True)
-                print(at[-1], flush=True)
+                         "--log-stream-names", stream, "--filter-pattern", '"Scheduled result"')
+            published = [match.group() for event in events.get("events", [])
+                         if (match := SCHEDULED_RESULT.search(event.get("message", "")))]
+            if len(published) > 1:
+                raise RuntimeError("Multiple combined result markers; review task logs before rerun")
+            if published:
+                print(published[0], flush=True)
                 return
             if attempt < 6:
                 time.sleep(10)
@@ -132,6 +135,8 @@ def report(arn, definition, code):
             return
         if attempt < 6:
             time.sleep(10)
+    if SCHEDULED:
+        raise RuntimeError("Combined result publication log unavailable; inspect task logs before rerun")
     raise RuntimeError("Batch summary log unavailable; inspect task logs before rerun")
 
 
@@ -223,7 +228,7 @@ def main():
         state["idle_verified"] = True
         save(state)
     if SCHEDULED:
-        print("Two scheduled report publications confirmed by task logs; owner must confirm both emails", flush=True)
+        print("One combined result publication confirmed by task log; owner must confirm the email", flush=True)
     else:
         print("Batch acceptance complete; inspect reported backlog before another invocation", flush=True)
 

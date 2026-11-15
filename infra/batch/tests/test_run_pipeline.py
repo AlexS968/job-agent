@@ -56,22 +56,47 @@ class ScheduledRunnerTest(unittest.TestCase):
                                       {"containerDefinitions": [{"name": "job-agent"}]}, 0)
             self.assertEqual(1, idle.call_count)
 
-    def test_report_requires_both_profile_publications(self):
+    def test_report_accepts_one_combined_publication_after_bounded_polling(self):
         definition = {"containerDefinitions": [{"name": "job-agent", "logConfiguration": {
             "options": {"awslogs-stream-prefix": "batch", "awslogs-group": "/ecs/synthetic"}}}]}
-        with patch.object(runner, "SCHEDULED", True), patch.object(runner, "aws", return_value={
-                "events": [{"message": "Scheduled report: date=2026-11-05, profile=alex-de, status=PUBLISHED, outcome=BACKLOG_REMAINS"},
-                           {"message": "Scheduled report: date=2026-11-05, profile=alex-at, status=PUBLISHED, outcome=NO_NEW_VACANCIES"}]}):
+        marker = ("Scheduled result: date=2026-11-05, status=PUBLISHED, "
+                  "new_distinct=1, new_de=1, new_at=0, newly_relevant_distinct=0")
+        with patch.object(runner, "SCHEDULED", True), patch.object(runner, "aws", side_effect=[
+                {"events": []}, {"events": [{"message": "INFO " + marker}]}]) as aws, \
+                patch.object(runner.time, "sleep") as sleep, \
+                patch("builtins.print") as printed:
             runner.report("arn:aws:ecs:us-east-1:111111111111:task/reviewed/abc", definition, 0)
+        self.assertEqual(2, aws.call_count)
+        self.assertEqual(1, sleep.call_count)
+        self.assertIn('"Scheduled result"', aws.call_args.args)
+        printed.assert_called_once_with(marker, flush=True)
 
-    def test_one_published_profile_is_not_a_successful_scheduled_run(self):
+    def test_legacy_profile_markers_do_not_satisfy_combined_publication(self):
         definition = {"containerDefinitions": [{"name": "job-agent", "logConfiguration": {
             "options": {"awslogs-stream-prefix": "batch", "awslogs-group": "/ecs/synthetic"}}}]}
         with patch.object(runner, "SCHEDULED", True), patch.object(runner, "aws", return_value={
-                "events": [{"message": "Scheduled report: date=2026-11-05, profile=alex-de, status=PUBLISHED, outcome=BACKLOG_REMAINS"}]}), \
-                patch.object(runner.time, "sleep"):
-            with self.assertRaisesRegex(RuntimeError, "summary log unavailable"):
+                "events": [{"message": "Scheduled report: date=2026-11-05, profile=alex-de, status=PUBLISHED"},
+                           {"message": "Scheduled report: date=2026-11-05, profile=alex-at, status=PUBLISHED"}]}), \
+                patch.object(runner.time, "sleep") as sleep:
+            with self.assertRaisesRegex(RuntimeError, "Combined result publication log unavailable"):
                 runner.report("arn:aws:ecs:us-east-1:111111111111:task/reviewed/abc", definition, 0)
+        self.assertEqual(6, sleep.call_count)
+
+    def test_missing_or_duplicate_combined_markers_fail_safely(self):
+        definition = {"containerDefinitions": [{"name": "job-agent", "logConfiguration": {
+            "options": {"awslogs-stream-prefix": "batch", "awslogs-group": "/ecs/synthetic"}}}]}
+        marker = ("Scheduled result: date=2026-11-05, status=PUBLISHED, "
+                  "new_distinct=0, new_de=0, new_at=0, newly_relevant_distinct=0")
+        with patch.object(runner, "SCHEDULED", True), patch.object(runner, "aws", return_value={
+                "events": [{"message": marker}, {"message": marker}]}):
+            with self.assertRaisesRegex(RuntimeError, "Multiple combined result markers"):
+                runner.report("arn:aws:ecs:us-east-1:111111111111:task/reviewed/abc", definition, 0)
+        with patch.object(runner, "SCHEDULED", True), patch.object(runner, "aws", return_value={
+                "events": [{"message": marker.replace("status=PUBLISHED", "status=PREPARED") }]}), \
+                patch.object(runner.time, "sleep") as sleep:
+            with self.assertRaisesRegex(RuntimeError, "Combined result publication log unavailable"):
+                runner.report("arn:aws:ecs:us-east-1:111111111111:task/reviewed/abc", definition, 0)
+        self.assertEqual(6, sleep.call_count)
 
 
 if __name__ == "__main__":
