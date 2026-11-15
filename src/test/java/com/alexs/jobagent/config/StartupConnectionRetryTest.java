@@ -42,13 +42,15 @@ class StartupConnectionRetryTest {
     @Test
     void repeatedTransientFailuresStopAfterThreeAttempts() throws Exception {
         DataSource dataSource = mock(DataSource.class);
-        when(dataSource.getConnection()).thenThrow(wrappedTimeout());
+        SQLException timeout = wrappedTimeout();
+        when(dataSource.getConnection()).thenThrow(timeout);
         List<Duration> delays = new ArrayList<>();
 
         IllegalStateException failure = assertThrows(IllegalStateException.class,
                 () -> new StartupConnectionRetry(dataSource, delays::add).awaitConnection());
 
         assertEquals("Database startup connection unavailable after three attempts", failure.getMessage());
+        assertSame(timeout, failure.getCause());
         assertEquals(List.of(Duration.ofSeconds(10), Duration.ofSeconds(20)), delays);
         verify(dataSource, times(3)).getConnection();
     }
@@ -73,14 +75,15 @@ class StartupConnectionRetryTest {
         DataSource dataSource = mock(DataSource.class);
         Connection connection = mock(Connection.class);
         when(dataSource.getConnection()).thenReturn(connection);
-        doThrow(new SQLException("synthetic close failure", "08006", new ConnectException()))
-                .when(connection).close();
+        SQLException closeFailure = new SQLException("synthetic close failure", "08006", new ConnectException());
+        doThrow(closeFailure).when(connection).close();
         List<Duration> delays = new ArrayList<>();
 
         IllegalStateException failure = assertThrows(IllegalStateException.class,
                 () -> new StartupConnectionRetry(dataSource, delays::add).awaitConnection());
 
         assertEquals("Database startup connection could not be closed", failure.getMessage());
+        assertSame(closeFailure, failure.getCause());
         assertTrue(delays.isEmpty());
         verify(dataSource).getConnection();
     }
@@ -103,6 +106,7 @@ class StartupConnectionRetryTest {
                     () -> new StartupConnectionRetry(dataSource, delays::add).awaitConnection());
 
             assertTrue(failure.getMessage().endsWith(categories.get(index)));
+            assertSame(failures.get(index), failure.getCause());
             assertTrue(delays.isEmpty());
             verify(dataSource).getConnection();
         }
@@ -112,11 +116,13 @@ class StartupConnectionRetryTest {
     void interruptionStopsRetriesAndPreservesInterruptFlag() throws Exception {
         DataSource dataSource = mock(DataSource.class);
         when(dataSource.getConnection()).thenThrow(wrappedTimeout());
+        InterruptedException cancellation = new InterruptedException("synthetic cancellation");
         try {
-            assertThrows(IllegalStateException.class,
+            IllegalStateException failure = assertThrows(IllegalStateException.class,
                     () -> new StartupConnectionRetry(dataSource, delay -> {
-                        throw new InterruptedException();
+                        throw cancellation;
                     }).awaitConnection());
+            assertSame(cancellation, failure.getCause());
             assertTrue(Thread.currentThread().isInterrupted());
             verify(dataSource).getConnection();
         } finally {
