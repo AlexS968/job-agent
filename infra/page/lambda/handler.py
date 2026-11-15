@@ -11,6 +11,7 @@ import boto3
 MAX_PAGE = 20
 MAX_OFFSET = 1000
 MAX_BODY = 64_000
+MIN_COMPARABLE_FEEDBACK = 10
 
 CURRENT_CTE = """
 WITH current_profile AS (
@@ -185,7 +186,7 @@ WITH active_sources AS (
             CROSS JOIN LATERAL jsonb_array_elements_text(e.unknowns) AS code
             WHERE e.source_namespace = s.namespace AND e.profile_id = p.profile_id
               GROUP BY code) unknowns) AS unknowns
-  FROM active_sources s CROSS JOIN profiles p
+  FROM active_sources s CROSS JOIN profiles p WHERE p.profile_id = :profile
 ), overlap AS (
   SELECT count(*) AS overlapping FROM (
     SELECT sv.vacancy_id FROM source_vacancies sv
@@ -199,6 +200,175 @@ SELECT namespace, profile_id, profile_version, observed, stored, evaluated, excl
        country_unknown, role_unmatched, shortlisted, exclusions::text, unknowns::text,
        (SELECT overlapping FROM overlap), CURRENT_TIMESTAMP::text
 FROM rows ORDER BY namespace, profile_id
+"""
+
+QUALITY_SQL = """
+WITH active_sources AS (
+  SELECT CASE WHEN platform = 'GREENHOUSE' THEN 'greenhouse:' || source_id
+              WHEN platform = 'LEVER' THEN 'lever:' || region || ':' || source_id END AS namespace
+  FROM verified_source_registry WHERE active AND status = 'VERIFIED'
+), stored AS (
+  SELECT DISTINCT vs.vacancy_id
+  FROM vacancy_sources vs JOIN source_items si ON si.id = vs.source_item_id
+  JOIN active_sources a ON a.namespace = si.source_namespace
+), current_profile AS (
+  SELECT profile_version, criteria_hash FROM evaluation_profiles
+  WHERE profile_id = :profile ORDER BY first_seen_at DESC, profile_version DESC LIMIT 1
+), current_source AS (
+  SELECT vs.vacancy_id, si.id AS source_item_id,
+         row_number() OVER (PARTITION BY vs.vacancy_id ORDER BY si.id DESC) AS source_rank
+  FROM vacancy_sources vs JOIN source_items si ON si.id = vs.source_item_id
+  JOIN vacancies v ON v.id = vs.vacancy_id
+  WHERE si.content_digest IS NOT DISTINCT FROM v.content_digest
+), current_evaluation AS (
+  SELECT DISTINCT ON (e.vacancy_id) e.vacancy_id, e.id, e.decision,
+         e.role_classification, e.country_eligibility, e.reasons, e.unknowns,
+         e.original_url, v.title
+  FROM vacancy_evaluations e JOIN current_profile p
+    ON p.profile_version = e.profile_version AND p.criteria_hash = e.criteria_hash
+  JOIN current_source cs ON cs.vacancy_id = e.vacancy_id
+    AND cs.source_item_id = e.source_item_id AND cs.source_rank = 1
+  JOIN source_items si ON si.id = e.source_item_id
+  JOIN active_sources a ON a.namespace = si.source_namespace
+  JOIN vacancies v ON v.id = e.vacancy_id
+  WHERE e.profile_id = :profile AND e.policy_version = 'rules-v1'
+    AND e.country_evidence_policy = 'country-v1'
+    AND ((v.source_namespace LIKE 'greenhouse:%' AND si.input_version = 'greenhouse-board-v1')
+      OR (v.source_namespace LIKE 'lever:%' AND si.input_version = 'lever-postings-v1'))
+  ORDER BY e.vacancy_id, e.evaluated_at DESC, e.id DESC
+), classified AS (
+  SELECT s.vacancy_id, e.id AS evaluation_id, e.decision, e.reasons, e.unknowns,
+         e.original_url, e.title,
+    CASE WHEN e.id IS NULL THEN 'UNEVALUATED'
+         WHEN e.role_classification = 'UNMATCHED' THEN 'ROLE_UNMATCHED'
+         WHEN e.decision = 'EXCLUDED' THEN 'EXCLUDED'
+         WHEN e.country_eligibility <> 'CONFIRMED' THEN 'COUNTRY_UNCONFIRMED'
+         WHEN e.decision IN ('SUITABLE','NEEDS_REVIEW')
+              AND e.role_classification IN ('PREFERRED','RESERVE') THEN 'SHORTLISTED'
+         ELSE 'OTHER' END AS stage,
+    (e.role_classification IN ('PREFERRED','RESERVE')) AS role_relevant
+  FROM stored s LEFT JOIN current_evaluation e ON e.vacancy_id = s.vacancy_id
+), latest_feedback AS (
+  SELECT DISTINCT ON (f.vacancy_id) f.vacancy_id, f.owner_decision, f.owner_reason
+  FROM review_feedback f JOIN stored s ON s.vacancy_id = f.vacancy_id
+  WHERE f.profile_id = :profile ORDER BY f.vacancy_id, f.id DESC
+), feedback_counts AS (
+  SELECT owner_decision, owner_reason, count(*) AS n FROM latest_feedback
+  GROUP BY owner_decision, owner_reason
+), registered_versions AS (
+  SELECT profile_version, criteria_hash,
+         row_number() OVER (ORDER BY first_seen_at DESC, profile_version DESC) AS version_rank
+  FROM evaluation_profiles WHERE profile_id = :profile
+), comparison_stored AS (
+  SELECT vacancy_id FROM stored ORDER BY vacancy_id LIMIT 1001
+), version_evaluations AS (
+  SELECT e.id, e.vacancy_id, rv.version_rank, e.source_item_id, e.vacancy_revision,
+         e.policy_version, e.country_evidence_policy, e.decision, e.role_classification,
+         e.country_eligibility,
+         count(*) OVER (PARTITION BY e.vacancy_id, rv.version_rank) AS variants
+  FROM comparison_stored s JOIN vacancy_evaluations e ON e.vacancy_id = s.vacancy_id
+  JOIN registered_versions rv ON rv.profile_version = e.profile_version
+    AND rv.criteria_hash = e.criteria_hash AND rv.version_rank <= 2
+  JOIN current_source cs ON cs.vacancy_id = e.vacancy_id
+    AND cs.source_item_id = e.source_item_id AND cs.source_rank = 1
+  JOIN source_items si ON si.id = e.source_item_id
+  JOIN active_sources a ON a.namespace = si.source_namespace
+  JOIN vacancies v ON v.id = e.vacancy_id
+  WHERE e.profile_id = :profile AND e.policy_version = 'rules-v1'
+    AND e.country_evidence_policy = 'country-v1'
+    AND ((v.source_namespace LIKE 'greenhouse:%' AND si.input_version = 'greenhouse-board-v1')
+      OR (v.source_namespace LIKE 'lever:%' AND si.input_version = 'lever-postings-v1'))
+), matched_versions AS (
+  SELECT newer.id AS newer_id, older.id AS older_id,
+         (newer.decision IN ('SUITABLE','NEEDS_REVIEW')
+          AND newer.role_classification IN ('PREFERRED','RESERVE')
+          AND newer.country_eligibility = 'CONFIRMED') AS newer_shortlisted,
+         (older.decision IN ('SUITABLE','NEEDS_REVIEW')
+          AND older.role_classification IN ('PREFERRED','RESERVE')
+          AND older.country_eligibility = 'CONFIRMED') AS older_shortlisted
+  FROM version_evaluations newer JOIN version_evaluations older
+    ON newer.vacancy_id = older.vacancy_id AND newer.version_rank = 1
+    AND older.version_rank = 2 AND newer.source_item_id = older.source_item_id
+    AND newer.vacancy_revision = older.vacancy_revision
+    AND newer.policy_version = older.policy_version
+    AND newer.country_evidence_policy = older.country_evidence_policy
+  WHERE newer.variants = 1 AND older.variants = 1
+), paired_decisions AS (
+  SELECT m.*,
+         (SELECT f.owner_decision FROM review_feedback f
+          WHERE f.evaluation_id = m.newer_id AND f.profile_id = :profile
+          ORDER BY f.id DESC LIMIT 1) AS newer_feedback,
+         (SELECT f.owner_decision FROM review_feedback f
+          WHERE f.evaluation_id = m.older_id AND f.profile_id = :profile
+          ORDER BY f.id DESC LIMIT 1) AS older_feedback
+  FROM matched_versions m
+), comparison_metrics AS (
+  SELECT count(*) AS paired,
+         count(*) FILTER (WHERE newer_feedback IS NOT NULL AND older_feedback IS NOT NULL)
+           AS paired_feedback,
+         count(*) FILTER (WHERE newer_shortlisted) AS newer_shortlisted,
+         count(*) FILTER (WHERE older_shortlisted) AS older_shortlisted,
+         count(*) FILTER (WHERE newer_feedback = 'INTERESTED'
+                           AND older_feedback IS NOT NULL) AS newer_interested,
+         count(*) FILTER (WHERE older_feedback = 'INTERESTED'
+                           AND newer_feedback IS NOT NULL) AS older_interested
+  FROM paired_decisions
+), processing_versions AS (
+  SELECT coalesce(jsonb_object_agg(input_version,n),'{}'::jsonb)::text AS versions FROM (
+    SELECT si.input_version, count(DISTINCT s.vacancy_id) AS n
+    FROM comparison_stored s JOIN current_source cs ON cs.vacancy_id = s.vacancy_id
+      AND cs.source_rank = 1
+    JOIN source_items si ON si.id = cs.source_item_id
+    JOIN active_sources a ON a.namespace = si.source_namespace
+    GROUP BY si.input_version
+  ) counts
+), source_overlap AS (
+  SELECT count(*) AS n FROM (
+    SELECT vs.vacancy_id FROM vacancy_sources vs
+    JOIN source_items si ON si.id = vs.source_item_id
+    JOIN active_sources a ON a.namespace = si.source_namespace
+    GROUP BY vs.vacancy_id HAVING count(DISTINCT si.source_namespace) > 1
+  ) shared
+), examples AS (
+  SELECT stage, title, original_url FROM (
+    SELECT stage, title, original_url,
+      row_number() OVER (PARTITION BY stage ORDER BY vacancy_id) AS example_rank
+    FROM classified WHERE evaluation_id IS NOT NULL
+  ) ranked WHERE example_rank <= 3
+)
+SELECT (SELECT count(*) FROM stored),
+       (SELECT count(*) FROM classified WHERE role_relevant),
+       (SELECT count(*) FROM classified WHERE stage = 'SHORTLISTED'),
+       (SELECT coalesce(jsonb_object_agg(stage,n),'{}'::jsonb)::text FROM
+          (SELECT stage,count(*) AS n FROM classified GROUP BY stage) stages),
+       (SELECT coalesce(jsonb_object_agg(code,n),'{}'::jsonb)::text FROM
+          (SELECT code,count(*) AS n FROM classified c
+           CROSS JOIN LATERAL jsonb_array_elements_text(c.reasons) code
+           WHERE c.decision = 'EXCLUDED' GROUP BY code) reasons),
+       (SELECT coalesce(jsonb_object_agg(code,n),'{}'::jsonb)::text FROM
+          (SELECT code,count(*) AS n FROM classified c
+           CROSS JOIN LATERAL jsonb_array_elements_text(c.unknowns) code
+           GROUP BY code) unknowns),
+       (SELECT count(*) FROM latest_feedback),
+       (SELECT coalesce(jsonb_agg(jsonb_build_object('decision',owner_decision,
+         'reason',owner_reason,'count',n)),'[]'::jsonb)::text FROM feedback_counts),
+       (SELECT coalesce(jsonb_agg(jsonb_build_object('stage',stage,'title',title,
+         'url',original_url)),'[]'::jsonb)::text FROM examples),
+       (SELECT n FROM source_overlap),
+       (SELECT profile_version FROM current_profile), CURRENT_TIMESTAMP::text,
+       (SELECT profile_version FROM registered_versions WHERE version_rank = 2),
+       (SELECT criteria_hash FROM registered_versions WHERE version_rank = 1) IS DISTINCT FROM
+         (SELECT criteria_hash FROM registered_versions WHERE version_rank = 2),
+       (SELECT count(*) FROM comparison_stored),
+       (SELECT count(DISTINCT vacancy_id) FROM version_evaluations WHERE version_rank = 1),
+       (SELECT count(DISTINCT vacancy_id) FROM version_evaluations WHERE version_rank = 2),
+       (SELECT paired FROM comparison_metrics),
+       (SELECT paired_feedback FROM comparison_metrics),
+       (SELECT newer_shortlisted FROM comparison_metrics),
+       (SELECT older_shortlisted FROM comparison_metrics),
+       (SELECT newer_interested FROM comparison_metrics),
+       (SELECT older_interested FROM comparison_metrics),
+       (SELECT versions FROM processing_versions)
 """
 
 
@@ -285,6 +455,9 @@ def read_yield(event, client):
     if not authorized(event):
         return response(403, {"error": "Owner access required"})
     query = event.get("queryStringParameters") or {}
+    profile = query.get("profile", "alex-de")
+    if profile not in ("alex-de", "alex-at"):
+        return response(400, {"error": "Choose Germany or Austria"})
     try:
         limit = integer(query.get("limit", "20"), 1, MAX_PAGE)
         offset = integer(query.get("offset", "0"), 0, MAX_OFFSET)
@@ -294,23 +467,84 @@ def read_yield(event, client):
         result = client.execute_statement(
             resourceArn=os.environ["DB_CLUSTER_ARN"], secretArn=os.environ["DB_READER_SECRET_ARN"],
             database="job_agent", sql=YIELD_SQL,
-            parameters=[{"name": "limit", "value": {"longValue": limit + 1}},
+            parameters=[{"name": "profile", "value": {"stringValue": profile}},
+                        {"name": "limit", "value": {"longValue": limit + 1}},
                         {"name": "offset", "value": {"longValue": offset}}])
         records = result.get("records", [])
         keys = ("source", "profile", "profileVersion", "observed", "stored", "evaluated",
                 "excluded", "countryUnknown", "roleUnmatched", "shortlisted", "exclusions",
                 "unknowns", "crossSourceOverlap", "asOf")
         rows = []
-        for record in records[:2 * limit]:
+        for record in records[:limit]:
             row = dict(zip(keys, (cell_value(cell) for cell in record)))
             for key in ("exclusions", "unknowns"):
                 row[key] = json.loads(row[key] or "{}")
             rows.append(row)
-        body = {"window": "All stored observations; current active sources and latest profile versions",
+        body = {"window": "All stored observations; current active sources and latest selected profile version",
                 "policyVersion": "rules-v1", "countryEvidencePolicy": "country-v1",
-                "rows": rows, "nextOffset": offset + limit if len(records) > 2 * limit else None}
+                "rows": rows, "nextOffset": offset + limit if len(records) > limit else None}
         if len(json.dumps(body).encode("utf-8")) > MAX_BODY:
             return response(502, {"error": "Diagnostic page is too large"})
+        return response(200, body)
+    except Exception:  # Never log SQL, tokens, credentials or source data.
+        return response(503, {"error": "Diagnostics are temporarily unavailable"})
+
+
+def read_quality(event, client):
+    if not authorized(event):
+        return response(403, {"error": "Owner access required"})
+    profile = (event.get("queryStringParameters") or {}).get("profile", "alex-de")
+    if profile not in ("alex-de", "alex-at"):
+        return response(400, {"error": "Choose Germany or Austria"})
+    try:
+        result = client.execute_statement(
+            resourceArn=os.environ["DB_CLUSTER_ARN"], secretArn=os.environ["DB_READER_SECRET_ARN"],
+            database="job_agent", sql=QUALITY_SQL,
+            parameters=[{"name": "profile", "value": {"stringValue": profile}}])
+        values = [cell_value(cell) for cell in result["records"][0]]
+        keys = ("stored", "roleRelevant", "shortlisted", "stages", "exclusions", "unknowns",
+                "feedbackVacancies", "feedback", "examples", "crossSourceOverlap", "profileVersion",
+                "asOf", "previousVersion", "criteriaChanged", "comparisonSample", "currentEvaluated",
+                "previousEvaluated", "matchedVacancies", "pairedFeedback", "currentShortlisted",
+                "previousShortlisted", "currentInterested", "previousInterested", "sourceVersions")
+        body = dict(zip(keys, values))
+        body["profile"] = profile
+        for key in ("stages", "exclusions", "unknowns", "feedback", "examples", "sourceVersions"):
+            body[key] = json.loads(body[key])
+        body["examples"] = [example for example in body["examples"] if
+                            (url := urlsplit(example["url"] or "")).scheme == "https"
+                            and url.hostname and not url.username and not url.password]
+        body["policyVersion"] = "rules-v1"
+        body["countryEvidencePolicy"] = "country-v1"
+        comparison = {key: body[key] for key in ("previousVersion", "comparisonSample",
+                      "currentEvaluated", "previousEvaluated", "matchedVacancies", "pairedFeedback")}
+        if body["comparisonSample"] > 1000:
+            summary = "More than 1,000 stored vacancies: version comparison is bounded to a partial sample."
+        elif body["previousVersion"] is None:
+            summary = "No earlier registered profile version exists for this country."
+        elif not body["criteriaChanged"]:
+            summary = "The latest two profile versions have the same criteria hash; there is no criteria change to compare."
+        elif body["matchedVacancies"] < MIN_COMPARABLE_FEEDBACK:
+            summary = "Too few vacancies have both versions on the same source snapshot and policy."
+        elif body["pairedFeedback"] < MIN_COMPARABLE_FEEDBACK:
+            summary = "Too few matched vacancies have owner decisions on both evaluation versions."
+        else:
+            summary = (f"On {body['matchedVacancies']} matched vacancies, shortlisted counts were "
+                       f"{body['previousShortlisted']} before and {body['currentShortlisted']} now. "
+                       f"Among {body['pairedFeedback']} with decisions on both versions, "
+                       f"interested decisions were {body['previousInterested']} before and "
+                       f"{body['currentInterested']} now. This is descriptive, not a measured improvement.")
+        comparison["summary"] = summary
+        comparison["descriptive"] = body["comparisonSample"] <= 1000 and body["previousVersion"] is not None \
+            and body["criteriaChanged"] and body["matchedVacancies"] >= MIN_COMPARABLE_FEEDBACK \
+            and body["pairedFeedback"] >= MIN_COMPARABLE_FEEDBACK
+        body["comparison"] = comparison
+        for key in ("previousVersion", "criteriaChanged", "comparisonSample", "currentEvaluated",
+                    "previousEvaluated", "matchedVacancies", "pairedFeedback", "currentShortlisted",
+                    "previousShortlisted", "currentInterested", "previousInterested"):
+            del body[key]
+        if len(json.dumps(body).encode("utf-8")) > MAX_BODY:
+            return response(502, {"error": "Diagnostic response is too large"})
         return response(200, body)
     except Exception:  # Never log SQL, tokens, credentials or source data.
         return response(503, {"error": "Diagnostics are temporarily unavailable"})
@@ -414,6 +648,8 @@ def handler(event, _context):
         return read_page(event, boto3.client("rds-data"))
     if path == "/yield":
         return read_yield(event, boto3.client("rds-data"))
+    if path == "/quality":
+        return read_quality(event, boto3.client("rds-data"))
     if path == "/feedback" and event.get("requestContext", {}).get("http", {}).get("method") == "POST":
         if not authorized(event):
             return response(403, {"error": "Owner access required"})

@@ -168,7 +168,7 @@ INSERT INTO vacancy_evaluations(vacancy_id,source_item_id,vacancy_revision,profi
  (1,1,repeat('a',64),'alex-de','v1',repeat('d',64),'rules-v1','SUITABLE',1,'PREFERRED',
   '["ROLE_PREFERRED"]','[]','[]','https://jobs.example.test/1'),
  (2,2,repeat('b',64),'alex-de','v1',repeat('d',64),'rules-v1','NEEDS_REVIEW',2,'RESERVE',
-  '["ROLE_RESERVE"]','["WORK_ELIGIBILITY_UNCONFIRMED"]','[]','https://jobs.example.test/2'),
+  '["ROLE_RESERVE"]','["WORK_ELIGIBILITY_UNCONFIRMED","SALARY_UNKNOWN"]','[]','https://jobs.example.test/2'),
  (2,2,repeat('b',64),'alex-at','v1',repeat('e',64),'rules-v1','SUITABLE',1,'PREFERRED',
   '["ROLE_PREFERRED"]','[]','[]','https://jobs.example.test/2'),
  (3,3,repeat('c',64),'alex-de','v1',repeat('d',64),'rules-v1','SUITABLE',1,'PREFERRED',
@@ -199,6 +199,9 @@ CREATE ROLE job_agent_page_reader LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NORE
             statement = page.SQL.replace(":profile", f"'{profile}'").replace(":limit", str(limit))
             statement = statement.replace(":offset", str(offset))
             return self.sql("SET ROLE job_agent_page_reader; " + statement + ";")
+        def quality(profile):
+            statement = page.QUALITY_SQL.replace(":profile", f"'{profile}'")
+            return self.sql("SET ROLE job_agent_page_reader; " + statement + ";")[0].split("|")
         de = query("alex-de", 20, 0)
         at = query("alex-at", 20, 0)
         self.assertEqual(1, len(de))
@@ -206,6 +209,15 @@ CREATE ROLE job_agent_page_reader LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NORE
         self.assertIn("Java Engineer", de[0])
         self.assertIn("Backend Engineer", at[0])
         self.assertEqual(0, len(query("alex-de", 1, 1)))
+        initial_de = quality("alex-de")
+        self.assertEqual(["2", "2", "1"], initial_de[:3])
+        self.assertEqual({"COUNTRY_UNCONFIRMED": 1, "SHORTLISTED": 1}, json.loads(initial_de[3]))
+        self.assertEqual({"WORK_ELIGIBILITY_UNCONFIRMED": 1, "SALARY_UNKNOWN": 1},
+                         json.loads(initial_de[5]))
+        self.assertEqual("0", initial_de[6])  # No owner decision is not an application outcome.
+        self.assertEqual(["2", "1", "1"], quality("alex-at")[:3])
+        self.assertEqual("", quality("alex-de")[12])  # No previous registered profile version.
+        self.assertEqual({"greenhouse-board-v1": 2}, json.loads(initial_de[23]))
         self.sql("CREATE ROLE job_agent_feedback_writer LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION; "
                  "GRANT CONNECT ON DATABASE job_agent TO job_agent_feedback_writer; "
                  "GRANT USAGE ON SCHEMA public TO job_agent_feedback_writer;")
@@ -249,8 +261,9 @@ CREATE ROLE job_agent_page_reader LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NORE
             "has_column_privilege('job_agent_feedback_writer','public.source_items','raw_payload','SELECT')::text;"
             )[0].split("|"))
         diagnostic = self.sql("SET ROLE job_agent_page_reader; " +
-                              page.YIELD_SQL.replace(":limit", "20").replace(":offset", "0") + ";")
-        self.assertEqual(2, len(diagnostic))
+                              page.YIELD_SQL.replace(":profile", "'alex-de'")
+                              .replace(":limit", "20").replace(":offset", "0") + ";")
+        self.assertEqual(1, len(diagnostic))
         self.assertTrue(all("greenhouse:demo" in row for row in diagnostic))
         self.sql("""
 INSERT INTO evaluation_profiles(profile_id,profile_version,criteria_hash,first_seen_at)
@@ -267,6 +280,10 @@ UPDATE vacancy_evaluations SET country_eligibility = 'CONFIRMED'
         self.assertEqual(1, len(updated))  # Do not mix v1 into a partially evaluated v2 shortlist.
         self.assertIn("v2", updated[0])
         self.assertIn("NOT_INTERESTED", updated[0])  # Latest owner judgment remains visible after reevaluation.
+        versions = quality("alex-de")
+        self.assertEqual("v1", versions[12])
+        self.assertEqual(["2", "1", "2", "1"], versions[14:18])
+        self.assertEqual("0", versions[18])  # Feedback was not recorded for both evaluation versions.
         submit(1, 1, "alex-de", "INTERESTED", None)  # Historical v1 is no longer the displayed evaluation.
         self.assertEqual(["3"], self.sql("SELECT count(*) FROM review_feedback;"))
         self.sql("""
@@ -293,8 +310,9 @@ INSERT INTO vacancy_evaluations(vacancy_id,source_item_id,vacancy_revision,profi
  'https://jobs.example.test/4');
 """)
         shared = self.sql("SET ROLE job_agent_page_reader; " +
-                          page.YIELD_SQL.replace(":limit", "20").replace(":offset", "0") + ";")
-        self.assertEqual(4, len(shared))
+                          page.YIELD_SQL.replace(":profile", "'alex-de'")
+                          .replace(":limit", "20").replace(":offset", "0") + ";")
+        self.assertEqual(2, len(shared))
         rows = {parts[0:2][0] + "|" + parts[0:2][1]: parts
                 for parts in (row.split("|") for row in shared)}
         self.assertEqual(["2", "2", "0", "0"], rows["greenhouse:demo|alex-de"][3:7])
@@ -303,9 +321,23 @@ INSERT INTO vacancy_evaluations(vacancy_id,source_item_id,vacancy_revision,profi
         self.assertEqual("0", rows["greenhouse:demo|alex-de"][9])
         self.assertEqual("{}", rows["greenhouse:demo|alex-de"][11])
         self.assertEqual('{"SALARY_UNKNOWN": 1}', rows["lever:global:demo|alex-de"][11])
-        self.assertEqual(["1", "1"], rows["lever:global:demo|alex-at"][5:7])
-        self.assertEqual('{"EXPLICIT_COUNTRY_EXCLUSION": 1}', rows["lever:global:demo|alex-at"][10])
+        austria = self.sql("SET ROLE job_agent_page_reader; " +
+                           page.YIELD_SQL.replace(":profile", "'alex-at'")
+                           .replace(":limit", "20").replace(":offset", "0") + ";")
+        at_rows = {parts[0]: parts for parts in (row.split("|") for row in austria)}
+        self.assertEqual(["1", "1"], at_rows["lever:global:demo"][5:7])
+        self.assertEqual('{"EXPLICIT_COUNTRY_EXCLUSION": 1}', at_rows["lever:global:demo"][10])
         self.assertTrue(all(parts[-2] == "1" for parts in rows.values()))
+        de_quality, at_quality = quality("alex-de"), quality("alex-at")
+        self.assertEqual(["2", "0", "0"], de_quality[:3])
+        self.assertEqual({"UNEVALUATED": 2}, json.loads(de_quality[3]))
+        self.assertEqual("1", de_quality[6])  # Latest DE decision, not both historical rows.
+        self.assertEqual([{"decision": "NOT_INTERESTED", "reason": "TECH_STACK", "count": 1}],
+                         json.loads(de_quality[7]))
+        self.assertEqual(["2", "1", "1"], at_quality[:3])
+        self.assertEqual({"SHORTLISTED": 1, "UNEVALUATED": 1}, json.loads(at_quality[3]))
+        self.assertEqual("1", at_quality[6])
+        self.assertEqual("1", de_quality[9])  # One cross-source vacancy, not two stored vacancies.
         self.sql("""
 INSERT INTO source_items(source_namespace,source_item_id,listing_namespace,listing_id,
  original_url,fetched_at,raw_payload,input_version,normalization_version,input_digest,content_digest)
@@ -315,11 +347,56 @@ INSERT INTO vacancy_sources(vacancy_id,source_item_id) VALUES (1,5);
 """)
         self.assertEqual([], query("alex-de", 20, 0))  # Older source snapshot is not current.
         overlap = self.sql("SET ROLE job_agent_page_reader; " +
-                           page.YIELD_SQL.replace(":limit", "20").replace(":offset", "0") + ";")
-        self.assertEqual(4, len(overlap))
+                           page.YIELD_SQL.replace(":profile", "'alex-de'")
+                           .replace(":limit", "20").replace(":offset", "0") + ";")
+        self.assertEqual(2, len(overlap))
         self.assertTrue(all(row.split("|")[-2] == "1" for row in overlap))
         greenhouse = [row.split("|") for row in overlap if row.startswith("greenhouse:demo|")]
         self.assertTrue(all(row[3:5] == ["2", "2"] for row in greenhouse))
+        self.assertEqual({"UNEVALUATED": 2}, json.loads(quality("alex-de")[3]))
+        self.sql("UPDATE vacancy_evaluations SET decision = 'EXCLUDED', "
+                 "role_classification = 'UNMATCHED', "
+                 "reasons = '[\"EXPLICIT_TITLE_EXCLUSION\"]'::jsonb, "
+                 "unknowns = '[\"SALARY_UNKNOWN\"]'::jsonb "
+                 "WHERE vacancy_id = 2 AND profile_id = 'alex-at';")
+        unmatched = quality("alex-at")
+        self.assertEqual({"ROLE_UNMATCHED": 1, "UNEVALUATED": 1}, json.loads(unmatched[3]))
+        self.assertEqual({"EXPLICIT_TITLE_EXCLUSION": 1}, json.loads(unmatched[4]))
+        self.assertEqual({"SALARY_UNKNOWN": 1}, json.loads(unmatched[5]))
+        self.sql("""
+INSERT INTO vacancies(employer_id,source_namespace,listing_id,title,location,content_digest)
+SELECT 1,'greenhouse:demo','cmp-' || n,'Synthetic Java ' || n,'Berlin',repeat('f',64)
+FROM generate_series(1,10) n;
+INSERT INTO source_items(source_namespace,source_item_id,listing_namespace,listing_id,
+ original_url,fetched_at,raw_payload,input_version,normalization_version,input_digest,content_digest)
+SELECT 'greenhouse:demo','cmp-' || n,'greenhouse:demo','cmp-' || n,
+ 'https://jobs.example.test/cmp/' || n,now(),'{}','greenhouse-board-v1','v1',
+ repeat('f',64),repeat('f',64) FROM generate_series(1,10) n;
+INSERT INTO vacancy_sources(vacancy_id,source_item_id)
+SELECT v.id,si.id FROM vacancies v JOIN source_items si ON si.listing_id = v.listing_id
+WHERE v.listing_id LIKE 'cmp-%';
+INSERT INTO vacancy_evaluations(vacancy_id,source_item_id,vacancy_revision,profile_id,
+ profile_version,criteria_hash,policy_version,decision,preference_rank,role_classification,
+ reasons,unknowns,evidence,original_url,country_eligibility)
+SELECT v.id,si.id,repeat('f',64),'alex-de',version.profile_version,version.criteria_hash,
+ 'rules-v1',version.decision,1,'PREFERRED','[]','[]','[]',si.original_url,'CONFIRMED'
+FROM vacancies v JOIN vacancy_sources vs ON vs.vacancy_id = v.id
+JOIN source_items si ON si.id = vs.source_item_id
+CROSS JOIN (VALUES ('v1',repeat('d',64),'EXCLUDED'),
+                   ('v2',repeat('f',64),'SUITABLE'))
+  version(profile_version,criteria_hash,decision)
+WHERE v.listing_id LIKE 'cmp-%';
+INSERT INTO review_feedback(request_id,vacancy_id,evaluation_id,profile_id,profile_version,
+ vacancy_revision,owner_decision,owner_reason)
+SELECT gen_random_uuid(),e.vacancy_id,e.id,'alex-de',e.profile_version,e.vacancy_revision,
+ CASE WHEN e.profile_version = 'v2' THEN 'INTERESTED' ELSE 'NOT_INTERESTED' END,
+ CASE WHEN e.profile_version = 'v2' THEN NULL ELSE 'ROLE_MISMATCH' END
+FROM vacancy_evaluations e JOIN vacancies v ON v.id = e.vacancy_id
+WHERE v.listing_id LIKE 'cmp-%';
+""")
+        comparable = quality("alex-de")
+        self.assertEqual(["10", "10", "10"], comparable[17:20])
+        self.assertEqual(["0", "10", "0"], comparable[20:23])
         with self.assertRaises(AssertionError):
             self.sql("SET ROLE job_agent_page_reader; SELECT raw_payload FROM source_items;")
         with self.assertRaises(AssertionError):

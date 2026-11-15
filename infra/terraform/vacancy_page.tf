@@ -183,6 +183,16 @@ resource "aws_apigatewayv2_route" "vacancy_yield" {
   authorization_scopes = ["openid"]
 }
 
+resource "aws_apigatewayv2_route" "vacancy_quality" {
+  count                = var.enable_vacancy_page && var.page_access_enabled ? 1 : 0
+  api_id               = aws_apigatewayv2_api.page[0].id
+  route_key            = "GET /quality"
+  target               = "integrations/${aws_apigatewayv2_integration.page[0].id}"
+  authorization_type   = "JWT"
+  authorizer_id        = aws_apigatewayv2_authorizer.page[0].id
+  authorization_scopes = ["openid"]
+}
+
 resource "aws_cloudwatch_log_group" "vacancy_feedback" {
   count             = var.enable_vacancy_feedback ? 1 : 0
   name              = "/aws/lambda/${var.name_prefix}-vacancy-feedback"

@@ -116,8 +116,67 @@ class PageTest(unittest.TestCase):
         self.assertEqual(1, result["rows"][0]["unknowns"]["WORK_ELIGIBILITY_UNCONFIRMED"])
         self.assertEqual({}, result["rows"][0]["exclusions"])
         self.assertEqual(1, result["nextOffset"])
-        self.assertEqual(2, db.calls[0]["parameters"][0]["value"]["longValue"])
+        self.assertEqual("alex-de", db.calls[0]["parameters"][0]["value"]["stringValue"])
+        self.assertEqual(2, db.calls[0]["parameters"][1]["value"]["longValue"])
         self.assertIn("active", result["window"])
+
+    def test_quality_is_owner_only_profile_scoped_and_bounds_examples(self):
+        values = [3, 2, 1, '{"SHORTLISTED":1,"COUNTRY_UNCONFIRMED":1,"UNEVALUATED":1}',
+                  '{"EXPLICIT_COUNTRY_EXCLUSION":1}', '{"SALARY_UNKNOWN":2}', 1,
+                  '[{"decision":"NOT_INTERESTED","reason":"SALARY","count":1}]',
+                  '[{"stage":"SHORTLISTED","title":"Java Engineer","url":"https://jobs.example.test/1"},'
+                  '{"stage":"EXCLUDED","title":"Unsafe","url":"javascript:alert(1)"}]',
+                  1, "v2", "2026-11-15 12:00:00+00", None, False, 3, 1, 0, 0, 0,
+                  0, 0, 0, 0, '{"greenhouse-board-v1":3}']
+        record = [{"isNull": True} if value is None else {"booleanValue": value}
+                  if isinstance(value, bool) else {"longValue": value} if isinstance(value, int)
+                  else {"stringValue": value}
+                  for value in values]
+        db = FakeDataApi([record])
+        self.assertEqual(403, page.read_quality(event(owner=False), db)["statusCode"])
+        self.assertEqual([], db.calls)
+        self.assertEqual(400, page.read_quality(event(profile="other"), db)["statusCode"])
+        for profile in ("alex-de", "alex-at"):
+            result = json.loads(page.read_quality(event(profile=profile), db)["body"])
+            self.assertEqual(profile, result["profile"])
+            self.assertEqual(3, result["stored"])
+            self.assertEqual(1, result["feedbackVacancies"])
+            self.assertEqual(1, len(result["examples"]))
+            self.assertIn("No earlier registered profile version", result["comparison"]["summary"])
+            self.assertEqual({"greenhouse-board-v1": 3}, result["sourceVersions"])
+        self.assertEqual(["alex-de", "alex-at"],
+                         [call["parameters"][0]["value"]["stringValue"] for call in db.calls])
+        self.assertNotIn("alex-de", page.QUALITY_SQL)
+        record[12] = {"stringValue": "v1"}
+        record[13] = {"booleanValue": True}
+        record[16] = {"longValue": 2}
+        record[17] = {"longValue": 2}
+        small = json.loads(page.read_quality(event(), db)["body"])["comparison"]
+        self.assertIn("Too few vacancies", small["summary"])
+        self.assertEqual(2, small["matchedVacancies"])
+        record[13] = {"booleanValue": False}
+        self.assertIn("same criteria hash", json.loads(page.read_quality(event(), db)["body"])
+                      ["comparison"]["summary"])
+        record[13] = {"booleanValue": True}
+        record[14] = {"longValue": 20}
+        record[15] = {"longValue": 12}
+        record[16] = {"longValue": 11}
+        record[17] = {"longValue": 10}
+        record[18] = {"longValue": 1}
+        self.assertIn("Too few matched vacancies", json.loads(page.read_quality(event(), db)["body"])
+                      ["comparison"]["summary"])
+        record[18] = {"longValue": 10}
+        record[21] = {"longValue": 3}
+        record[22] = {"longValue": 4}
+        descriptive = json.loads(page.read_quality(event(), db)["body"])["comparison"]
+        self.assertTrue(descriptive["descriptive"])
+        self.assertIn("interested decisions were 4 before and 3 now", descriptive["summary"])
+        record[14] = {"longValue": 1001}
+        bounded = json.loads(page.read_quality(event(), db)["body"])["comparison"]
+        self.assertFalse(bounded["descriptive"])
+        self.assertIn("bounded to a partial sample", bounded["summary"])
+        db.records = []
+        self.assertEqual(503, page.read_quality(event(), db)["statusCode"])
 
     def feedback_event(self, **changes):
         values = {"requestId": str(uuid.uuid4()), "profile": "alex-de", "vacancyId": 10,

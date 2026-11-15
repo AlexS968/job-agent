@@ -7,6 +7,9 @@ const yieldState = document.querySelector("#yield-state");
 const yieldItems = document.querySelector("#yield-items");
 const yieldMore = document.querySelector("#yield-more");
 const yieldRetry = document.querySelector("#yield-retry");
+const qualityState = document.querySelector("#quality-state");
+const qualityDetails = document.querySelector("#quality-details");
+const qualityRetry = document.querySelector("#quality-retry");
 let yieldOffset = 0;
 const base64url = bytes => btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 const configPromise = fetch("/config", {cache: "no-store"}).then(r => { if (!r.ok) throw Error(); return r.json(); });
@@ -40,7 +43,10 @@ async function exchangeCode(code, returnedState) {
   document.querySelector("#signin").hidden = true;
   document.querySelector("#signout").hidden = false;
   document.querySelector("#profiles").hidden = false;
+  document.querySelector("#quality-section").hidden = false;
+  document.querySelector("#yield-section").hidden = false;
   await load();
+  await loadQuality();
   await loadYield();
 }
 function line(label, values) {
@@ -156,15 +162,75 @@ function codes(values) {
   const entries = Object.entries(values || {});
   return entries.length ? entries.map(([code, count]) => `${code.replaceAll("_", " ").toLowerCase()}: ${count}`).join("; ") : "none recorded";
 }
+async function loadQuality() {
+  const selectedProfile = profile;
+  const country = selectedProfile === "alex-de" ? "Germany" : "Austria";
+  qualityState.textContent = `Loading ${country} explanation…`;
+  qualityDetails.replaceChildren(); qualityRetry.hidden = true;
+  try {
+    const result = await fetch("/quality?" + new URLSearchParams({profile:selectedProfile}),
+      {headers:{Authorization:"Bearer " + token},cache:"no-store"});
+    if (!result.ok) throw Error("Explanation is temporarily unavailable.");
+    const data = await result.json();
+    if (selectedProfile !== profile) return;
+    qualityState.textContent = data.stored === 0 ?
+      `No vacancies are stored from active verified sources in this sample for ${country}.` :
+      `Of ${data.stored} distinct stored vacancies, ${data.roleRelevant} have a relevant role and ` +
+      `${data.shortlisted} have a confirmed ${country} location and reach the useful shortlist.`;
+    const funnel = document.createElement("p");
+    funnel.textContent = `Where the ${data.stored} stored vacancies stand: ${codes(data.stages)}. ` +
+      "These stages are mutually exclusive; a missing evaluation is not an owner rejection.";
+    const evidence = document.createElement("p");
+    evidence.textContent = `Overlapping evidence (do not add these counts): exclusions — ${codes(data.exclusions)}; ` +
+      `unknown conditions — ${codes(data.unknowns)}.`;
+    const feedback = document.createElement("p");
+    const decisions = data.feedback.map(row =>
+      `${readable(row.decision)}${row.reason ? " / " + readable(row.reason) : ""}: ${row.count}`).join("; ");
+    feedback.textContent = `${data.feedbackVacancies} of ${data.stored} distinct stored vacancies have an owner ` +
+      `decision for ${country}. Latest decision per vacancy: ${decisions || "none"}. ` +
+      "Owner judgments are separate from agent evaluations; applications are not tracked." +
+      (data.feedbackVacancies < 10 ? " This small feedback sample supports no trend conclusion." : "");
+    const limits = document.createElement("p");
+    limits.textContent = `All stored observations from currently active verified sources as of ${data.asOf}; ` +
+      `current profile ${data.profileVersion || "not registered"}, ${data.policyVersion}, ${data.countryEvidencePolicy}. ` +
+      `${data.crossSourceOverlap} vacancies are linked to multiple active sources; Germany and Austria ` +
+      "counts can refer to the same vacancy. This sample is not the whole job market.";
+    const comparison = document.createElement("p");
+    const c = data.comparison;
+    comparison.textContent = `Version check: ${c.summary} Latest ${data.profileVersion || "none"}: ` +
+      `${c.currentEvaluated} evaluated; prior ${c.previousVersion || "none"}: ` +
+      `${c.previousEvaluated} evaluated; ${c.matchedVacancies} matched vacancies, ` +
+      `${c.pairedFeedback} with decisions on both versions. Source processing versions in the ` +
+      `bounded sample: ${codes(data.sourceVersions)}.`;
+    qualityDetails.append(funnel, evidence, feedback, limits, comparison);
+    if (data.examples.length) {
+      const list = document.createElement("ul");
+      for (const example of data.examples) {
+        const item = document.createElement("li");
+        const link = document.createElement("a"); link.href = example.url;
+        link.rel = "noopener noreferrer"; link.textContent = example.title;
+        item.append(`${readable(example.stage)}: `, link); list.append(item);
+      }
+      const heading = document.createElement("h3"); heading.textContent = "Examples from stored evaluations";
+      qualityDetails.append(heading, list);
+    }
+  } catch (error) {
+    if (selectedProfile !== profile) return;
+    qualityState.textContent = `${country} explanation could not be loaded. ${error.message}`;
+    qualityRetry.hidden = false;
+  }
+}
 async function loadYield() {
+  const selectedProfile = profile;
   yieldState.textContent = "Loading source counts…";
   yieldMore.hidden = true;
   yieldRetry.hidden = true;
   try {
-    const query = new URLSearchParams({offset:String(yieldOffset),limit:"20"});
+    const query = new URLSearchParams({profile:selectedProfile,offset:String(yieldOffset),limit:"20"});
     const result = await fetch("/yield?" + query, {headers:{Authorization:"Bearer " + token},cache:"no-store"});
     if (!result.ok) throw Error("Source counts are temporarily unavailable. Use Retry source counts.");
     const data = await result.json();
+    if (selectedProfile !== profile) return;
     if (yieldOffset === 0) yieldItems.replaceChildren();
     for (const entry of data.rows) {
       const card = document.createElement("article");
@@ -179,10 +245,13 @@ async function loadYield() {
       yieldItems.append(card);
     }
     yieldState.textContent = data.rows.length ?
-      `All stored observations as of ${data.rows[0].asOf}. Policy ${data.policyVersion}; country evidence ${data.countryEvidencePolicy}. Cross-source overlap: ${data.rows[0].crossSourceOverlap} vacancies. Counts by profile and source must not be added as unique vacancies.` :
+      `All stored observations as of ${data.rows[0].asOf}. Policy ${data.policyVersion}; country evidence ${data.countryEvidencePolicy}. Cross-source overlap: ${data.rows[0].crossSourceOverlap} vacancies. Source counts can overlap.` :
       "No active sources or registered country profiles in this view. Zero here does not describe all vacancies on a platform or in a country.";
     if (data.nextOffset !== null) { yieldOffset = data.nextOffset; yieldMore.hidden = false; }
-  } catch (error) { yieldState.textContent = error.message; yieldRetry.hidden = false; }
+  } catch (error) {
+    if (selectedProfile !== profile) return;
+    yieldState.textContent = error.message; yieldRetry.hidden = false;
+  }
 }
 document.querySelector("#signin").addEventListener("click", () => signIn().catch(() => state.textContent = "Sign-in unavailable."));
 document.querySelector("#signout").addEventListener("click", () => {
@@ -192,12 +261,13 @@ document.querySelector("#signout").addEventListener("click", () => {
   location.assign(url);
 });
 document.querySelectorAll("[data-profile]").forEach(button => button.addEventListener("click", () => {
-  profile = button.dataset.profile; offset = 0; load();
+  profile = button.dataset.profile; offset = 0; yieldOffset = 0; load(); loadQuality(); loadYield();
 }));
 more.addEventListener("click", load);
 retry.addEventListener("click", load);
 yieldMore.addEventListener("click", loadYield);
 yieldRetry.addEventListener("click", loadYield);
+qualityRetry.addEventListener("click", loadQuality);
 const code = new URL(location.href).searchParams.get("code");
 if (code) exchangeCode(code, new URL(location.href).searchParams.get("state"))
   .catch(error => state.textContent = error.message);
