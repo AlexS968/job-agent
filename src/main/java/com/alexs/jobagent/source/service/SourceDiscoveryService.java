@@ -4,7 +4,6 @@ import com.alexs.jobagent.source.dto.AtsSourceIdentityDTO;
 import com.alexs.jobagent.source.dto.DiscoveryBatchDTO;
 import com.alexs.jobagent.source.dto.DiscoveryClaimDTO;
 import com.alexs.jobagent.source.dto.SearchPilotResultDTO;
-import com.alexs.jobagent.source.dto.SourceVerificationDTO;
 import com.alexs.jobagent.source.repository.SourceRegistryRepository;
 import java.time.Clock;
 import java.time.LocalDate;
@@ -105,7 +104,6 @@ public class SourceDiscoveryService {
             var verified = verifier.verifyAutomatic(claim,
                     board == null ? List.of() : boardEvidence.getOrDefault(board, List.of()),
                     board == null ? null : lookupLimits.get(board), resolution);
-            SourceVerificationDTO result = verified.verification();
             if ("VERIFIED".equals(verified.leadOutcome())) {
                 confirmed++;
                 if (verified.activated()) {
@@ -116,11 +114,6 @@ public class SourceDiscoveryService {
             } else {
                 review++;
             }
-            LOGGER.info("Discovery lead: id={}, outcome={}, reason={}, identity={}, activated={}",
-                    claim.id(), verified.leadOutcome(),
-                    "MANUAL_REVIEW".equals(verified.leadOutcome())
-                            && "RETRYABLE_FAILURE".equals(result.outcome()) ? "RETRY_EXHAUSTED" : result.reason(),
-                    result.identity(), verified.activated());
         }
         DiscoveryBatchDTO summary = new DiscoveryBatchDTO(true, queries, attempts,
                 leads.size(), confirmed, activated, review, retryable, failures, monthlyLimit);

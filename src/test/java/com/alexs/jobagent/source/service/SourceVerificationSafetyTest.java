@@ -215,8 +215,21 @@ class SourceVerificationSafetyTest {
         assertReason("UNSUPPORTED_CONTENT", (uri, remaining) ->
                 new SafeHtmlFetcher.PageResponse(200, "application/json", null, "identity", new byte[0]));
         assertReason("FETCH_ERROR", (uri, remaining) -> { throw new IOException("synthetic failure"); });
-        assertReason("HTTP_STATUS", (uri, remaining) ->
+        assertReason("HTTP_SERVER_ERROR", (uri, remaining) ->
                 new SafeHtmlFetcher.PageResponse(503, "text/html", null, "identity", new byte[0]));
+    }
+
+    @Test
+    void httpStatusSeparatesRetryableAndPermanentResponses() {
+        for (int status : new int[] {429, 503, 404, 403}) {
+            var failure = assertThrows(VerificationFetchException.class, () ->
+                    new SafeHtmlFetcher((uri, remaining) -> new SafeHtmlFetcher.PageResponse(
+                            status, "text/html", null, "identity", new byte[0]))
+                            .fetch("https://example.com/jobs"));
+            assertEquals(status, failure.httpStatus());
+            assertEquals(status == 429 || status >= 500, failure.retryable());
+            assertEquals(0, failure.redirects());
+        }
     }
 
     @Test

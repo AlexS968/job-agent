@@ -140,7 +140,7 @@ class SourceVerificationIT {
                 INSERT INTO search_pilot_attempts (query_version, query_number, outcome)
                 VALUES ('synthetic-test', 1, 'SUCCESS') RETURNING id
                 """, Long.class);
-        new com.alexs.jobagent.source.repository.SearchPilotRepository(jdbc).recordCandidate(searchAttempt, ATS);
+        new com.alexs.jobagent.source.repository.SearchPilotRepository(jdbc).recordCandidate(searchAttempt, ATS, "ATS", 0);
         assertEquals("VERIFIED", verification.verifyStored(1, "independently-reviewed",
                 "acme.example", OFFICIAL, "Acme Synthetic").outcome());
         assertEquals("VERIFIED", verification.verifyStored(1, "independently-reviewed",
@@ -183,7 +183,7 @@ class SourceVerificationIT {
                 INSERT INTO search_pilot_attempts (query_version, query_number, outcome)
                 VALUES ('synthetic-test', 1, 'SUCCESS') RETURNING id
                 """, Long.class);
-        new com.alexs.jobagent.source.repository.SearchPilotRepository(jdbc).recordCandidate(searchAttempt, ATS);
+        new com.alexs.jobagent.source.repository.SearchPilotRepository(jdbc).recordCandidate(searchAttempt, ATS, "ATS", 0);
         var calls = new AtomicInteger();
         var verification = verifier("<a href='" + ATS + "'>Jobs</a>", NOW, calls);
         var outcome = verification.verifyStored(1, "manual-candidate", null, null, null);
@@ -203,7 +203,7 @@ class SourceVerificationIT {
                 """, Long.class);
         var search = new com.alexs.jobagent.source.repository.SearchPilotRepository(jdbc);
         for (int id = 1; id <= 51; id++) {
-            search.recordCandidate(searchAttempt, "https://jobs.example.test/" + id);
+            search.recordCandidate(searchAttempt, "https://jobs.example.test/" + id, "EMPLOYER", 1);
         }
         var registry = registry(NOW);
         var first = registry.discoveryCandidates(0);
@@ -221,7 +221,7 @@ class SourceVerificationIT {
                 INSERT INTO search_pilot_attempts (query_version, query_number, outcome)
                 VALUES ('synthetic-test', 1, 'SUCCESS') RETURNING id
                 """, Long.class);
-        new com.alexs.jobagent.source.repository.SearchPilotRepository(jdbc).recordCandidate(searchAttempt, ATS);
+        new com.alexs.jobagent.source.repository.SearchPilotRepository(jdbc).recordCandidate(searchAttempt, ATS, "ATS", 0);
         var failed = new SourceVerificationService(new SafeHtmlFetcher((uri, remaining) -> {
             throw new java.io.IOException("synthetic transport failure");
         }), new SourceRegistryRepository(jdbc), clock(NOW), manager);

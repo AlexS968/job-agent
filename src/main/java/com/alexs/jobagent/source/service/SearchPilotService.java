@@ -160,7 +160,8 @@ public class SearchPilotService {
             response.results().stream().map(SearchResultDTO::url).map(SearchCandidateUrl::normalize)
                     .filter(Objects::nonNull).forEach(url -> {
                         if (recordCandidates) {
-                            repository.recordCandidate(id, url);
+                            var kind = DiscoveryLeadPolicy.classify(url);
+                            repository.recordCandidate(id, url, kind.name(), kind.priority());
                         }
                         state.urls.add(url);
                     });

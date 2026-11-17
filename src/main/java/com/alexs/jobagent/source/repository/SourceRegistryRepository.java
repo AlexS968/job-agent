@@ -242,6 +242,18 @@ public class SourceRegistryRepository {
     public List<DiscoveryClaimDTO> claimDiscoveryBatch(java.time.Instant now, int limit) {
         jdbc.update("""
                 UPDATE source_discovery_candidates
+                SET verification_outcome = 'MANUAL_REVIEW',
+                    verification_reason = CASE WHEN lead_kind = 'AGGREGATOR'
+                                               THEN 'AGGREGATOR_ONLY_LEAD'
+                                               WHEN lead_kind = 'NON_EMPLOYER'
+                                               THEN 'NON_EMPLOYER_SITE' ELSE 'UNSAFE_URL' END,
+                    claim_token = NULL, claimed_until = NULL
+                WHERE lead_kind IN ('AGGREGATOR', 'NON_EMPLOYER', 'UNSAFE')
+                  AND verification_outcome IN ('UNVERIFIED', 'RETRYABLE_FAILURE')
+                  AND (claimed_until IS NULL OR claimed_until <= ?)
+                """, Timestamp.from(now));
+        jdbc.update("""
+                UPDATE source_discovery_candidates
                 SET verification_outcome = 'MANUAL_REVIEW', verification_reason = 'RETRY_EXHAUSTED',
                     claim_token = NULL, claimed_until = NULL
                 WHERE verification_attempts >= 3 AND claimed_until <= ?
@@ -250,9 +262,10 @@ public class SourceRegistryRepository {
         List<DiscoveryClaimDTO> pending = jdbc.query("""
                 SELECT id, candidate_url FROM source_discovery_candidates
                 WHERE verification_outcome IN ('UNVERIFIED', 'RETRYABLE_FAILURE')
+                  AND lead_kind IN ('ATS', 'EMPLOYER')
                   AND verification_attempts < 3 AND next_attempt_at <= ?
                   AND (claimed_until IS NULL OR claimed_until <= ?)
-                ORDER BY id LIMIT ? FOR UPDATE SKIP LOCKED
+                ORDER BY lead_priority, id LIMIT ? FOR UPDATE SKIP LOCKED
                 """, (rs, row) -> new DiscoveryClaimDTO(rs.getLong(1), rs.getString(2), null),
                 Timestamp.from(now), Timestamp.from(now), limit);
         return pending.stream().map(item -> {

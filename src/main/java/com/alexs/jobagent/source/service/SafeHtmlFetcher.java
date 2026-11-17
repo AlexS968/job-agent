@@ -79,7 +79,7 @@ public class SafeHtmlFetcher {
             if (response.status() >= 300 && response.status() < 400) {
                 URI next = redirect(current, response.location(), requests);
                 if (!officialHost.equalsIgnoreCase(next.getHost())) {
-                    return new FetchResult(current, next, null, requests);
+                    return new FetchResult(current, next, null, requests, response.status(), requests);
                 }
                 current = next;
             } else {
@@ -104,7 +104,9 @@ public class SafeHtmlFetcher {
     private FetchResult complete(URI current, PageResponse response, int requests)
             throws VerificationFetchException {
         if (response.status() != 200) {
-            throw new VerificationFetchException("HTTP_STATUS", requests);
+            String reason = response.status() == 429 ? "HTTP_RATE_LIMITED"
+                    : response.status() >= 500 ? "HTTP_SERVER_ERROR" : "HTTP_PERMANENT";
+            throw new VerificationFetchException(reason, requests, response.status(), requests - 1);
         }
         if (response.contentType() == null || !response.contentType().toLowerCase(java.util.Locale.ROOT)
                 .startsWith("text/html")) {
@@ -114,7 +116,8 @@ public class SafeHtmlFetcher {
         if (body.length > MAX_BYTES) {
             throw new VerificationFetchException("TOO_LARGE", requests);
         }
-        return new FetchResult(current, null, new String(body, StandardCharsets.UTF_8), requests);
+        return new FetchResult(current, null, new String(body, StandardCharsets.UTF_8),
+                requests, response.status(), requests - 1);
     }
 
     private URI redirect(URI current, String location, int requests) throws VerificationFetchException {
@@ -128,7 +131,8 @@ public class SafeHtmlFetcher {
         }
     }
 
-    public record FetchResult(URI pageUrl, URI externalRedirect, String html, int requests) { }
+    public record FetchResult(URI pageUrl, URI externalRedirect, String html, int requests,
+                              int httpStatus, int redirects) { }
     public record PageResponse(int status, String contentType, String location, String contentEncoding, byte[] body) {
         public PageResponse { body = body.clone(); }
         @Override public byte[] body() { return body.clone(); }
