@@ -32,16 +32,16 @@ public class CandidateAssessmentService {
         int review = 0;
         int notCandidates = 0;
         for (long id : repository.pending(CandidateAssessmentPolicy.VERSION, MAX_PER_INVOCATION)) {
-            String decision = transaction.execute(status -> assessOne(id));
-            if (decision == null) {
+            AssessmentOutcome decision = transaction.execute(status -> assessOne(id));
+            if (decision == AssessmentOutcome.SKIPPED) {
                 continue;
             }
             observed++;
             switch (decision) {
-                case "CANDIDATE" -> candidates++;
-                case "REVIEW" -> review++;
-                case "NOT_CANDIDATE" -> notCandidates++;
-                default -> throw new IllegalStateException("Unsupported candidate decision");
+                case CANDIDATE -> candidates++;
+                case REVIEW -> review++;
+                case NOT_CANDIDATE -> notCandidates++;
+                case SKIPPED -> throw new IllegalStateException("Skipped candidate was counted");
             }
         }
         return new CandidateBatchDTO(observed, candidates, review, notCandidates);
@@ -61,13 +61,17 @@ public class CandidateAssessmentService {
         return repository.find(sourceItemId, CandidateAssessmentPolicy.VERSION);
     }
 
-    private String assessOne(long id) {
+    private AssessmentOutcome assessOne(long id) {
         var input = repository.lockCurrent(id);
         if (input == null) {
-            return null;
+            return AssessmentOutcome.SKIPPED;
         }
         var assessment = policy.assess(input.title(), input.description());
         return repository.record(id, input.vacancyId(), CandidateAssessmentPolicy.VERSION, assessment)
-                ? assessment.decision() : null;
+                ? AssessmentOutcome.valueOf(assessment.decision()) : AssessmentOutcome.SKIPPED;
+    }
+
+    private enum AssessmentOutcome {
+        CANDIDATE, REVIEW, NOT_CANDIDATE, SKIPPED
     }
 }
