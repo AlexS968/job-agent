@@ -203,6 +203,36 @@ variable "enable_recurring_batch" {
   }
 }
 
+variable "enable_source_discovery" {
+  description = "Explicitly enable bounded Tavily Basic discovery in the existing scheduled batch after account billing review."
+  type        = bool
+  default     = false
+  validation {
+    condition     = !var.enable_source_discovery || (var.enable_scheduled_batch && var.tavily_api_key_secret_arn != null && var.source_discovery_reviewed_on != null)
+    error_message = "Source discovery requires the scheduled batch, private Tavily key ARN and billing-review date."
+  }
+}
+
+variable "tavily_api_key_secret_arn" {
+  description = "ARN of an existing private Secrets Manager secret containing only the Tavily API key."
+  type        = string
+  default     = null
+  validation {
+    condition     = var.tavily_api_key_secret_arn == null || can(regex("^arn:aws:secretsmanager:us-east-1:[0-9]{12}:secret:", var.tavily_api_key_secret_arn))
+    error_message = "The Tavily key secret ARN must be a reviewed us-east-1 Secrets Manager ARN."
+  }
+}
+
+variable "source_discovery_reviewed_on" {
+  description = "UTC date when the owner checked Researcher, PAYGO disabled, available credits and current Basic pricing."
+  type        = string
+  default     = null
+  validation {
+    condition     = var.source_discovery_reviewed_on == null || can(regex("^[0-9]{4}-[0-9]{2}-[0-9]{2}$", var.source_discovery_reviewed_on))
+    error_message = "The source discovery review date must use YYYY-MM-DD."
+  }
+}
+
 variable "batch_report_email" {
   description = "Owner email for the separate batch report/failure topic; supply only through ignored local tfvars."
   type        = string

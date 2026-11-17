@@ -79,6 +79,8 @@ public class ScheduledBatchService {
             evaluateAll(profiles.get(1), deadline);
             var deCandidates = evaluations.reportCandidates(profiles.getFirst(), RuleEvaluationPolicy.VERSION);
             var atCandidates = evaluations.reportCandidates(profiles.get(1), RuleEvaluationPolicy.VERSION);
+            LOGGER.info("Current country recommendations: de={}, at={}, policy={}; profiles may overlap",
+                    deCandidates.size(), atCandidates.size(), RuleEvaluationPolicy.VERSION);
             if (!clock.instant().isBefore(deadline)) {
                 throw new IllegalStateException("Scheduled report reached its time limit");
             }

@@ -3,6 +3,8 @@ package com.alexs.jobagent.source.service;
 import com.alexs.jobagent.source.dto.AtsSourceIdentityDTO;
 import com.alexs.jobagent.source.dto.SourceCandidateDTO;
 import com.alexs.jobagent.source.dto.SourceVerificationDTO;
+import com.alexs.jobagent.source.dto.DiscoveryClaimDTO;
+import com.alexs.jobagent.source.dto.AutomaticVerificationDTO;
 import com.alexs.jobagent.source.entity.VerifiedSourceEntity;
 import com.alexs.jobagent.source.entity.VerificationDecisionEntity;
 import com.alexs.jobagent.source.exception.VerificationFetchException;
@@ -17,6 +19,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Locale;
@@ -32,6 +35,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 public class SourceVerificationService {
     public static final int MAX_CANDIDATES = 5;
     private static final int MAX_LINKS = 200;
+    private static final int MAX_CAREERS_PAGES = 3;
+    private static final int MAX_EVIDENCE_HOSTS = 3;
     private static final String VERIFIED_OUTCOME = "VERIFIED";
     private static final String MANUAL_REVIEW_OUTCOME = "MANUAL_REVIEW";
     private static final String CONFLICT_DECISION = "CONFLICT";
@@ -60,14 +65,273 @@ public class SourceVerificationService {
         List<SourceVerificationDTO> results = new ArrayList<>();
         for (SourceCandidateDTO candidate : candidates) {
             SourceVerificationDTO result = inspect(candidate);
-            results.add(transaction.execute(status -> persist(result)));
+            results.add(transaction.execute(status -> {
+                SourceVerificationDTO persisted = persist(result);
+                repository.recordDiscoveryVerification(persisted);
+                return persisted;
+            }));
         }
         return List.copyOf(results);
     }
 
+    public SourceVerificationDTO verifyStored(long id, String origin, String officialDomain,
+                                               String officialPageUrl, String employerName) {
+        if (id < 1) {
+            throw new IllegalArgumentException("Invalid discovery candidate ID");
+        }
+        String url = repository.discoveryCandidateUrl(id);
+        if (url == null) {
+            throw new IllegalArgumentException("Discovery candidate is unavailable");
+        }
+        return verify(List.of(new SourceCandidateDTO(url, origin, officialDomain,
+                officialPageUrl, employerName))).getFirst();
+    }
+
+    /** Fetches independent same-domain homepage evidence before the existing ATS association check. */
+    public AutomaticVerificationDTO verifyAutomatic(DiscoveryClaimDTO claim) {
+        return verifyAutomatic(claim, List.of(), null, newAutomaticSession());
+    }
+
+    public AutomaticSession newAutomaticSession() {
+        return new AutomaticSession();
+    }
+
+    public AutomaticVerificationDTO verifyAutomatic(DiscoveryClaimDTO claim, List<String> evidenceUrls,
+                                                    String lookupLimit, AutomaticSession session) {
+        if (TransactionSynchronizationManager.isActualTransactionActive() || claim == null) {
+            throw new IllegalStateException("Automatic verification requires a committed discovery claim");
+        }
+        if (evidenceUrls == null || evidenceUrls.size() > MAX_EVIDENCE_HOSTS || session == null) {
+            throw new IllegalArgumentException("Invalid bounded discovery evidence");
+        }
+        SourceVerificationDTO result = inspectAutomatic(claim.candidateUrl(), evidenceUrls,
+                lookupLimit, session);
+        return transaction.execute(status -> {
+            Instant now = clock.instant();
+            if (!repository.claimValidForUpdate(claim, now)) {
+                throw new IllegalStateException("Discovery claim expired or was superseded");
+            }
+            boolean wasActive = repository.activeIdentity(result.identity());
+            SourceVerificationDTO persisted = persist(result);
+            String leadOutcome = repository.finishDiscoveryClaim(claim, persisted, now);
+            return new AutomaticVerificationDTO(persisted, leadOutcome,
+                    !wasActive && repository.activeIdentity(persisted.identity()));
+        });
+    }
+
+    private SourceVerificationDTO inspectAutomatic(String url, List<String> evidenceUrls,
+                                                   String lookupLimit, AutomaticSession session) {
+        Instant observed = clock.instant().truncatedTo(ChronoUnit.MICROS);
+        URI input;
+        try {
+            input = PublicDestinationPolicy.requirePublicHttpsUri(url);
+        } catch (IllegalArgumentException unsafe) {
+            return automaticFailure(url, observed, MANUAL_REVIEW_OUTCOME, "UNSAFE_URL", 0);
+        }
+        var board = AtsSourceIdentityParser.parse(input);
+        if (board.isPresent()) {
+            return inspectAtsLead(url, board.get(), evidenceUrls, lookupLimit, observed, session);
+        }
+        String host = input.getHost().toLowerCase(Locale.ROOT);
+        if (isNonEmployerHost(host)) {
+            return automaticFailure(url, observed, MANUAL_REVIEW_OUTCOME,
+                    "NO_INDEPENDENT_EMPLOYER_SITE", 0);
+        }
+        return automaticResult(url, observed, session.host(host));
+    }
+
+    private SourceVerificationDTO inspectAtsLead(String url, AtsSourceIdentityDTO board,
+                                                  List<String> evidenceUrls, String lookupLimit,
+                                                  Instant observed, AutomaticSession session) {
+        HostEvidence matching = null;
+        boolean conflict = false;
+        boolean retryable = false;
+        int evidenceRequests = 0;
+        Set<String> hosts = new LinkedHashSet<>();
+        for (String evidenceUrl : evidenceUrls) {
+            try {
+                String host = PublicDestinationPolicy.requirePublicHttpsUri(evidenceUrl)
+                        .getHost().toLowerCase(Locale.ROOT);
+                if (!isNonEmployerHost(host)) {
+                    hosts.add(host);
+                }
+            } catch (IllegalArgumentException ignored) {
+                // Search output is a lead, never a trust root.
+            }
+        }
+        for (String host : hosts) {
+            HostEvidence evidence = session.host(host);
+            evidenceRequests += evidence.requests();
+            if (VERIFIED_OUTCOME.equals(evidence.outcome())) {
+                if (!board.equals(evidence.identity())) {
+                    conflict = true;
+                } else if (matching == null) {
+                    matching = evidence;
+                } else if (!matching.domain().equals(evidence.domain())) {
+                    conflict = true;
+                }
+            } else if ("RETRYABLE_FAILURE".equals(evidence.outcome())) {
+                retryable = true;
+            } else if ("AMBIGUOUS_LINKS".equals(evidence.reason())
+                    || "MIXED_PLATFORM_LINKS".equals(evidence.reason())) {
+                conflict = true;
+            }
+        }
+        if (conflict) {
+            return automaticFailure(url, observed, MANUAL_REVIEW_OUTCOME,
+                    "CONFLICTING_EMPLOYER_EVIDENCE", evidenceRequests);
+        }
+        if (retryable) {
+            return automaticFailure(url, observed, "RETRYABLE_FAILURE", "EVIDENCE_FETCH_INCOMPLETE",
+                    evidenceRequests);
+        }
+        if (matching != null) {
+            return automaticResult(url, observed, matching);
+        }
+        if (lookupLimit != null) {
+            return automaticFailure(url, observed, "RETRYABLE_FAILURE", lookupLimit, evidenceRequests);
+        }
+        return automaticFailure(url, observed, MANUAL_REVIEW_OUTCOME,
+                hosts.isEmpty() ? "NO_INDEPENDENT_EMPLOYER_EVIDENCE" : "ATS_ASSOCIATION_NOT_FOUND",
+                evidenceRequests);
+    }
+
+    private SourceVerificationDTO automaticFailure(String url, Instant observed, String outcome,
+                                                    String reason, int requests) {
+        return result(new SourceCandidateDTO(url, "automated-official-page", null, null, null),
+                observed, outcome, reason, null, null, requests);
+    }
+
+    private SourceVerificationDTO automaticResult(String url, Instant observed, HostEvidence evidence) {
+        return result(new SourceCandidateDTO(url, "automated-official-page", evidence.domain(),
+                evidence.pageUrl(), evidence.domain()), observed, evidence.outcome(), evidence.reason(),
+                evidence.identity(), evidence.observedUrl(), evidence.requests());
+    }
+
+    private HostEvidence inspectHost(String host) {
+        int requests = 0;
+        try {
+            SafeHtmlFetcher.FetchResult home = fetcher.fetch("https://" + host + "/");
+            requests += home.requests();
+            if (home.externalRedirect() != null) {
+                if (!wwwVariant(host, home.externalRedirect().getHost())) {
+                    return hostFailure(host, MANUAL_REVIEW_OUTCOME, "HOMEPAGE_EXTERNAL_REDIRECT", requests);
+                }
+                home = fetcher.fetch(home.externalRedirect().toString());
+                requests += home.requests();
+                if (home.externalRedirect() != null) {
+                    return hostFailure(host, MANUAL_REVIEW_OUTCOME, "HOMEPAGE_EXTERNAL_REDIRECT", requests);
+                }
+            }
+            String domain = home.pageUrl().getHost().toLowerCase(Locale.ROOT);
+            var anchors = Jsoup.parse(home.html()).select("a[href]");
+            if (anchors.size() > MAX_LINKS) {
+                return hostFailure(domain, MANUAL_REVIEW_OUTCOME, "TOO_MANY_LINKS", requests);
+            }
+            Set<URI> careers = new LinkedHashSet<>();
+            for (Element anchor : anchors) {
+                try {
+                    URI link = PublicDestinationPolicy.requirePublicHttpsUri(
+                            home.pageUrl().resolve(anchor.attr("href")).toString());
+                    if (link.getHost().equalsIgnoreCase(domain) && isCareersLink(link, anchor.text())) {
+                        careers.add(link);
+                    }
+                } catch (IllegalArgumentException ignored) {
+                    // Unsafe links cannot establish careers-page evidence.
+                }
+            }
+            if (careers.isEmpty()) {
+                return hostFailure(domain, MANUAL_REVIEW_OUTCOME, "NO_HOMEPAGE_CAREERS_LINK", requests);
+            }
+            if (careers.size() > MAX_CAREERS_PAGES) {
+                return hostFailure(domain, MANUAL_REVIEW_OUTCOME, "TOO_MANY_CAREERS_LINKS", requests);
+            }
+            Map<AtsSourceIdentityDTO, URI> boards = new LinkedHashMap<>();
+            String officialPage = null;
+            boolean unsupported = false;
+            for (URI careersUrl : careers) {
+                SafeHtmlFetcher.FetchResult page = fetcher.fetch(careersUrl.toString());
+                requests += page.requests();
+                if (page.externalRedirect() != null) {
+                    var redirected = AtsSourceIdentityParser.parse(page.externalRedirect());
+                    if (redirected.isEmpty()) {
+                        return hostFailure(domain, MANUAL_REVIEW_OUTCOME, "EXTERNAL_REDIRECT", requests);
+                    }
+                    boards.putIfAbsent(redirected.get(), page.externalRedirect());
+                    if (officialPage == null) {
+                        officialPage = careersUrl.toString();
+                    }
+                } else {
+                    var pageAnchors = Jsoup.parse(page.html()).select("a[href]");
+                    if (pageAnchors.size() > MAX_LINKS) {
+                        return hostFailure(domain, MANUAL_REVIEW_OUTCOME, "TOO_MANY_LINKS", requests);
+                    }
+                    LinkEvidenceDTO links = scanLinks(page.pageUrl(), pageAnchors);
+                    boards.putAll(links.links());
+                    unsupported |= links.unsupported();
+                    if (officialPage == null && !links.links().isEmpty()) {
+                        officialPage = page.pageUrl().toString();
+                    }
+                }
+            }
+            if (boards.size() != 1 || unsupported) {
+                String reason = boards.size() > 1 ? "AMBIGUOUS_LINKS"
+                        : unsupported ? "MIXED_PLATFORM_LINKS" : "NO_SUPPORTED_LINK";
+                return hostFailure(domain, MANUAL_REVIEW_OUTCOME, reason, requests);
+            }
+            var board = boards.entrySet().iterator().next();
+            return new HostEvidence(domain, officialPage, board.getValue().toString(),
+                    VERIFIED_OUTCOME, null, board.getKey(), requests);
+        } catch (VerificationFetchException failure) {
+            return hostFailure(host, "RETRYABLE_FAILURE", failure.reason(), requests + failure.requests());
+        }
+    }
+
+    private static boolean isCareersLink(URI link, String label) {
+        String path = link.getPath().toLowerCase(Locale.ROOT);
+        String text = label.trim().toLowerCase(Locale.ROOT);
+        return path.matches(".*/(?:careers?|jobs|opportunities|open-positions|join-us|work-with-us)/?")
+                || Set.of("careers", "career", "jobs", "open positions", "open roles",
+                        "opportunities", "join us", "work with us").contains(text);
+    }
+
+    private static boolean wwwVariant(String original, String redirect) {
+        return redirect != null && (redirect.equalsIgnoreCase("www." + original)
+                || original.equalsIgnoreCase("www." + redirect));
+    }
+
+    private static boolean isNonEmployerHost(String host) {
+        return host.endsWith("greenhouse.io") || host.endsWith("lever.co")
+                || AGGREGATORS.stream().anyMatch(domain -> host.equals(domain) || host.endsWith("." + domain));
+    }
+
+    private static HostEvidence hostFailure(String domain, String outcome, String reason, int requests) {
+        return new HostEvidence(domain, null, null, outcome, reason, null, requests);
+    }
+
+    public final class AutomaticSession {
+        private final Map<String, HostEvidence> hosts = new LinkedHashMap<>();
+
+        private HostEvidence host(String domain) {
+            HostEvidence existing = hosts.get(domain);
+            if (existing != null) {
+                return existing;
+            }
+            HostEvidence inspected = inspectHost(domain);
+            hosts.put(domain, inspected);
+            hosts.putIfAbsent(inspected.domain(), inspected);
+            return inspected;
+        }
+    }
+
+    private record HostEvidence(String domain, String pageUrl, String observedUrl,
+                                String outcome, String reason, AtsSourceIdentityDTO identity,
+                                int requests) { }
+
     private SourceVerificationDTO inspect(SourceCandidateDTO candidate) {
         if (candidate == null || candidate.inputUrl() == null || candidate.inputUrl().length() > 2048
-                || candidate.origin() == null || !Set.of("owner-confirmed", "independently-reviewed", "manual-candidate").contains(candidate.origin())) {
+                || candidate.origin() == null || !Set.of("owner-confirmed", "independently-reviewed",
+                "manual-candidate").contains(candidate.origin())) {
             throw new IllegalArgumentException("Invalid verification candidate");
         }
         Instant observed = clock.instant().truncatedTo(ChronoUnit.MICROS);
@@ -77,7 +341,8 @@ public class SourceVerificationService {
         } catch (IllegalArgumentException unsafe) {
             return result(candidate, observed, "REJECTED", "UNSAFE_URL", null, null, 0);
         }
-        if (!Set.of("owner-confirmed", "independently-reviewed").contains(candidate.origin())) {
+        if (!Set.of("owner-confirmed", "independently-reviewed", "automated-official-page")
+                .contains(candidate.origin())) {
             return result(candidate, observed, MANUAL_REVIEW_OUTCOME, "NO_TRUST_ROOT", null, null, 0);
         }
         URI official;
@@ -163,7 +428,8 @@ public class SourceVerificationService {
                                          String reason, AtsSourceIdentityDTO identity, String observedUrl, int requests) {
         String domain = candidate.officialDomain() == null ? null
                 : candidate.officialDomain().toLowerCase(Locale.ROOT);
-        String evidence = candidate.inputUrl() + "|" + candidate.origin() + "|" + candidate.officialDomain()
+        String evidence = ("automated-official-page".equals(candidate.origin()) ? "" : candidate.inputUrl())
+                + "|" + candidate.origin() + "|" + candidate.officialDomain()
                 + "|" + candidate.officialPageUrl() + "|" + outcome + "|" + reason + "|" + observedUrl
                 + "|" + identity;
         String hash;
@@ -236,7 +502,7 @@ public class SourceVerificationService {
     }
 
     private SourceVerificationDTO persistVerified(SourceVerificationDTO result) {
-        repository.insertVerified(result);
+        boolean inserted = repository.insertVerified(result);
         VerifiedSourceEntity current = repository.findIdentityForUpdate(result.identity());
         if (current == null) {
             throw new IllegalStateException("Verified source missing after insert");
@@ -263,10 +529,17 @@ public class SourceVerificationService {
         } else if (!VERIFIED_OUTCOME.equals(current.status())) {
             result = reclassify(result, SUPERSEDED_OBSERVATION);
         }
+        if (inserted && "automated-official-page".equals(result.origin())
+                && VERIFIED_OUTCOME.equals(result.outcome())) {
+            repository.setActive(current.id(), true);
+        }
         return result;
     }
 
     private boolean hasTrustedObservation(SourceVerificationDTO result) {
+        if ("automated-official-page".equals(result.origin()) && !VERIFIED_OUTCOME.equals(result.outcome())) {
+            return false;
+        }
         return result.officialDomain() != null && result.requests() > 0
                 && (VERIFIED_OUTCOME.equals(result.outcome()) || MANUAL_REVIEW_OUTCOME.equals(result.outcome())
                 || "UNSUPPORTED".equals(result.outcome()));

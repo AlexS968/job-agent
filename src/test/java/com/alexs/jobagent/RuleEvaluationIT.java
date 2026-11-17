@@ -81,6 +81,7 @@ class RuleEvaluationIT {
     @Autowired SqsEventMapper mapper;
     @Autowired ProfileFileService profiles;
     @Autowired EvaluationService evaluation;
+    @Autowired com.alexs.jobagent.source.service.SourceDiscoveryService discovery;
     @Autowired ExtractionInputService extractionInputs;
     @Autowired ExtractionOutputValidator extractionValidator;
     @Autowired PlatformTransactionManager manager;
@@ -96,7 +97,7 @@ class RuleEvaluationIT {
 
     @Test
     void migrationReplayVersionsAndStaleEvaluations() throws Exception {
-        assertEquals(20, jdbc.queryForObject("SELECT count(*) FROM flyway_schema_history", Integer.class));
+        assertEquals(22, jdbc.queryForObject("SELECT count(*) FROM flyway_schema_history", Integer.class));
         long vacancy = insert("Backend Engineer", COUNTRY_REMOTE);
         LoadedProfileDTO v1 = profile("v1", "Backend Engineer");
         assertEquals(1, evaluation.evaluate(v1, 0, 100, RuleEvaluationPolicy.VERSION).created());
@@ -108,7 +109,7 @@ class RuleEvaluationIT {
         assertEquals(1, count("vacancy_evaluations"));
         assertEquals(1, evaluation.evaluate(profile("v2", "Backend Engineer"), 0, 100,
                 RuleEvaluationPolicy.VERSION).created());
-        assertEquals(1, evaluation.evaluate(v1, 0, 100, "rules-v2").created());
+        assertEquals(1, evaluation.evaluate(v1, 0, 100, RuleEvaluationPolicy.LEGACY_VERSION).created());
         assertEquals(3, count("vacancy_evaluations"));
         jdbc.update("UPDATE vacancies SET title = ? WHERE id = ?", "Office Coordinator", vacancy);
         assertTrue(evaluation.shortlist(v1, 10, RuleEvaluationPolicy.VERSION).suitable().isEmpty());
@@ -164,7 +165,8 @@ class RuleEvaluationIT {
         when(reports.publish(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
                 .thenReturn("synthetic-message-id");
         var consumer = new SqsEvaluationConsumerService(queue, outbox, deliveries, evaluation, json, clock, manager, mapper);
-        var pipeline = new BatchPipelineService(sources, outbox, producer, consumer, queue, evaluation, clock);
+        var pipeline = new BatchPipelineService(sources, discovery, outbox, producer, consumer, queue,
+                evaluation, clock);
         var scheduledRepository = new ScheduledBatchRepository(jdbc);
         var formatter = new BatchReportFormatter();
         var scheduled = new ScheduledBatchService(scheduledRepository,
@@ -469,6 +471,7 @@ class RuleEvaluationIT {
         }
         long synthetic = insert("Backend Engineer synthetic", "{}");
         long relevant = live(insert("Backend Engineer", "{}"));
+        jdbc.update("UPDATE vacancies SET description = 'Build Java backend services' WHERE id = ?", relevant);
         assertEquals(23, evaluation.evaluate(de, 0, 100, RuleEvaluationPolicy.VERSION).created());
         var report = evaluation.reportShortlist(de, 20, RuleEvaluationPolicy.VERSION);
         assertEquals(0, report.totalSuitable());
@@ -482,11 +485,13 @@ class RuleEvaluationIT {
     @Test
     void countryReportsUsePersistedSourceLocationEvidenceRatherThanUnknownPermission() {
         long berlin = live(insert("Backend Engineer Berlin", "{}"));
+        jdbc.update("UPDATE vacancies SET description = 'Build Java backend services' WHERE id = ?", berlin);
         jdbc.update("UPDATE source_items SET raw_payload = "
                 + "'{\"location\":{\"name\":\"Berlin\"},\"content\":\"Work from Austria "
                 + "for 12 weeks per year\"}'::jsonb WHERE id = "
                 + "(SELECT source_item_id FROM vacancy_sources WHERE vacancy_id = ?)", berlin);
         long vienna = live(insert("Backend Engineer Vienna", "{}"));
+        jdbc.update("UPDATE vacancies SET description = 'Build Java backend services' WHERE id = ?", vienna);
         jdbc.update("UPDATE vacancies SET location = 'Vienna, Austria' WHERE id = ?", vienna);
         jdbc.update("UPDATE source_items SET raw_payload = "
                 + "'{\"location\":{\"name\":\"Vienna, Austria\"}}'::jsonb WHERE id = "
@@ -505,6 +510,33 @@ class RuleEvaluationIT {
                 + "WHERE vacancy_id = ? AND profile_id = 'alex-at'", String.class, berlin));
         assertEquals("CONFIRMED", jdbc.queryForObject("SELECT country_eligibility FROM vacancy_evaluations "
                 + "WHERE vacancy_id = ? AND profile_id = 'alex-at'", String.class, vienna));
+    }
+
+    @Test
+    void liveGenericTitleUsesStoredDescriptionCandidateBeforeCountryShortlist() {
+        long generic = live(insert("Software Engineer", "{}"));
+        jdbc.update("UPDATE vacancies SET description = 'Build Java backend services and REST APIs' WHERE id = ?",
+                generic);
+        long unrelated = live(insert("Credit Risk Analyst", "{}"));
+        jdbc.update("UPDATE vacancies SET description = 'Work with Java developers on backend systems' WHERE id = ?",
+                unrelated);
+        var de = profiles.loadJson(json.writeValueAsString(new SearchProfileDTO("alex-de", "v1", "DE",
+                List.of("Senior Java"), List.of("Backend Engineer"), List.of(), List.of(), List.of(), false, null)));
+        var at = profiles.loadJson(json.writeValueAsString(new SearchProfileDTO("alex-at", "v1", "AT",
+                List.of("Senior Java"), List.of("Backend Engineer"), List.of(), List.of(), List.of(), false, null)));
+        assertEquals(2, evaluation.evaluate(de, 0, 100, RuleEvaluationPolicy.VERSION).created());
+        assertEquals(2, evaluation.evaluate(at, 0, 100, RuleEvaluationPolicy.VERSION).created());
+        assertEquals("CANDIDATE", jdbc.queryForObject("SELECT decision FROM vacancy_candidate_assessments "
+                + "WHERE vacancy_id = ?", String.class, generic));
+        assertEquals("NOT_CANDIDATE", jdbc.queryForObject("SELECT decision FROM vacancy_candidate_assessments "
+                + "WHERE vacancy_id = ?", String.class, unrelated));
+        assertEquals("RESERVE", jdbc.queryForObject("SELECT role_classification FROM vacancy_evaluations "
+                + "WHERE vacancy_id = ? AND profile_id = 'alex-de'", String.class, generic));
+        assertEquals("EXCLUDED", jdbc.queryForObject("SELECT decision FROM vacancy_evaluations "
+                + "WHERE vacancy_id = ? AND profile_id = 'alex-de'", String.class, unrelated));
+        assertEquals(List.of(generic), evaluation.reportShortlist(de, 20, RuleEvaluationPolicy.VERSION)
+                .needsReview().stream().map(item -> item.vacancyId()).toList());
+        assertTrue(evaluation.reportShortlist(at, 20, RuleEvaluationPolicy.VERSION).needsReview().isEmpty());
     }
 
     private long live(long vacancy) {

@@ -61,6 +61,7 @@ class SqsEvaluationIT {
     @Autowired PlatformTransactionManager manager;
     @Autowired SqsEventMapper mapper;
     @Autowired SourceRegistryService registry;
+    @Autowired com.alexs.jobagent.source.service.SourceDiscoveryService discovery;
 
     @BeforeEach
     void clear() {
@@ -76,7 +77,8 @@ class SqsEvaluationIT {
             ingestion.ingest(json.readValue(stream, SyntheticInputDTO.class));
         }
         Queue queue = new Queue();
-        var pipeline = new BatchPipelineService(registry, outbox, new SqsProducerService(outbox, queue, json, mapper),
+        var pipeline = new BatchPipelineService(registry, discovery, outbox,
+                new SqsProducerService(outbox, queue, json, mapper),
                 consumer(queue), queue, evaluations, clock);
         var selected = profile("v1");
         var first = pipeline.run(selected, 10, Duration.ofMinutes(10), 5);
@@ -105,7 +107,7 @@ class SqsEvaluationIT {
         assertTrue(jdbc.queryForObject("SELECT reasons::text FROM vacancy_evaluations", String.class).contains("ROLE"));
         var effect = consumer.status(eventId(), profile);
         assertEquals("EVALUATED", effect.outcome());
-        assertEquals("rules-v1", effect.evaluation().policyVersion());
+        assertEquals("rules-v2", effect.evaluation().policyVersion());
         assertEquals(profile.criteriaHash(), effect.evaluation().criteriaHash());
         assertFalse(effect.evaluation().reasons().isEmpty());
         queue.body = queue.sent;

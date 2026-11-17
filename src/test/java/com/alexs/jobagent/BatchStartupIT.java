@@ -39,7 +39,7 @@ class BatchStartupIT {
                  var statement = connection.createStatement();
                  var rows = statement.executeQuery("SELECT COUNT(*) FROM flyway_schema_history WHERE success")) {
                 assertTrue(rows.next());
-                assertEquals(20, rows.getInt(1));
+                assertEquals(22, rows.getInt(1));
             }
         }
     }
@@ -204,6 +204,11 @@ class BatchStartupIT {
             Result live = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD, "--mode=search-pilot");
             assertNotEquals(0, live.exitCode(), live.output());
             assertFalse(live.output().contains(PASSWORD));
+            Result disabledDiscovery = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
+                    "--mode=source-discovery-once");
+            assertNotEquals(0, disabledDiscovery.exitCode(), disabledDiscovery.output());
+            assertTrue(disabledDiscovery.output().contains("Source discovery is disabled"),
+                    disabledDiscovery.output());
             try (var connection = java.sql.DriverManager.getConnection(postgres.getJdbcUrl(),
                     postgres.getUsername(), PASSWORD);
                  var statement = connection.createStatement();
@@ -369,7 +374,24 @@ class BatchStartupIT {
                                 'synthetic.example', 'https://synthetic.example/careers', CURRENT_TIMESTAMP,
                                 'source-verifier-v1', 'VERIFIED', repeat('a', 64), 1)
                         """);
+                statement.execute("""
+                        INSERT INTO search_pilot_attempts (query_version, query_number, outcome)
+                        VALUES ('synthetic-test', 1, 'SUCCESS')
+                        """);
+                statement.execute("""
+                        INSERT INTO source_discovery_candidates
+                        (candidate_url, first_search_attempt_id, last_search_attempt_id)
+                        VALUES ('https://jobs.lever.co/synthetic?tracking=synthetic-private', 1, 1)
+                        """);
             }
+            Result discovered = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
+                    "--mode=review-discovery", "--after-id=0");
+            assertEquals(0, discovered.exitCode(), discovered.output());
+            assertTrue(discovered.output().contains("Discovery candidate: id=1, host=jobs.lever.co"),
+                    discovered.output());
+            assertTrue(discovered.output().contains("Discovery review cursor: after_id=1"),
+                    discovered.output());
+            assertFalse(discovered.output().contains("synthetic-private"));
             Result review = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD, "--mode=review-sources");
             assertEquals(0, review.exitCode(), review.output());
             assertTrue(review.output().contains("Registry source: id=1, platform=GREENHOUSE"), review.output());
@@ -451,7 +473,7 @@ class BatchStartupIT {
             Result shortlist = run(postgres.getJdbcUrl(), postgres.getUsername(), PASSWORD,
                     "--mode=shortlist", "--profile-file=" + profile, "--limit=5");
             assertEquals(0, shortlist.exitCode(), shortlist.output());
-            assertTrue(shortlist.output().contains("Shortlist: policy=rules-v1, suitable=0, needs_review=1"),
+            assertTrue(shortlist.output().contains("Shortlist: policy=rules-v2, suitable=0, needs_review=1"),
                     shortlist.output());
             assertTrue(shortlist.output().contains("https://jobs.example.org/roles/role-001"), shortlist.output());
             assertTrue(shortlist.output().contains("WORK_ELIGIBILITY_UNCONFIRMED"), shortlist.output());

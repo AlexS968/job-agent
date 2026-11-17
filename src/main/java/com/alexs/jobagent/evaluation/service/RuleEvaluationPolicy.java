@@ -5,6 +5,8 @@ import com.alexs.jobagent.evaluation.dto.SearchProfileDTO;
 import com.alexs.jobagent.evaluation.dto.VacancyEvaluationDTO;
 import com.alexs.jobagent.source.dto.SourceEvidenceDTO;
 import com.alexs.jobagent.vacancy.dto.VacancyReadDTO;
+import com.alexs.jobagent.vacancy.dto.CandidateAssessmentDTO;
+import com.alexs.jobagent.vacancy.service.CandidateAssessmentPolicy;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -15,7 +17,8 @@ import tools.jackson.databind.json.JsonMapper;
 
 @Service
 public class RuleEvaluationPolicy {
-    public static final String VERSION = "rules-v1";
+    public static final String VERSION = "rules-v2";
+    public static final String LEGACY_VERSION = "rules-v1";
     private static final String REMOTE = "REMOTE";
     private static final String UNMATCHED = "UNMATCHED";
     private static final String CONFLICTING_COUNTRY_ELIGIBILITY = "CONFLICTING_COUNTRY_ELIGIBILITY";
@@ -27,6 +30,21 @@ public class RuleEvaluationPolicy {
 
     public VacancyEvaluationDTO evaluate(VacancyReadDTO vacancy, SourceEvidenceDTO source,
                                           LoadedProfileDTO loaded, String revision) {
+        return evaluate(vacancy, source, loaded, revision, null);
+    }
+
+    public VacancyEvaluationDTO evaluateCandidate(VacancyReadDTO vacancy, SourceEvidenceDTO source,
+                                                   LoadedProfileDTO loaded, String revision,
+                                                   CandidateAssessmentDTO assessment) {
+        if (assessment == null) {
+            throw new IllegalArgumentException("Candidate assessment is required for rules-v2");
+        }
+        return evaluate(vacancy, source, loaded, revision, assessment);
+    }
+
+    private VacancyEvaluationDTO evaluate(VacancyReadDTO vacancy, SourceEvidenceDTO source,
+                                          LoadedProfileDTO loaded, String revision,
+                                          CandidateAssessmentDTO assessment) {
         SearchProfileDTO profile = loaded.profile();
         List<String> reasons = new ArrayList<>();
         List<String> unknowns = new ArrayList<>();
@@ -38,7 +56,9 @@ public class RuleEvaluationPolicy {
         JsonNode raw = json.readTree(source.rawPayload());
         JsonNode asserted = vacancy.sourceNamespace().startsWith("synthetic-") && raw != null
                 ? raw.get("evaluationEvidence") : null;
-        RoleAssessment role = assessRole(profile, vacancy.title(), reasons, unknowns, evidence);
+        RoleAssessment role = assessment == null
+                ? assessRole(profile, vacancy.title(), reasons, unknowns, evidence)
+                : assessCandidateRole(profile, vacancy.title(), assessment, reasons, unknowns, evidence);
         String arrangement = arrangement(asserted, raw, evidence);
         WorkAssessment work = assessWork(profile, asserted, arrangement, reasons, unknowns, evidence);
         salary(asserted == null ? null : asserted.get("salary"), profile.salaryPreference(), reasons, unknowns);
@@ -51,6 +71,39 @@ public class RuleEvaluationPolicy {
         return new VacancyEvaluationDTO(vacancy.id(), source.sourceItemId(), revision, decision, work.rank(),
                 role.classification(), List.copyOf(reasons),
                 List.copyOf(unknowns), List.copyOf(evidence), source.originalUrl());
+    }
+
+    private static RoleAssessment assessCandidateRole(SearchProfileDTO profile, String title,
+                                                       CandidateAssessmentDTO assessment, List<String> reasons,
+                                                       List<String> unknowns, List<String> evidence) {
+        evidence.add("candidate policy: " + CandidateAssessmentPolicy.VERSION + ", reason: " + assessment.reason());
+        if (matching(profile.excludedTitleTerms(), title.toLowerCase(Locale.ROOT)) != null) {
+            reasons.add("EXPLICIT_TITLE_EXCLUSION");
+            return new RoleAssessment(UNMATCHED, true);
+        }
+        if ("NOT_CANDIDATE".equals(assessment.decision())) {
+            reasons.add("ROLE_OUTSIDE_JAVA_BACKEND_SCOPE");
+            return new RoleAssessment(UNMATCHED, true);
+        }
+        if (!"CANDIDATE".equals(assessment.decision())) {
+            unknowns.add("ROLE_CANDIDATE_UNCERTAIN");
+            return new RoleAssessment(UNMATCHED, false);
+        }
+        String lowered = title.toLowerCase(Locale.ROOT);
+        String preferred = matching(profile.preferredRoleTerms(), lowered);
+        if (preferred != null) {
+            reasons.add("PREFERRED_ROLE");
+            evidence.add("matched title term: " + excerpt(preferred));
+            return new RoleAssessment("PREFERRED", false);
+        }
+        String reserve = matching(profile.reserveRoleTerms(), lowered);
+        if (reserve != null) {
+            reasons.add("RESERVE_ROLE");
+            evidence.add("matched title term: " + excerpt(reserve));
+        } else {
+            reasons.add("JAVA_BACKEND_CANDIDATE");
+        }
+        return new RoleAssessment("RESERVE", false);
     }
 
     private static RoleAssessment assessRole(SearchProfileDTO profile, String title, List<String> reasons,

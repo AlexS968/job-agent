@@ -11,6 +11,7 @@ import com.alexs.jobagent.source.dto.SourceEvidenceDTO;
 import com.alexs.jobagent.source.service.SourceEvidenceService;
 import com.alexs.jobagent.vacancy.dto.VacancyReadDTO;
 import com.alexs.jobagent.vacancy.service.VacancyReadService;
+import com.alexs.jobagent.vacancy.service.CandidateAssessmentService;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -36,12 +37,14 @@ public class EvaluationService {
     private final ExtractionAwareEvaluationPolicy extractionPolicy;
     private final ExtractionEvidenceService extractionEvidence;
     private final CountryEvidencePolicy countryEvidence;
+    private final CandidateAssessmentService candidates;
     private final TransactionTemplate transaction;
 
     public EvaluationService(VacancyReadService vacancies, SourceEvidenceService sources,
                              EvaluationRepository evaluations, RuleEvaluationPolicy policy,
                              ExtractionAwareEvaluationPolicy extractionPolicy,
                              ExtractionEvidenceService extractionEvidence, CountryEvidencePolicy countryEvidence,
+                             CandidateAssessmentService candidates,
                              PlatformTransactionManager manager) {
         this.vacancies = vacancies;
         this.sources = sources;
@@ -50,6 +53,7 @@ public class EvaluationService {
         this.extractionPolicy = extractionPolicy;
         this.extractionEvidence = extractionEvidence;
         this.countryEvidence = countryEvidence;
+        this.candidates = candidates;
         this.transaction = new TransactionTemplate(manager);
     }
 
@@ -208,9 +212,16 @@ public class EvaluationService {
         String basis = selected == null ? "NONE" : selected.status();
         boolean created = false;
         if (evaluations.current(id, revision, profile, policyVersion, workId, basis) == null) {
-            VacancyEvaluationDTO result = ExtractionAwareEvaluationPolicy.VERSION.equals(policyVersion)
-                    ? extractionPolicy.evaluate(vacancy, source, profile, revision, selected)
-                    : policy.evaluate(vacancy, source, profile, revision);
+            VacancyEvaluationDTO result;
+            if (ExtractionAwareEvaluationPolicy.VERSION.equals(policyVersion)) {
+                result = extractionPolicy.evaluate(vacancy, source, profile, revision, selected);
+            } else if (RuleEvaluationPolicy.VERSION.equals(policyVersion)
+                    && trustedLiveSource(vacancy.sourceNamespace())) {
+                result = policy.evaluateCandidate(vacancy, source, profile, revision,
+                        candidates.forEvaluation(source.sourceItemId(), vacancy));
+            } else {
+                result = policy.evaluate(vacancy, source, profile, revision);
+            }
             created = evaluations.insert(result, profile, policyVersion, selected);
         }
         var country = countryEvidence.assess(vacancy, source, profile.profile().workCountry());

@@ -139,7 +139,9 @@ public class BatchReportFormatter {
     private static String matched(VacancyEvaluationDTO item) {
         List<String> reasons = item.reasons() == null ? List.of() : item.reasons();
         List<String> words = new ArrayList<>();
-        if ("PREFERRED".equals(item.roleClassification())) {
+        if (reasons.contains("JAVA_BACKEND_CANDIDATE")) {
+            words.add("Java/backend evidence in the description");
+        } else if ("PREFERRED".equals(item.roleClassification())) {
             words.add("preferred role title");
         } else if ("RESERVE".equals(item.roleClassification())) {
             words.add("reserve role title");

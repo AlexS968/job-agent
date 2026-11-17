@@ -24,7 +24,7 @@ import tools.jackson.databind.json.JsonMapper;
 @ConditionalOnProperty(name = "jobagent.sqs.enabled", havingValue = "true")
 public class SqsEvaluationConsumerService {
     private static final Logger LOGGER = LoggerFactory.getLogger(SqsEvaluationConsumerService.class);
-    private static final String HANDLER_PREFIX = "sqs-vacancy-evaluation-rules-v1-";
+    private static final String HANDLER_PREFIX = "sqs-vacancy-evaluation-rules-v2-";
     private final SqsGateway gateway;
     private final OutboxService outbox;
     private final ConsumerDeliveryRepository deliveries;

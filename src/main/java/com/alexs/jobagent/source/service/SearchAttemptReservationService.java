@@ -27,4 +27,12 @@ public class SearchAttemptReservationService {
             return repository.insertAttempt(queryVersion, queryNumber);
         });
     }
+
+    public Long reserveMonthly(String queryVersion, int queryNumber, java.time.LocalDate period) {
+        if (TransactionSynchronizationManager.isActualTransactionActive() || period == null) {
+            throw new IllegalStateException("Monthly search reservation requires no ambient transaction");
+        }
+        return transaction.execute(status -> repository.reserveMonthly(period)
+                ? repository.insertMonthlyAttempt(queryVersion, queryNumber, period) : null);
+    }
 }

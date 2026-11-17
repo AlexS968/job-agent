@@ -64,20 +64,92 @@ class SourceVerificationIT {
     @BeforeEach
     void clear() {
         jdbc.execute("TRUNCATE source_verification_attempts, source_verification_decisions, "
-                + "verified_source_registry RESTART IDENTITY");
+                + "verified_source_registry, active_source_import_claims, "
+                + "source_discovery_candidates, search_pilot_attempts RESTART IDENTITY");
         jdbc.execute("TRUNCATE vacancy_sources, source_items, vacancies, employers, agent_runs RESTART IDENTITY CASCADE");
+        jdbc.update("UPDATE active_source_import_cursor SET last_source_id = 0");
+    }
+
+    @Test
+    void activeSourceRotationBoundsEachRunAndResumesAcrossRuns() {
+        for (int i = 1; i <= 6; i++) {
+            jdbc.update("""
+                    INSERT INTO verified_source_registry
+                    (platform, region, source_id, employer_domain, employer_name, official_page_url,
+                     evidence_url, evidence_hash, verified_at, status, active)
+                    VALUES ('GREENHOUSE', 'global', ?, ?, 'Synthetic Employer', ?, ?, ?, ?, 'VERIFIED', TRUE)
+                    """, "board" + i, "employer" + i + ".example", "https://employer" + i + ".example/careers",
+                    "https://job-boards.greenhouse.io/board" + i, "a".repeat(64), java.sql.Timestamp.from(NOW));
+        }
+        var fetched = new java.util.ArrayList<String>();
+        var batch = new GreenhouseBatchService(board -> {
+            fetched.add(board.token());
+            return new GreenhouseFetchResultDTO(List.of(), 1);
+        }, greenhouseIngestion, clock(NOW));
+        var registry = new SourceRegistryService(new SourceRegistryRepository(jdbc), batch, lever,
+                candidates(), clock(NOW), manager);
+        assertEquals(5, registry.importActive().sources());
+        assertEquals(List.of("board1", "board2", "board3", "board4", "board5"), fetched);
+        assertEquals(5, registry.importActive().sources());
+        assertEquals(List.of("board1", "board2", "board3", "board4", "board5",
+                "board6", "board1", "board2", "board3", "board4"), fetched);
+    }
+
+    @Test
+    void expiredImportClaimCanBeReclaimedButStaleReleaseIsFenced() {
+        jdbc.update("""
+                INSERT INTO verified_source_registry
+                (platform, region, source_id, employer_domain, employer_name, official_page_url,
+                 evidence_url, evidence_hash, verified_at, status, active)
+                VALUES ('GREENHOUSE', 'global', 'board1', 'employer.example', 'Synthetic Employer',
+                        'https://employer.example/careers', 'https://job-boards.greenhouse.io/board1',
+                        ?, ?, 'VERIFIED', TRUE)
+                """, "a".repeat(64), java.sql.Timestamp.from(NOW));
+        var transaction = new TransactionTemplate(manager);
+        var first = transaction.execute(status -> new SourceRegistryRepository(jdbc).reserveActiveBatch(1)).getFirst();
+        assertTrue(transaction.execute(status -> new SourceRegistryRepository(jdbc).reserveActiveBatch(1)).isEmpty());
+        jdbc.update("UPDATE active_source_import_claims SET claimed_until = CURRENT_TIMESTAMP - INTERVAL '1 second'");
+        var second = transaction.execute(status -> new SourceRegistryRepository(jdbc).reserveActiveBatch(1)).getFirst();
+        assertNotEquals(first.token(), second.token());
+        new SourceRegistryRepository(jdbc).releaseImportClaim(first.source().id(), first.token());
+        assertEquals(second.token(), jdbc.queryForObject(
+                "SELECT claim_token FROM active_source_import_claims WHERE source_id = 1", java.util.UUID.class));
+    }
+
+    @Test
+    void genericTitleWithJavaBackendEvidenceIsRecordedSeparatelyFromObservedListing() {
+        var listing = new GreenhouseListingDTO("42", "Software Engineer", "Remote",
+                "<p>Build backend services with Java and REST APIs.</p>", ATS,
+                NOW.minusSeconds(10), json.readTree("{\"id\":42,\"title\":\"Software Engineer\"}"));
+        greenhouseIngestion.ingest(new com.alexs.jobagent.source.dto.GreenhouseBoardDTO(
+                "acme", "Synthetic Employer"), listing, NOW);
+        assertEquals(1, candidates().assessPending().observed());
+        assertEquals("CANDIDATE", jdbc.queryForObject(
+                "SELECT decision FROM vacancy_candidate_assessments", String.class));
+        assertEquals("GENERIC_TITLE_WITH_JAVA_BACKEND_EVIDENCE", jdbc.queryForObject(
+                "SELECT reason FROM vacancy_candidate_assessments", String.class));
+        assertEquals(0, candidates().assessPending().observed());
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM source_items", Integer.class));
     }
 
     @Test
     void verifiedAssociationIsIdempotentAndImportUsesExistingIngestion() throws Exception {
         var calls = new AtomicInteger();
         SourceVerificationService verification = verifier("<a href='" + ATS + "'>Jobs</a>", NOW, calls);
-        SourceCandidateDTO candidate = trusted(ATS);
-        assertEquals("VERIFIED", verification.verify(List.of(candidate)).getFirst().outcome());
-        assertEquals("VERIFIED", verification.verify(List.of(candidate)).getFirst().outcome());
+        long searchAttempt = jdbc.queryForObject("""
+                INSERT INTO search_pilot_attempts (query_version, query_number, outcome)
+                VALUES ('synthetic-test', 1, 'SUCCESS') RETURNING id
+                """, Long.class);
+        new com.alexs.jobagent.source.repository.SearchPilotRepository(jdbc).recordCandidate(searchAttempt, ATS);
+        assertEquals("VERIFIED", verification.verifyStored(1, "independently-reviewed",
+                "acme.example", OFFICIAL, "Acme Synthetic").outcome());
+        assertEquals("VERIFIED", verification.verifyStored(1, "independently-reviewed",
+                "acme.example", OFFICIAL, "Acme Synthetic").outcome());
         assertEquals(2, calls.get());
         assertEquals(1, count("source_verification_attempts"));
         assertEquals(1, count("verified_source_registry"));
+        assertEquals("VERIFIED", jdbc.queryForObject(
+                "SELECT verification_outcome FROM source_discovery_candidates", String.class));
         assertEquals(NOW, jdbc.queryForObject("SELECT observed_at FROM source_verification_decisions",
                 java.sql.Timestamp.class).toInstant());
         var batches = new AtomicInteger();
@@ -89,7 +161,7 @@ class SourceVerificationIT {
             return new GreenhouseFetchResultDTO(List.of(listing), 1);
         }, greenhouseIngestion, clock(NOW));
         SourceRegistryService registry = new SourceRegistryService(new SourceRegistryRepository(jdbc), batch,
-                lever, clock(NOW), manager);
+                lever, candidates(), clock(NOW), manager);
         assertEquals(0, registry.importActive().sources());
         assertTrue(registry.activate(1));
         var firstImport = registry.importActive();
@@ -103,6 +175,65 @@ class SourceVerificationIT {
         assertEquals(2, batches.get());
         assertEquals(1, count("vacancies"));
         assertEquals(1, count("outbox_events"));
+    }
+
+    @Test
+    void untrustedStoredCandidateRemainsReviewOnlyWithoutFetchingOrActivation() {
+        long searchAttempt = jdbc.queryForObject("""
+                INSERT INTO search_pilot_attempts (query_version, query_number, outcome)
+                VALUES ('synthetic-test', 1, 'SUCCESS') RETURNING id
+                """, Long.class);
+        new com.alexs.jobagent.source.repository.SearchPilotRepository(jdbc).recordCandidate(searchAttempt, ATS);
+        var calls = new AtomicInteger();
+        var verification = verifier("<a href='" + ATS + "'>Jobs</a>", NOW, calls);
+        var outcome = verification.verifyStored(1, "manual-candidate", null, null, null);
+        assertEquals("MANUAL_REVIEW", outcome.outcome());
+        assertEquals("NO_TRUST_ROOT", outcome.reason());
+        assertEquals(0, calls.get());
+        assertEquals(0, count("verified_source_registry"));
+        assertEquals("MANUAL_REVIEW", jdbc.queryForObject(
+                "SELECT verification_outcome FROM source_discovery_candidates", String.class));
+    }
+
+    @Test
+    void discoveryReviewPagesRetainOlderCandidatesAndBoundEachRead() {
+        long searchAttempt = jdbc.queryForObject("""
+                INSERT INTO search_pilot_attempts (query_version, query_number, outcome)
+                VALUES ('synthetic-test', 1, 'SUCCESS') RETURNING id
+                """, Long.class);
+        var search = new com.alexs.jobagent.source.repository.SearchPilotRepository(jdbc);
+        for (int id = 1; id <= 51; id++) {
+            search.recordCandidate(searchAttempt, "https://jobs.example.test/" + id);
+        }
+        var registry = registry(NOW);
+        var first = registry.discoveryCandidates(0);
+        assertEquals(50, first.size());
+        assertEquals(1L, first.getFirst().id());
+        assertEquals(50L, first.getLast().id());
+        assertEquals(51L, registry.discoveryCandidates(first.getLast().id()).getFirst().id());
+        assertTrue(registry.discoveryCandidates(51).isEmpty());
+        assertThrows(IllegalArgumentException.class, () -> registry.discoveryCandidates(-1));
+    }
+
+    @Test
+    void failedOfficialFetchRemainsInactiveUntilExplicitSuccessfulReverification() {
+        long searchAttempt = jdbc.queryForObject("""
+                INSERT INTO search_pilot_attempts (query_version, query_number, outcome)
+                VALUES ('synthetic-test', 1, 'SUCCESS') RETURNING id
+                """, Long.class);
+        new com.alexs.jobagent.source.repository.SearchPilotRepository(jdbc).recordCandidate(searchAttempt, ATS);
+        var failed = new SourceVerificationService(new SafeHtmlFetcher((uri, remaining) -> {
+            throw new java.io.IOException("synthetic transport failure");
+        }), new SourceRegistryRepository(jdbc), clock(NOW), manager);
+        assertEquals("RETRYABLE_FAILURE", failed.verifyStored(1, "independently-reviewed",
+                "acme.example", OFFICIAL, "Acme Synthetic").outcome());
+        assertEquals("FETCH_ERROR", jdbc.queryForObject(
+                "SELECT verification_reason FROM source_discovery_candidates", String.class));
+        assertEquals(0, count("verified_source_registry"));
+        assertEquals("VERIFIED", verifier("<a href='" + ATS + "'>Jobs</a>", NOW.plusSeconds(1),
+                new AtomicInteger()).verifyStored(1, "independently-reviewed", "acme.example", OFFICIAL,
+                "Acme Synthetic").outcome());
+        assertFalse(registry(NOW.plusSeconds(1)).sources().getFirst().active());
     }
 
     @Test
@@ -145,7 +276,7 @@ class SourceVerificationIT {
         }, leverIngestion);
         var registry = new SourceRegistryService(new SourceRegistryRepository(jdbc),
                 new GreenhouseBatchService(board -> new GreenhouseFetchResultDTO(List.of(), 1),
-                        greenhouseIngestion, clock(NOW)), batch, clock(NOW), manager);
+                        greenhouseIngestion, clock(NOW)), batch, candidates(), clock(NOW), manager);
         assertTrue(registry.activate(1));
         assertEquals(0, registry.importActive().failures());
         assertEquals(1, calls.get());
@@ -397,7 +528,7 @@ class SourceVerificationIT {
     }
 
     @Test
-    void activeSourceLimitStopsBatchBeforeAnyAdapterRequest() {
+    void activeSourceLimitBoundsEachInvocation() {
         jdbc.update("""
                 INSERT INTO verified_source_registry
                 (platform, region, source_id, employer_domain, employer_name, official_page_url,
@@ -408,8 +539,7 @@ class SourceVerificationIT {
                 FROM generate_series(1, 6) AS n
                 """, java.sql.Timestamp.from(NOW));
         SourceRegistryService service = registry(NOW);
-        IllegalStateException failure = assertThrows(IllegalStateException.class, service::importActive);
-        assertEquals("At most five active sources can be imported per invocation", failure.getMessage());
+        assertEquals(5, service.importActive().sources());
         assertEquals(0, count("source_items"));
     }
 
@@ -445,7 +575,13 @@ class SourceVerificationIT {
     private SourceRegistryService registry(Instant at) {
         return new SourceRegistryService(new SourceRegistryRepository(jdbc),
                 new GreenhouseBatchService(board -> new GreenhouseFetchResultDTO(List.of(), 1),
-                        greenhouseIngestion, clock(at)), lever, clock(at), manager);
+                        greenhouseIngestion, clock(at)), lever, candidates(), clock(at), manager);
+    }
+
+    private com.alexs.jobagent.vacancy.service.CandidateAssessmentService candidates() {
+        return new com.alexs.jobagent.vacancy.service.CandidateAssessmentService(
+                new com.alexs.jobagent.vacancy.repository.CandidateAssessmentRepository(jdbc),
+                new com.alexs.jobagent.vacancy.service.CandidateAssessmentPolicy(), manager);
     }
 
     private SourceCandidateDTO trusted(String url) {

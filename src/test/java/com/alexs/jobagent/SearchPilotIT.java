@@ -46,8 +46,54 @@ class SearchPilotIT {
 
     @BeforeEach
     void clear() {
-        jdbc.execute("TRUNCATE search_pilot_attempts RESTART IDENTITY");
+        jdbc.execute("TRUNCATE source_discovery_candidates, search_pilot_attempts, search_monthly_budget RESTART IDENTITY");
         jdbc.update("UPDATE search_pilot_budget SET reserved_attempts = 0 WHERE id = 1");
+    }
+
+    @Test
+    void concurrentMonthlyReservationsStopAtOneHundredTwentyWithoutResettingHistory() {
+        var november = java.time.LocalDate.of(2026, 11, 1);
+        var attempts = IntStream.range(0, 140).mapToObj(index -> CompletableFuture.supplyAsync(
+                () -> reservation.reserveMonthly("source-coverage-v1", 1, november))).toList();
+        assertEquals(120, attempts.stream().map(CompletableFuture::join).filter(Objects::nonNull).count());
+        assertEquals(0, repository.monthlyRemaining(november));
+        assertEquals(120, jdbc.queryForObject("SELECT count(*) FROM search_pilot_attempts WHERE budget_period = ?",
+                Integer.class, november));
+        assertEquals(100, repository.remaining());
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        var pilot = new SearchPilotService(query -> {
+            calls.incrementAndGet();
+            return new SearchResponseDTO(List.of(), null, 1);
+        }, repository, reservation, Clock.fixed(november.atStartOfDay().toInstant(java.time.ZoneOffset.UTC),
+                java.time.ZoneOffset.UTC));
+        assertTrue(pilot.runMonthly().monthlyLimitReached());
+        assertEquals(0, calls.get());
+        assertNotNull(reservation.reserveMonthly("source-coverage-v1", 1, november.plusMonths(1)));
+        assertEquals(121, jdbc.queryForObject("SELECT count(*) FROM search_pilot_attempts", Integer.class));
+    }
+
+    @Test
+    void requestsAcrossUtcMonthBoundaryUseTheirActualReservationMonth() {
+        var instant = new java.util.concurrent.atomic.AtomicReference<>(
+                java.time.Instant.parse("2026-11-30T23:59:59Z"));
+        Clock clock = new Clock() {
+            @Override public java.time.ZoneId getZone() { return java.time.ZoneOffset.UTC; }
+            @Override public Clock withZone(java.time.ZoneId zone) { return this; }
+            @Override public java.time.Instant instant() { return instant.get(); }
+        };
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        var pilot = new SearchPilotService(query -> {
+            if (calls.incrementAndGet() == 1) {
+                instant.set(java.time.Instant.parse("2026-12-01T00:00:01Z"));
+            }
+            return new SearchResponseDTO(List.of(), "synthetic-request", 1);
+        }, repository, reservation, clock);
+        assertEquals(4, pilot.runMonthly().attempts());
+        assertEquals(1, jdbc.queryForObject("SELECT reserved_attempts FROM search_monthly_budget "
+                + "WHERE period_start = DATE '2026-11-01'", Integer.class));
+        assertEquals(3, jdbc.queryForObject("SELECT reserved_attempts FROM search_monthly_budget "
+                + "WHERE period_start = DATE '2026-12-01'", Integer.class));
+        assertEquals(117, repository.monthlyRemaining(java.time.LocalDate.of(2026, 12, 1)));
     }
 
     @Test
@@ -64,6 +110,9 @@ class SearchPilotIT {
         assertEquals(5, result.attempts());
         assertEquals(95, result.remaining());
         assertEquals(List.of("https://example.org/jobs?x=1"), result.unverifiedUrls());
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM source_discovery_candidates", Integer.class));
+        assertEquals("UNVERIFIED", jdbc.queryForObject(
+                "SELECT verification_outcome FROM source_discovery_candidates", String.class));
         assertEquals(5, jdbc.queryForObject("SELECT count(*) FROM search_pilot_attempts", Integer.class));
         assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM search_pilot_attempts WHERE outcome = 'TRANSIENT'", Integer.class));
         assertEquals(95, new SearchPilotRepository(jdbc).remaining());

@@ -62,9 +62,9 @@ class ScheduledBatchServiceTest {
     private void successfulDependencies() {
         when(repository.startInvocation(date)).thenReturn(true);
         when(pipeline.runWithoutShortlist(eq(de), eq(50), any(), eq(20))).thenReturn(emptyRun("NO_NEW_VACANCIES"));
-        when(evaluations.evaluate(any(), eq(0L), eq(500), eq("rules-v1")))
+        when(evaluations.evaluate(any(), eq(0L), eq(500), eq("rules-v2")))
                 .thenReturn(new EvaluationBatchResultDTO(0, 0, 0, 0, false));
-        when(evaluations.reportCandidates(any(), eq("rules-v1"))).thenReturn(List.of());
+        when(evaluations.reportCandidates(any(), eq("rules-v2"))).thenReturn(List.of());
         when(results.prepare(eq(date), eq(de), eq(at), any(), any(),
                 eq("https://page.example.test/"), any())).thenReturn(prepared);
         when(gateway.publish(any(), any())).thenReturn("synthetic-message-id");
@@ -75,10 +75,10 @@ class ScheduledBatchServiceTest {
         successfulDependencies();
         service().run(List.of(de, at));
         verify(pipeline).runWithoutShortlist(eq(de), eq(50), any(), eq(20));
-        verify(evaluations).evaluate(eq(de), eq(0L), eq(500), eq("rules-v1"));
-        verify(evaluations).evaluate(eq(at), eq(0L), eq(500), eq("rules-v1"));
-        verify(evaluations).reportCandidates(de, "rules-v1");
-        verify(evaluations).reportCandidates(at, "rules-v1");
+        verify(evaluations).evaluate(eq(de), eq(0L), eq(500), eq("rules-v2"));
+        verify(evaluations).evaluate(eq(at), eq(0L), eq(500), eq("rules-v2"));
+        verify(evaluations).reportCandidates(de, "rules-v2");
+        verify(evaluations).reportCandidates(at, "rules-v2");
         verify(results).markPublishing(date);
         verify(gateway).publish(prepared.subject(), prepared.body());
         verify(results).markPublished(date, "synthetic-message-id");
@@ -88,7 +88,7 @@ class ScheduledBatchServiceTest {
     @Test
     void secondSweepFailureDoesNotPrepareOrPublish() {
         successfulDependencies();
-        when(evaluations.evaluate(eq(at), eq(0L), eq(500), eq("rules-v1")))
+        when(evaluations.evaluate(eq(at), eq(0L), eq(500), eq("rules-v2")))
                 .thenThrow(new IllegalStateException("synthetic evaluation failure"));
         assertThrows(IllegalStateException.class, () -> service().run(List.of(de, at)));
         verify(results, never()).prepare(any(), any(), any(), any(), any(), any(), any());
