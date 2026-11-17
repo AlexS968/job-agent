@@ -2,6 +2,9 @@ package com.alexs.jobagent;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.alexs.jobagent.source.dto.GreenhouseFetchResultDTO;
 import com.alexs.jobagent.source.dto.GreenhouseListingDTO;
 import com.alexs.jobagent.source.dto.SearchResponseDTO;
@@ -19,6 +22,7 @@ import com.alexs.jobagent.source.service.SearchPilotService;
 import com.alexs.jobagent.source.service.SourceDiscoveryService;
 import com.alexs.jobagent.source.service.SourceRegistryService;
 import com.alexs.jobagent.source.service.SourceVerificationService;
+import com.alexs.jobagent.source.service.DiscoveryLeadPolicy;
 import com.alexs.jobagent.vacancy.service.CandidateAssessmentService;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
@@ -28,6 +32,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -69,6 +74,134 @@ class SourceDiscoveryIT {
                 agent_runs RESTART IDENTITY CASCADE
                 """);
         jdbc.update("UPDATE active_source_import_cursor SET last_source_id = 0");
+    }
+
+    @Test
+    void retainedLeadsClaimAtsThenEmployerWithoutSpendingSlotsOnAggregators() {
+        long attempt = jdbc.queryForObject("""
+                INSERT INTO search_pilot_attempts (query_version, query_number, outcome)
+                VALUES ('synthetic-test', 1, 'SUCCESS') RETURNING id
+                """, Long.class);
+        var search = new SearchPilotRepository(jdbc);
+        for (String url : List.of("https://wellfound.com/jobs/1", "https://in.linkedin.com/jobs/2",
+                "https://remotefront.com/jobs/3", "https://en.devjobs.de/jobs/4",
+                "https://en.devjobs.at/jobs/5", "https://www.greenhouse.com/",
+                "https://tavily.com/", "https://job-boards.greenhouse.io/",
+                "https://jobs.lever.co/Bad_ID")) {
+            var kind = DiscoveryLeadPolicy.classify(url);
+            search.recordCandidate(attempt, url, kind.name(), kind.priority());
+        }
+        for (String url : List.of("https://acme.example/roles/42", ATS,
+                "https://jobs.lever.co/acme/42", "https://careers.greenhouse.com.example/jobs")) {
+            var kind = DiscoveryLeadPolicy.classify(url);
+            search.recordCandidate(attempt, url, kind.name(), kind.priority());
+        }
+        var claims = new org.springframework.transaction.support.TransactionTemplate(manager)
+                .execute(status -> new SourceRegistryRepository(jdbc).claimDiscoveryBatch(Clock.systemUTC().instant(), 5));
+        assertEquals(List.of(ATS, "https://jobs.lever.co/acme/42",
+                        "https://acme.example/roles/42", "https://careers.greenhouse.com.example/jobs"),
+                claims.stream().map(com.alexs.jobagent.source.dto.DiscoveryClaimDTO::candidateUrl).toList());
+        assertEquals(5, jdbc.queryForObject("SELECT count(*) FROM source_discovery_candidates "
+                + "WHERE verification_reason = 'AGGREGATOR_ONLY_LEAD' AND verification_attempts = 0", Integer.class));
+        assertEquals(4, jdbc.queryForObject("SELECT count(*) FROM source_discovery_candidates "
+                + "WHERE verification_reason = 'NON_EMPLOYER_SITE' AND verification_attempts = 0", Integer.class));
+        assertEquals(13, count("source_discovery_candidates"));
+    }
+
+    @Test
+    void aggregatorLeadStaysVisibleWithoutFetchingItsHomepage() {
+        var fetches = new AtomicInteger();
+        Clock clock = Clock.systemUTC();
+        var result = discovery(query -> response("https://wellfound.com/jobs/1",
+                        "https://en.devjobs.at/jobs/2", "https://www.greenhouse.com/",
+                        "https://tavily.com/", "https://job-boards.greenhouse.io/", CAREERS),
+                verifier(uri -> {
+                    fetches.incrementAndGet();
+                    return uri.getPath().equals("/") ? "<a href='/careers'>Careers</a>"
+                            : "<a href='" + ATS + "'>Jobs</a>";
+                }, clock), clock).run();
+        assertEquals(1, result.activated());
+        assertEquals(2, fetches.get());
+        assertEquals("AGGREGATOR_ONLY_LEAD", jdbc.queryForObject("SELECT verification_reason "
+                + "FROM source_discovery_candidates WHERE candidate_url LIKE '%wellfound.com%'", String.class));
+        assertEquals("AGGREGATOR_ONLY_LEAD", jdbc.queryForObject("SELECT verification_reason "
+                + "FROM source_discovery_candidates WHERE candidate_url LIKE '%devjobs.at%'", String.class));
+        assertEquals(3, jdbc.queryForObject("SELECT count(*) FROM source_discovery_candidates "
+                + "WHERE lead_kind = 'NON_EMPLOYER' AND verification_reason = 'NON_EMPLOYER_SITE'",
+                Integer.class));
+    }
+
+    @Test
+    void httpFailuresHaveBoundedSafeDiagnosticsAndPermanentFailuresDoNotRetry() {
+        Logger logger = (Logger) LoggerFactory.getLogger(SourceVerificationService.class);
+        var output = new ListAppender<ILoggingEvent>();
+        output.start();
+        logger.addAppender(output);
+        try {
+            Clock clock = Clock.systemUTC();
+            var fetcher = new SafeHtmlFetcher((uri, remaining) -> new SafeHtmlFetcher.PageResponse(
+                    404, "text/html", null, "identity", new byte[0]));
+            var discovery = discovery(query -> response("https://acme.example/jobs?token=synthetic-private"),
+                    new SourceVerificationService(fetcher, new SourceRegistryRepository(jdbc), clock, manager), clock);
+            assertEquals(1, discovery.run().review());
+            assertEquals(0, discovery.run().review());
+            assertEquals("HTTP_PERMANENT", jdbc.queryForObject("SELECT verification_reason "
+                    + "FROM source_discovery_candidates", String.class));
+            assertEquals(1, jdbc.queryForObject("SELECT verification_attempts "
+                    + "FROM source_discovery_candidates", Integer.class));
+            String diagnostic = output.list.stream().map(ILoggingEvent::getFormattedMessage)
+                    .filter(line -> line.startsWith("Discovery verification:")).findFirst().orElseThrow();
+            assertTrue(diagnostic.contains("stage=HOMEPAGE"));
+            assertTrue(diagnostic.contains("host=acme.example"));
+            assertTrue(diagnostic.contains("http_status=404"));
+            assertTrue(diagnostic.contains("redirects=0"));
+            assertTrue(diagnostic.contains("retryable=false"));
+            assertTrue(diagnostic.contains("requests=1"));
+            assertFalse(diagnostic.contains("synthetic-private"));
+            assertFalse(diagnostic.contains("https://"));
+        } finally {
+            logger.detachAppender(output);
+            output.stop();
+        }
+    }
+
+    @Test
+    void rateLimitedHomepageRetriesOnlyWhenDueAndLinkLimitReportsActualCount() {
+        Clock clock = Clock.systemUTC();
+        var calls = new AtomicInteger();
+        var fetcher = new SafeHtmlFetcher((uri, remaining) -> {
+            if (calls.getAndIncrement() == 0) {
+                return new SafeHtmlFetcher.PageResponse(429, "text/html", null, "identity", new byte[0]);
+            }
+            String html = "<a href='/careers'>Careers</a>".repeat(201);
+            return new SafeHtmlFetcher.PageResponse(200, "text/html", null, "identity",
+                    html.getBytes(StandardCharsets.UTF_8));
+        });
+        Logger logger = (Logger) LoggerFactory.getLogger(SourceVerificationService.class);
+        var output = new ListAppender<ILoggingEvent>();
+        output.start();
+        logger.addAppender(output);
+        try {
+            var discovery = discovery(query -> response(CAREERS),
+                    new SourceVerificationService(fetcher, new SourceRegistryRepository(jdbc), clock, manager), clock);
+            assertEquals(1, discovery.run().retryable());
+            assertEquals(0, discovery.run().review());
+            assertEquals(1, calls.get());
+            jdbc.update("UPDATE source_discovery_candidates SET next_attempt_at = CURRENT_TIMESTAMP - INTERVAL '1 second'");
+            assertEquals(1, discovery.run().review());
+            assertEquals(2, calls.get());
+            assertEquals("TOO_MANY_LINKS", jdbc.queryForObject("SELECT verification_reason "
+                    + "FROM source_discovery_candidates", String.class));
+            String diagnostic = output.list.stream().map(ILoggingEvent::getFormattedMessage)
+                    .filter(line -> line.contains("reason=TOO_MANY_LINKS")).findFirst().orElseThrow();
+            assertTrue(diagnostic.contains("links=201"));
+            assertTrue(diagnostic.contains("link_limit=200"));
+            assertTrue(output.list.stream().map(ILoggingEvent::getFormattedMessage)
+                    .anyMatch(line -> line.contains("http_status=429") && line.contains("retryable=true")));
+        } finally {
+            logger.detachAppender(output);
+            output.stop();
+        }
     }
 
     @Test
@@ -354,7 +487,7 @@ class SourceDiscoveryIT {
                 : "<a href='" + ATS + "'>Jobs</a>", clock), clock).run();
         // The successful row is not claimable; create a second unverified lead from the same search attempt.
         long attempt = jdbc.queryForObject("SELECT id FROM search_pilot_attempts ORDER BY id LIMIT 1", Long.class);
-        new SearchPilotRepository(jdbc).recordCandidate(attempt, "https://other.example/careers");
+        new SearchPilotRepository(jdbc).recordCandidate(attempt, "https://other.example/careers", "EMPLOYER", 1);
         com.alexs.jobagent.source.dto.DiscoveryClaimDTO stale = null;
         for (int i = 0; i < 3; i++) {
             var claims = new org.springframework.transaction.support.TransactionTemplate(manager)

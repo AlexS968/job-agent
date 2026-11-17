@@ -26,6 +26,8 @@ import java.util.Locale;
 import java.util.Set;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Element;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
@@ -33,6 +35,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 @Service
 public class SourceVerificationService {
+    private static final Logger LOGGER = LoggerFactory.getLogger(SourceVerificationService.class);
     public static final int MAX_CANDIDATES = 5;
     private static final int MAX_LINKS = 200;
     private static final int MAX_CAREERS_PAGES = 3;
@@ -41,7 +44,6 @@ public class SourceVerificationService {
     private static final String MANUAL_REVIEW_OUTCOME = "MANUAL_REVIEW";
     private static final String CONFLICT_DECISION = "CONFLICT";
     private static final String SUPERSEDED_OBSERVATION = "SUPERSEDED_OBSERVATION";
-    private static final Set<String> AGGREGATORS = Set.of("linkedin.com", "indeed.com", "glassdoor.com");
     private final SafeHtmlFetcher fetcher;
     private final SourceRegistryRepository repository;
     private final Clock clock;
@@ -104,9 +106,11 @@ public class SourceVerificationService {
         if (evidenceUrls == null || evidenceUrls.size() > MAX_EVIDENCE_HOSTS || session == null) {
             throw new IllegalArgumentException("Invalid bounded discovery evidence");
         }
+        var trace = new VerificationTrace();
+        long started = System.nanoTime();
         SourceVerificationDTO result = inspectAutomatic(claim.candidateUrl(), evidenceUrls,
-                lookupLimit, session);
-        return transaction.execute(status -> {
+                lookupLimit, session, trace);
+        AutomaticVerificationDTO completed = transaction.execute(status -> {
             Instant now = clock.instant();
             if (!repository.claimValidForUpdate(claim, now)) {
                 throw new IllegalStateException("Discovery claim expired or was superseded");
@@ -117,10 +121,21 @@ public class SourceVerificationService {
             return new AutomaticVerificationDTO(persisted, leadOutcome,
                     !wasActive && repository.activeIdentity(persisted.identity()));
         });
+        String reason = "MANUAL_REVIEW".equals(completed.leadOutcome())
+                && "RETRYABLE_FAILURE".equals(result.outcome()) ? "RETRY_EXHAUSTED" : result.reason();
+        LOGGER.info("Discovery verification: lead_id={}, stage={}, host={}, http_status={}, redirects={}, "
+                        + "elapsed_ms={}, requests={}, retryable={}, links={}, link_limit={}, outcome={}, reason={}",
+                claim.id(), trace.stage, trace.host, trace.httpStatus, trace.redirects,
+                java.time.Duration.ofNanos(System.nanoTime() - started).toMillis(), result.requests(),
+                "RETRYABLE_FAILURE".equals(completed.leadOutcome()), trace.linkCount, trace.linkLimit,
+                completed.leadOutcome(), reason);
+        return completed;
     }
 
     private SourceVerificationDTO inspectAutomatic(String url, List<String> evidenceUrls,
-                                                   String lookupLimit, AutomaticSession session) {
+                                                   String lookupLimit, AutomaticSession session,
+                                                   VerificationTrace trace) {
+        trace.stage = "CLASSIFICATION";
         Instant observed = clock.instant().truncatedTo(ChronoUnit.MICROS);
         URI input;
         try {
@@ -128,21 +143,24 @@ public class SourceVerificationService {
         } catch (IllegalArgumentException unsafe) {
             return automaticFailure(url, observed, MANUAL_REVIEW_OUTCOME, "UNSAFE_URL", 0);
         }
+        trace.host = input.getHost().toLowerCase(Locale.ROOT);
         var board = AtsSourceIdentityParser.parse(input);
         if (board.isPresent()) {
-            return inspectAtsLead(url, board.get(), evidenceUrls, lookupLimit, observed, session);
+            trace.stage = "ATS_EVIDENCE";
+            return inspectAtsLead(url, board.get(), evidenceUrls, lookupLimit, observed, session, trace);
         }
         String host = input.getHost().toLowerCase(Locale.ROOT);
         if (isNonEmployerHost(host)) {
             return automaticFailure(url, observed, MANUAL_REVIEW_OUTCOME,
                     "NO_INDEPENDENT_EMPLOYER_SITE", 0);
         }
-        return automaticResult(url, observed, session.host(host));
+        return automaticResult(url, observed, session.host(host, trace));
     }
 
     private SourceVerificationDTO inspectAtsLead(String url, AtsSourceIdentityDTO board,
                                                   List<String> evidenceUrls, String lookupLimit,
-                                                  Instant observed, AutomaticSession session) {
+                                                  Instant observed, AutomaticSession session,
+                                                  VerificationTrace trace) {
         HostEvidence matching = null;
         boolean conflict = false;
         boolean retryable = false;
@@ -160,7 +178,7 @@ public class SourceVerificationService {
             }
         }
         for (String host : hosts) {
-            HostEvidence evidence = session.host(host);
+            HostEvidence evidence = session.host(host, trace);
             evidenceRequests += evidence.requests();
             if (VERIFIED_OUTCOME.equals(evidence.outcome())) {
                 if (!board.equals(evidence.identity())) {
@@ -208,16 +226,18 @@ public class SourceVerificationService {
                 evidence.identity(), evidence.observedUrl(), evidence.requests());
     }
 
-    private HostEvidence inspectHost(String host) {
+    private HostEvidence inspectHost(String host, VerificationTrace trace) {
         int requests = 0;
         try {
-            SafeHtmlFetcher.FetchResult home = fetcher.fetch("https://" + host + "/");
+            trace.stage = "HOMEPAGE";
+            trace.host = host;
+            SafeHtmlFetcher.FetchResult home = fetchPage("https://" + host + "/", trace);
             requests += home.requests();
             if (home.externalRedirect() != null) {
                 if (!wwwVariant(host, home.externalRedirect().getHost())) {
                     return hostFailure(host, MANUAL_REVIEW_OUTCOME, "HOMEPAGE_EXTERNAL_REDIRECT", requests);
                 }
-                home = fetcher.fetch(home.externalRedirect().toString());
+                home = fetchPage(home.externalRedirect().toString(), trace);
                 requests += home.requests();
                 if (home.externalRedirect() != null) {
                     return hostFailure(host, MANUAL_REVIEW_OUTCOME, "HOMEPAGE_EXTERNAL_REDIRECT", requests);
@@ -226,6 +246,7 @@ public class SourceVerificationService {
             String domain = home.pageUrl().getHost().toLowerCase(Locale.ROOT);
             var anchors = Jsoup.parse(home.html()).select("a[href]");
             if (anchors.size() > MAX_LINKS) {
+                trace.tooManyLinks(anchors.size(), MAX_LINKS);
                 return hostFailure(domain, MANUAL_REVIEW_OUTCOME, "TOO_MANY_LINKS", requests);
             }
             Set<URI> careers = new LinkedHashSet<>();
@@ -250,7 +271,8 @@ public class SourceVerificationService {
             String officialPage = null;
             boolean unsupported = false;
             for (URI careersUrl : careers) {
-                SafeHtmlFetcher.FetchResult page = fetcher.fetch(careersUrl.toString());
+                trace.stage = "CAREERS";
+                SafeHtmlFetcher.FetchResult page = fetchPage(careersUrl.toString(), trace);
                 requests += page.requests();
                 if (page.externalRedirect() != null) {
                     var redirected = AtsSourceIdentityParser.parse(page.externalRedirect());
@@ -264,6 +286,7 @@ public class SourceVerificationService {
                 } else {
                     var pageAnchors = Jsoup.parse(page.html()).select("a[href]");
                     if (pageAnchors.size() > MAX_LINKS) {
+                        trace.tooManyLinks(pageAnchors.size(), MAX_LINKS);
                         return hostFailure(domain, MANUAL_REVIEW_OUTCOME, "TOO_MANY_LINKS", requests);
                     }
                     LinkEvidenceDTO links = scanLinks(page.pageUrl(), pageAnchors);
@@ -283,7 +306,22 @@ public class SourceVerificationService {
             return new HostEvidence(domain, officialPage, board.getValue().toString(),
                     VERIFIED_OUTCOME, null, board.getKey(), requests);
         } catch (VerificationFetchException failure) {
-            return hostFailure(host, "RETRYABLE_FAILURE", failure.reason(), requests + failure.requests());
+            return hostFailure(host, failure.retryable() ? "RETRYABLE_FAILURE" : MANUAL_REVIEW_OUTCOME,
+                    failure.reason(), requests + failure.requests());
+        }
+    }
+
+    private SafeHtmlFetcher.FetchResult fetchPage(String url, VerificationTrace trace)
+            throws VerificationFetchException {
+        try {
+            SafeHtmlFetcher.FetchResult result = fetcher.fetch(url);
+            trace.httpStatus = result.httpStatus();
+            trace.redirects += result.redirects();
+            return result;
+        } catch (VerificationFetchException failure) {
+            trace.httpStatus = failure.httpStatus();
+            trace.redirects += failure.redirects();
+            throw failure;
         }
     }
 
@@ -301,8 +339,9 @@ public class SourceVerificationService {
     }
 
     private static boolean isNonEmployerHost(String host) {
-        return host.endsWith("greenhouse.io") || host.endsWith("lever.co")
-                || AGGREGATORS.stream().anyMatch(domain -> host.equals(domain) || host.endsWith("." + domain));
+        return host.equals("greenhouse.io") || host.endsWith(".greenhouse.io")
+                || host.equals("lever.co") || host.endsWith(".lever.co")
+                || DiscoveryLeadPolicy.isExcludedEmployerHost(host);
     }
 
     private static HostEvidence hostFailure(String domain, String outcome, String reason, int requests) {
@@ -312,12 +351,15 @@ public class SourceVerificationService {
     public final class AutomaticSession {
         private final Map<String, HostEvidence> hosts = new LinkedHashMap<>();
 
-        private HostEvidence host(String domain) {
+        private HostEvidence host(String domain, VerificationTrace trace) {
             HostEvidence existing = hosts.get(domain);
             if (existing != null) {
-                return existing;
+                trace.stage = "CACHED_HOST_EVIDENCE";
+                trace.host = domain;
+                return new HostEvidence(existing.domain(), existing.pageUrl(), existing.observedUrl(),
+                        existing.outcome(), existing.reason(), existing.identity(), 0);
             }
-            HostEvidence inspected = inspectHost(domain);
+            HostEvidence inspected = inspectHost(domain, trace);
             hosts.put(domain, inspected);
             hosts.putIfAbsent(inspected.domain(), inspected);
             return inspected;
@@ -327,6 +369,20 @@ public class SourceVerificationService {
     private record HostEvidence(String domain, String pageUrl, String observedUrl,
                                 String outcome, String reason, AtsSourceIdentityDTO identity,
                                 int requests) { }
+
+    private static final class VerificationTrace {
+        private String stage = "CLASSIFICATION";
+        private String host = "unavailable";
+        private Integer httpStatus;
+        private int redirects;
+        private Integer linkCount;
+        private Integer linkLimit;
+
+        private void tooManyLinks(int count, int limit) {
+            linkCount = count;
+            linkLimit = limit;
+        }
+    }
 
     private SourceVerificationDTO inspect(SourceCandidateDTO candidate) {
         if (candidate == null || candidate.inputUrl() == null || candidate.inputUrl().length() > 2048
@@ -352,7 +408,7 @@ public class SourceVerificationService {
             return result(candidate, observed, "REJECTED", "UNSAFE_OFFICIAL_PAGE", null, null, 0);
         }
         if (candidate.officialDomain() == null || !official.getHost().equalsIgnoreCase(candidate.officialDomain())
-                || AGGREGATORS.contains(official.getHost().toLowerCase(java.util.Locale.ROOT))
+                || DiscoveryLeadPolicy.isExcludedEmployerHost(official.getHost())
                 || candidate.employerName() == null || candidate.employerName().isBlank()
                 || candidate.employerName().length() > 255 || candidate.employerName().contains("|")
                 || candidate.employerName().contains(",")) {

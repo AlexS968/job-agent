@@ -49,15 +49,22 @@ public class SearchPilotRepository {
                 + "WHERE id = ?", outcome, safeId(requestId), credits, attemptId);
     }
 
-    public void recordCandidate(long attemptId, String url) {
+    public void recordCandidate(long attemptId, String url, String leadKind, int leadPriority) {
         jdbc.update("""
                 INSERT INTO source_discovery_candidates
-                (candidate_url, first_search_attempt_id, last_search_attempt_id)
-                VALUES (?, ?, ?)
+                (candidate_url, first_search_attempt_id, last_search_attempt_id,
+                 lead_kind, lead_priority, verification_outcome, verification_reason)
+                VALUES (?, ?, ?, ?, ?,
+                        CASE WHEN ? IN ('AGGREGATOR', 'NON_EMPLOYER', 'UNSAFE')
+                             THEN 'MANUAL_REVIEW' ELSE 'UNVERIFIED' END,
+                        CASE WHEN ? = 'AGGREGATOR' THEN 'AGGREGATOR_ONLY_LEAD'
+                             WHEN ? = 'NON_EMPLOYER' THEN 'NON_EMPLOYER_SITE'
+                             WHEN ? = 'UNSAFE' THEN 'UNSAFE_URL' ELSE NULL END)
                 ON CONFLICT (candidate_url) DO UPDATE SET
                     last_search_attempt_id = EXCLUDED.last_search_attempt_id,
                     last_seen_at = CURRENT_TIMESTAMP
-                """, url, attemptId, attemptId);
+                """, url, attemptId, attemptId, leadKind, leadPriority,
+                leadKind, leadKind, leadKind, leadKind);
     }
 
     public int remaining() {
