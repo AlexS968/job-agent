@@ -165,13 +165,13 @@ INSERT INTO evaluation_profiles(profile_id,profile_version,criteria_hash)
 INSERT INTO vacancy_evaluations(vacancy_id,source_item_id,vacancy_revision,profile_id,
  profile_version,criteria_hash,policy_version,decision,preference_rank,role_classification,
  reasons,unknowns,evidence,original_url) VALUES
- (1,1,repeat('a',64),'alex-de','v1',repeat('d',64),'rules-v1','SUITABLE',1,'PREFERRED',
+ (1,1,repeat('a',64),'alex-de','v1',repeat('d',64),'rules-v2','SUITABLE',1,'PREFERRED',
   '["ROLE_PREFERRED"]','[]','[]','https://jobs.example.test/1'),
- (2,2,repeat('b',64),'alex-de','v1',repeat('d',64),'rules-v1','NEEDS_REVIEW',2,'RESERVE',
+ (2,2,repeat('b',64),'alex-de','v1',repeat('d',64),'rules-v2','NEEDS_REVIEW',2,'RESERVE',
   '["ROLE_RESERVE"]','["WORK_ELIGIBILITY_UNCONFIRMED","SALARY_UNKNOWN"]','[]','https://jobs.example.test/2'),
- (2,2,repeat('b',64),'alex-at','v1',repeat('e',64),'rules-v1','SUITABLE',1,'PREFERRED',
+ (2,2,repeat('b',64),'alex-at','v1',repeat('e',64),'rules-v2','SUITABLE',1,'PREFERRED',
   '["ROLE_PREFERRED"]','[]','[]','https://jobs.example.test/2'),
- (3,3,repeat('c',64),'alex-de','v1',repeat('d',64),'rules-v1','SUITABLE',1,'PREFERRED',
+ (3,3,repeat('c',64),'alex-de','v1',repeat('d',64),'rules-v2','SUITABLE',1,'PREFERRED',
   '[]','[]','[]','https://example.test/3');
 UPDATE vacancy_evaluations SET country_eligibility = 'CONFIRMED'
  WHERE (vacancy_id = 1 AND profile_id = 'alex-de') OR (vacancy_id = 2 AND profile_id = 'alex-at');
@@ -271,7 +271,7 @@ INSERT INTO evaluation_profiles(profile_id,profile_version,criteria_hash,first_s
 INSERT INTO vacancy_evaluations(vacancy_id,source_item_id,vacancy_revision,profile_id,
  profile_version,criteria_hash,policy_version,decision,preference_rank,role_classification,
  reasons,unknowns,evidence,original_url)
- VALUES (1,1,repeat('a',64),'alex-de','v2',repeat('f',64),'rules-v1','NEEDS_REVIEW',1,
+ VALUES (1,1,repeat('a',64),'alex-de','v2',repeat('f',64),'rules-v2','NEEDS_REVIEW',1,
  'PREFERRED','[]','["SALARY_UNKNOWN"]','[]','https://jobs.example.test/1');
 UPDATE vacancy_evaluations SET country_eligibility = 'CONFIRMED'
  WHERE profile_id = 'alex-de' AND profile_version = 'v2';
@@ -299,13 +299,13 @@ INSERT INTO vacancy_sources(vacancy_id,source_item_id) VALUES (1,4);
 INSERT INTO vacancy_evaluations(vacancy_id,source_item_id,vacancy_revision,profile_id,
  profile_version,criteria_hash,policy_version,decision,preference_rank,role_classification,
  reasons,unknowns,evidence,original_url,country_eligibility)
- VALUES (1,4,repeat('d',64),'alex-de','v2',repeat('f',64),'rules-v1','SUITABLE',1,
+ VALUES (1,4,repeat('d',64),'alex-de','v2',repeat('f',64),'rules-v2','SUITABLE',1,
  'PREFERRED','["PREFERRED_ROLE"]','["SALARY_UNKNOWN"]','[]','https://jobs.example.test/4',
  'CONFIRMED');
 INSERT INTO vacancy_evaluations(vacancy_id,source_item_id,vacancy_revision,profile_id,
  profile_version,criteria_hash,policy_version,decision,preference_rank,role_classification,
  reasons,unknowns,evidence,original_url)
- VALUES (1,4,repeat('d',64),'alex-at','v1',repeat('e',64),'rules-v1','EXCLUDED',9,
+ VALUES (1,4,repeat('d',64),'alex-at','v1',repeat('e',64),'rules-v2','EXCLUDED',9,
  'PREFERRED','["EXPLICIT_COUNTRY_EXCLUSION"]','["SALARY_UNKNOWN"]','[]',
  'https://jobs.example.test/4');
 """)
@@ -379,7 +379,7 @@ INSERT INTO vacancy_evaluations(vacancy_id,source_item_id,vacancy_revision,profi
  profile_version,criteria_hash,policy_version,decision,preference_rank,role_classification,
  reasons,unknowns,evidence,original_url,country_eligibility)
 SELECT v.id,si.id,repeat('f',64),'alex-de',version.profile_version,version.criteria_hash,
- 'rules-v1',version.decision,1,'PREFERRED','[]','[]','[]',si.original_url,'CONFIRMED'
+ 'rules-v2',version.decision,1,'PREFERRED','[]','[]','[]',si.original_url,'CONFIRMED'
 FROM vacancies v JOIN vacancy_sources vs ON vs.vacancy_id = v.id
 JOIN source_items si ON si.id = vs.source_item_id
 CROSS JOIN (VALUES ('v1',repeat('d',64),'EXCLUDED'),

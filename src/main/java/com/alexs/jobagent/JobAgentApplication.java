@@ -10,6 +10,7 @@ import com.alexs.jobagent.source.service.LeverBatchService;
 import com.alexs.jobagent.source.service.SearchPilotService;
 import com.alexs.jobagent.source.service.SourceVerificationService;
 import com.alexs.jobagent.source.service.SourceRegistryService;
+import com.alexs.jobagent.source.service.SourceDiscoveryService;
 import com.alexs.jobagent.source.dto.SourceCandidateDTO;
 import com.alexs.jobagent.source.dto.SearchPilotResultDTO;
 import com.alexs.jobagent.outbox.dto.DispatchResultDTO;
@@ -29,6 +30,7 @@ import com.alexs.jobagent.batch.service.ScheduledBatchService;
 import java.time.Duration;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.URI;
 import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
@@ -174,9 +176,12 @@ public class JobAgentApplication {
             case "--mode=search-dry-run" -> runSearchDryRun(args, searchPilot);
             case "--mode=search-pilot" -> runSearchPilot(args, searchPilot);
             case "--mode=verify-source" -> runVerifySource(args, verifier);
+            case "--mode=review-discovery" -> runReviewDiscovery(args, registry);
+            case "--mode=verify-discovery" -> runVerifyDiscovery(args, verifier);
             case "--mode=review-sources" -> runReviewSources(args, registry);
             case "--mode=activate-source" -> runActivateSource(args, registry);
             case "--mode=import-active-sources" -> runImportActiveSources(args, registry);
+            case "--mode=source-discovery-once" -> runSourceDiscoveryOnce(args, context, registry);
             case "--mode=evaluate-rules" -> runEvaluateRules(args, profiles, evaluations);
             case "--mode=shortlist" -> runShortlist(args, profiles, evaluations);
             case "--mode=evaluate-extraction" -> runEvaluateExtraction(args, profiles, evaluations);
@@ -294,6 +299,42 @@ public class JobAgentApplication {
         }
     }
 
+    private void runReviewDiscovery(String[] args, SourceRegistryService registry) {
+        requireOnlyOptions(args, "--mode=review-discovery", "--after-id=");
+        if (args.length > 2) {
+            throw new IllegalArgumentException("Unsupported discovery review arguments");
+        }
+        long afterId = args.length == 2 ? Long.parseLong(option(args, "--after-id=")) : 0;
+        var page = registry.discoveryCandidates(afterId);
+        page.forEach(candidate -> {
+            URI url = URI.create(candidate.candidateUrl());
+            LOGGER.info("Discovery candidate: id={}, host={}, outcome={}, reason={}, identity={}, first_seen={}, last_seen={}",
+                    candidate.id(), url.getHost(), candidate.verificationOutcome(),
+                    candidate.verificationReason(), candidate.identity(), candidate.firstSeenAt(),
+                    candidate.lastSeenAt());
+        });
+        if (!page.isEmpty()) {
+            LOGGER.info("Discovery review cursor: after_id={}", page.getLast().id());
+        }
+    }
+
+    private void runVerifyDiscovery(String[] args, SourceVerificationService verifier) {
+        requireOnlyOptions(args, "--mode=verify-discovery", "--candidate-id=", "--origin=",
+                "--official-domain=", "--official-page-url=", "--employer-name=");
+        if (args.length != 6) {
+            throw new IllegalArgumentException("Discovery verification requires candidate ID and official-page evidence");
+        }
+        long id = Long.parseLong(option(args, "--candidate-id="));
+        var result = verifier.verifyStored(id, option(args, "--origin="),
+                option(args, "--official-domain="), option(args, "--official-page-url="),
+                option(args, "--employer-name="));
+        LOGGER.info("Discovery verification: candidate_id={}, outcome={}, reason={}, identity={}, requests={}, evidence={}",
+                id, result.outcome(), result.reason(), result.identity(), result.requests(), result.evidenceHash());
+        if (!"VERIFIED".equals(result.outcome())) {
+            throw new IllegalStateException("Discovery candidate requires review or retry");
+        }
+    }
+
     private void runReviewSources(String[] args, SourceRegistryService registry) {
         if (args.length != 1) {
             throw new IllegalArgumentException("Unsupported review arguments");
@@ -328,6 +369,27 @@ public class JobAgentApplication {
                 result.sources(), result.created(), result.updated(), result.unchanged(), result.failures());
         if (result.failures() > 0) {
             throw new IllegalStateException("Active source import had failures");
+        }
+    }
+
+    private void runSourceDiscoveryOnce(String[] args, ApplicationContext context,
+                                        SourceRegistryService registry) {
+        if (args.length != 1) {
+            throw new IllegalArgumentException("Unsupported discovery arguments");
+        }
+        var discovery = context.getBean(SourceDiscoveryService.class).run();
+        if (!discovery.enabled()) {
+            throw new IllegalStateException("Source discovery is disabled");
+        }
+        var imported = registry.importActive();
+        LOGGER.info("One-off source coverage: attempts={}, leads={}, confirmed={}, activated={}, "
+                        + "review={}, retryable={}, sources={}, listings_created={}, listings_updated={}, "
+                        + "failures={}, monthly_limit={}",
+                discovery.attempts(), discovery.leads(), discovery.confirmed(), discovery.activated(),
+                discovery.review(), discovery.retryable(), imported.sources(), imported.created(),
+                imported.updated(), discovery.failures() + imported.failures(), discovery.monthlyLimitReached());
+        if (discovery.failures() + imported.failures() > 0) {
+            throw new IllegalStateException("One-off source coverage had failures");
         }
     }
 
@@ -476,7 +538,7 @@ public class JobAgentApplication {
     private void runSearchPilot(String[] args, SearchPilotService pilot) {
         if (args.length != 1 || System.getenv("TAVILY_API_KEY") == null
                 || System.getenv("TAVILY_API_KEY").isBlank()) {
-            throw new IllegalArgumentException("Search pilot requires local TAVILY_API_KEY and no extra arguments");
+            throw new IllegalArgumentException("Search pilot requires local TAVILY_API_KEY");
         }
         SearchPilotResultDTO result;
         try {

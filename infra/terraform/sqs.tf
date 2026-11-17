@@ -296,8 +296,9 @@ resource "aws_iam_role_policy" "batch_execution" {
       },
       {
         Effect = "Allow", Action = ["secretsmanager:GetSecretValue"]
-        Resource = [var.app_db_secret_arn, var.evaluation_profile_secret_arn,
-        var.scheduled_de_profile_secret_arn, var.scheduled_at_profile_secret_arn]
+        Resource = concat([var.app_db_secret_arn, var.evaluation_profile_secret_arn,
+          var.scheduled_de_profile_secret_arn, var.scheduled_at_profile_secret_arn],
+        var.enable_source_discovery ? [var.tavily_api_key_secret_arn] : [])
       }
     ]
   })
@@ -329,7 +330,9 @@ resource "aws_ecs_task_definition" "batch_pipeline" {
       ], var.enable_scheduled_batch ? [
       { name = "JOBAGENT_REPORT_ENABLED", value = "true" },
       { name = "JOBAGENT_REPORT_TOPICARN", value = aws_sns_topic.batch_report[0].arn },
-      { name = "JOBAGENT_REPORT_PAGEURL", value = "${aws_apigatewayv2_api.page[0].api_endpoint}/" }
+      { name = "JOBAGENT_REPORT_PAGEURL", value = "${aws_apigatewayv2_api.page[0].api_endpoint}/" },
+      { name = "JOBAGENT_DISCOVERY_ENABLED", value = tostring(var.enable_source_discovery) },
+      { name = "JOBAGENT_DISCOVERY_REVIEWED_ON", value = var.source_discovery_reviewed_on != null ? var.source_discovery_reviewed_on : "" }
     ] : [])
     secrets = concat([
       { name = "DB_PASSWORD", valueFrom = "${var.app_db_secret_arn}:password::" },
@@ -337,6 +340,8 @@ resource "aws_ecs_task_definition" "batch_pipeline" {
       ], var.enable_scheduled_batch ? [
       { name = "JOBAGENT_SCHEDULED_DE_PROFILE_JSON", valueFrom = var.scheduled_de_profile_secret_arn },
       { name = "JOBAGENT_SCHEDULED_AT_PROFILE_JSON", valueFrom = var.scheduled_at_profile_secret_arn }
+      ] : [], var.enable_source_discovery ? [
+      { name = "TAVILY_API_KEY", valueFrom = var.tavily_api_key_secret_arn }
     ] : [])
     logConfiguration = local.log_configuration
     stopTimeout      = 120

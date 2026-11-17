@@ -15,6 +15,7 @@ import com.alexs.jobagent.outbox.dto.SqsQueueBacklogDTO;
 import com.alexs.jobagent.source.dto.ActiveSourceImportResultDTO;
 import com.alexs.jobagent.evaluation.dto.ShortlistDTO;
 import com.alexs.jobagent.source.service.SourceRegistryService;
+import com.alexs.jobagent.source.service.SourceDiscoveryService;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -26,7 +27,9 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 @Service
 @ConditionalOnProperty(name = "jobagent.sqs.enabled", havingValue = "true")
 public class BatchPipelineService {
+    private static final org.slf4j.Logger LOGGER = org.slf4j.LoggerFactory.getLogger(BatchPipelineService.class);
     private final SourceRegistryService sources;
+    private final SourceDiscoveryService discovery;
     private final OutboxService outbox;
     private final SqsProducerService producer;
     private final SqsEvaluationConsumerService consumer;
@@ -34,10 +37,11 @@ public class BatchPipelineService {
     private final EvaluationService evaluations;
     private final Clock clock;
 
-    public BatchPipelineService(SourceRegistryService sources, OutboxService outbox,
+    public BatchPipelineService(SourceRegistryService sources, SourceDiscoveryService discovery, OutboxService outbox,
                                 SqsProducerService producer, SqsEvaluationConsumerService consumer,
                                 SqsGateway queue, EvaluationService evaluations, Clock clock) {
         this.sources = sources;
+        this.discovery = discovery;
         this.outbox = outbox;
         this.producer = producer;
         this.consumer = consumer;
@@ -59,10 +63,16 @@ public class BatchPipelineService {
                                                       Duration duration, int shortlistLimit) {
         validateArguments(profile, maxEvents, duration, shortlistLimit);
         Instant deadline = clock.instant().plus(duration);
+        var found = discovery.run();
         var imported = sources.importActive();
+        LOGGER.info(
+                "Source coverage: searches={}, requests={}, leads={}, confirmed={}, activated={}, "
+                        + "review={}, retryable={}, listings_created={}, listings_updated={}, discovery_failures={}",
+                found.queries(), found.attempts(), found.leads(), found.confirmed(), found.activated(),
+                found.review(), found.retryable(), imported.created(), imported.updated(), found.failures());
         SqsBatchResultDTO publication = new SqsBatchResultDTO(0, 0, 0, 0);
         SqsEvaluationBatchDTO consumption = new SqsEvaluationBatchDTO(0, 0, 0, 0);
-        if (imported.failures() == 0) {
+        if (imported.failures() == 0 && found.failures() == 0) {
             publication = publishBatches(maxEvents, deadline);
             if (publication.failed() == 0 && publication.deferred() == 0) {
                 consumption = consumeBatches(profile, maxEvents, deadline);
@@ -70,7 +80,8 @@ public class BatchPipelineService {
         }
         var pending = outbox.backlog();
         var queued = queue.backlog();
-        int failures = imported.failures() + publication.failed() + publication.deferred() + consumption.failed();
+        int failures = found.failures() + imported.failures() + publication.failed() + publication.deferred()
+                + consumption.failed();
         String outcome = outcome(imported, publication, consumption, failures, pending, queued, deadline);
         return new BatchPipelineResultDTO(outcome, imported, publication.processed(), consumption.evaluated(),
                 consumption.duplicates(), consumption.stale(), failures, pending, queued,

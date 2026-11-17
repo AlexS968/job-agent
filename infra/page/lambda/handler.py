@@ -40,7 +40,7 @@ WITH current_profile AS (
   JOIN vacancies v ON v.id = e.vacancy_id
   JOIN employers em ON em.id = v.employer_id
   JOIN source_items si ON si.id = e.source_item_id
-  WHERE e.policy_version = 'rules-v1'
+  WHERE e.policy_version = 'rules-v2'
     AND e.country_evidence_policy = 'country-v1'
     AND e.country_eligibility = 'CONFIRMED'
     AND e.decision IN ('SUITABLE', 'NEEDS_REVIEW')
@@ -88,7 +88,7 @@ WITH current_profile AS (
       AND cs.source_item_id = e.source_item_id AND cs.source_rank = 1
   JOIN vacancies v ON v.id = e.vacancy_id
   JOIN source_items si ON si.id = e.source_item_id
-  WHERE e.policy_version = 'rules-v1'
+  WHERE e.policy_version = 'rules-v2'
     AND e.country_evidence_policy = 'country-v1'
     AND e.country_eligibility = 'CONFIRMED'
     AND e.decision IN ('SUITABLE', 'NEEDS_REVIEW')
@@ -154,7 +154,7 @@ WITH active_sources AS (
   JOIN vacancy_evaluations e ON e.vacancy_id = cs.vacancy_id AND e.source_item_id = cs.source_item_id
   JOIN profiles p ON p.profile_id = e.profile_id AND p.profile_version = e.profile_version
                  AND p.criteria_hash = e.criteria_hash
-  WHERE cs.rank = 1 AND e.policy_version = 'rules-v1'
+  WHERE cs.rank = 1 AND e.policy_version = 'rules-v2'
     AND e.country_evidence_policy = 'country-v1'
   ORDER BY si.source_namespace, e.vacancy_id, e.profile_id, e.evaluated_at DESC, e.id DESC
 ), rows AS (
@@ -231,7 +231,7 @@ WITH active_sources AS (
   JOIN source_items si ON si.id = e.source_item_id
   JOIN active_sources a ON a.namespace = si.source_namespace
   JOIN vacancies v ON v.id = e.vacancy_id
-  WHERE e.profile_id = :profile AND e.policy_version = 'rules-v1'
+  WHERE e.profile_id = :profile AND e.policy_version = 'rules-v2'
     AND e.country_evidence_policy = 'country-v1'
     AND ((v.source_namespace LIKE 'greenhouse:%' AND si.input_version = 'greenhouse-board-v1')
       OR (v.source_namespace LIKE 'lever:%' AND si.input_version = 'lever-postings-v1'))
@@ -274,7 +274,7 @@ WITH active_sources AS (
   JOIN source_items si ON si.id = e.source_item_id
   JOIN active_sources a ON a.namespace = si.source_namespace
   JOIN vacancies v ON v.id = e.vacancy_id
-  WHERE e.profile_id = :profile AND e.policy_version = 'rules-v1'
+  WHERE e.profile_id = :profile AND e.policy_version = 'rules-v2'
     AND e.country_evidence_policy = 'country-v1'
     AND ((v.source_namespace LIKE 'greenhouse:%' AND si.input_version = 'greenhouse-board-v1')
       OR (v.source_namespace LIKE 'lever:%' AND si.input_version = 'lever-postings-v1'))
@@ -481,7 +481,7 @@ def read_yield(event, client):
                 row[key] = json.loads(row[key] or "{}")
             rows.append(row)
         body = {"window": "All stored observations; current active sources and latest selected profile version",
-                "policyVersion": "rules-v1", "countryEvidencePolicy": "country-v1",
+                "policyVersion": "rules-v2", "countryEvidencePolicy": "country-v1",
                 "rows": rows, "nextOffset": offset + limit if len(records) > limit else None}
         if len(json.dumps(body).encode("utf-8")) > MAX_BODY:
             return response(502, {"error": "Diagnostic page is too large"})
@@ -514,7 +514,7 @@ def read_quality(event, client):
         body["examples"] = [example for example in body["examples"] if
                             (url := urlsplit(example["url"] or "")).scheme == "https"
                             and url.hostname and not url.username and not url.password]
-        body["policyVersion"] = "rules-v1"
+        body["policyVersion"] = "rules-v2"
         body["countryEvidencePolicy"] = "country-v1"
         comparison = {key: body[key] for key in ("previousVersion", "comparisonSample",
                       "currentEvaluated", "previousEvaluated", "matchedVacancies", "pairedFeedback")}

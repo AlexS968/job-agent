@@ -1,10 +1,12 @@
 package com.alexs.jobagent.source.service;
 
+import com.alexs.jobagent.source.dto.AtsSourceIdentityDTO;
 import com.alexs.jobagent.source.dto.SearchPilotResultDTO;
 import com.alexs.jobagent.source.dto.SearchQueryDTO;
 import com.alexs.jobagent.source.dto.SearchResponseDTO;
 import com.alexs.jobagent.source.dto.SearchResultDTO;
 import com.alexs.jobagent.source.exception.SearchFailureException;
+import com.alexs.jobagent.source.exception.MonthlySearchLimitException;
 import com.alexs.jobagent.source.repository.SearchPilotRepository;
 import java.time.Clock;
 import java.time.Duration;
@@ -21,11 +23,17 @@ public class SearchPilotService {
     public static final String QUERY_VERSION = "pilot-v1";
     private static final int INVOCATION_LIMIT = 12;
     private static final String GERMANY = "germany";
+    private static final String AUSTRIA = "austria";
     private static final List<SearchQueryDTO> QUERIES = List.of(
             new SearchQueryDTO("Java Spring backend product company careers Germany", GERMANY, "en", 10),
             new SearchQueryDTO("international SaaS product company Java backend careers", null, "en", 10),
             new SearchQueryDTO("Java backend remote Germany eligible employer careers", GERMANY, "en", 10),
             new SearchQueryDTO("official careers Java Spring Greenhouse Lever Germany", GERMANY, "en", 10));
+    private static final List<SearchQueryDTO> RECURRING_QUERIES = List.of(
+            new SearchQueryDTO("Java Spring backend product company careers", GERMANY, "en", 10),
+            new SearchQueryDTO("Backend Engineer Java Spring official employer careers", GERMANY, "en", 10),
+            new SearchQueryDTO("Software Engineer Java backend official careers", AUSTRIA, "en", 10),
+            new SearchQueryDTO("Backend Engineer Software Engineer employer careers Greenhouse Lever", AUSTRIA, "en", 10));
 
     private final SearchGateway gateway;
     private final SearchPilotRepository repository;
@@ -53,31 +61,75 @@ public class SearchPilotService {
     }
 
     public SearchPilotResultDTO run() {
+        return runQueries(QUERIES, QUERY_VERSION, null, INVOCATION_LIMIT, true);
+    }
+
+    /** Recurring discovery uses a separate durable UTC-calendar-month allowance. */
+    public SearchPilotResultDTO runMonthly() {
+        return runQueries(RECURRING_QUERIES, "source-coverage-v1", currentPeriod(), INVOCATION_LIMIT, true);
+    }
+
+    /** One Basic lookup for independent employer pages; the caller supplies the shared invocation remainder. */
+    public SearchPilotResultDTO searchMonthlyBoardEvidence(AtsSourceIdentityDTO board, int remainingAttempts) {
+        if (board == null || board.platform() == null || board.region() == null
+                || board.sourceId() == null || remainingAttempts < 1
+                || remainingAttempts > INVOCATION_LIMIT
+                || !board.sourceId().matches("[a-z0-9][a-z0-9-]{0,63}")) {
+            throw new IllegalArgumentException("Invalid board evidence search bounds");
+        }
+        String host = switch (board.platform() + ":" + board.region()) {
+            case "GREENHOUSE:global" -> "job-boards.greenhouse.io";
+            case "LEVER:global" -> "jobs.lever.co";
+            case "LEVER:eu" -> "jobs.eu.lever.co";
+            default -> throw new IllegalArgumentException("Unsupported board identity");
+        };
+        var query = new SearchQueryDTO(host + "/" + board.sourceId() + " official employer careers",
+                null, "en", 3);
+        return runQueries(List.of(query), "source-coverage-evidence-v1", currentPeriod(),
+                remainingAttempts, false);
+    }
+
+    private java.time.LocalDate currentPeriod() {
+        return java.time.LocalDate.now(clock.withZone(java.time.ZoneOffset.UTC)).withDayOfMonth(1);
+    }
+
+    private SearchPilotResultDTO runQueries(List<SearchQueryDTO> queries, String version,
+                                            java.time.LocalDate period, int attemptLimit,
+                                            boolean recordCandidates) {
         if (TransactionSynchronizationManager.isActualTransactionActive()) {
             throw new IllegalStateException("Search pilot requires no ambient transaction");
         }
         Invocation state = new Invocation();
-        for (int i = 0; i < QUERIES.size(); i++) {
+        for (int i = 0; i < queries.size(); i++) {
             if (Thread.currentThread().isInterrupted()) {
                 state.cancel();
-                return result(state);
+                return result(state, period);
             }
             state.queries++;
-            if (runQuery(QUERIES.get(i), i + 1, state) == QueryOutcome.STOP) {
-                return result(state);
+            try {
+                if (runQuery(queries.get(i), i + 1, version, period, attemptLimit,
+                        recordCandidates, state) == QueryOutcome.STOP) {
+                    return result(state, period);
+                }
+            } catch (MonthlySearchLimitException exhausted) {
+                state.monthlyLimitReached = true;
+                return result(state, period);
             }
         }
-        return result(state);
+        return result(state, period);
     }
 
-    private QueryOutcome runQuery(SearchQueryDTO query, int queryNumber, Invocation state) {
+    private QueryOutcome runQuery(SearchQueryDTO query, int queryNumber, String version,
+                                  java.time.LocalDate period, int attemptLimit,
+                                  boolean recordCandidates, Invocation state) {
         int retry = 1;
-        while (retry <= 3 && state.attempts < INVOCATION_LIMIT) {
+        while (retry <= 3 && state.attempts < attemptLimit) {
             if (Thread.currentThread().isInterrupted()) {
                 state.cancel();
                 return QueryOutcome.STOP;
             }
-            SearchFailureException failure = searchOnce(query, queryNumber, state);
+            SearchFailureException failure = searchOnce(query, queryNumber, version, period,
+                    recordCandidates, state);
             if (failure == null) {
                 return QueryOutcome.NEXT;
             }
@@ -90,9 +142,15 @@ public class SearchPilotService {
         return QueryOutcome.NEXT;
     }
 
-    private SearchFailureException searchOnce(SearchQueryDTO query, int queryNumber, Invocation state) {
-        Long id = reservation.reserve(QUERY_VERSION, queryNumber);
+    private SearchFailureException searchOnce(SearchQueryDTO query, int queryNumber, String version,
+                                              java.time.LocalDate period, boolean recordCandidates,
+                                              Invocation state) {
+        Long id = period == null ? reservation.reserve(version, queryNumber)
+                : reservation.reserveMonthly(version, queryNumber, currentPeriod());
         if (id == null) {
+            if (period != null) {
+                throw new MonthlySearchLimitException();
+            }
             throw new IllegalStateException("Search pilot budget exhausted; no request sent");
         }
         state.attempts++;
@@ -100,7 +158,12 @@ public class SearchPilotService {
             SearchResponseDTO response = gateway.search(query);
             repository.finish(id, "SUCCESS", response.requestId(), response.billedCredits());
             response.results().stream().map(SearchResultDTO::url).map(SearchCandidateUrl::normalize)
-                    .filter(Objects::nonNull).forEach(state.urls::add);
+                    .filter(Objects::nonNull).forEach(url -> {
+                        if (recordCandidates) {
+                            repository.recordCandidate(id, url);
+                        }
+                        state.urls.add(url);
+                    });
             return null;
         } catch (SearchFailureException failure) {
             finishFailure(id, failure);
@@ -146,11 +209,12 @@ public class SearchPilotService {
         }
     }
 
-    private SearchPilotResultDTO result(Invocation state) {
+    private SearchPilotResultDTO result(Invocation state, java.time.LocalDate period) {
         boolean interrupted = Thread.interrupted();
         try {
-            return new SearchPilotResultDTO(state.queries, state.attempts, repository.remaining(),
-                    state.failures, state.cancelled, List.copyOf(state.urls));
+            return new SearchPilotResultDTO(state.queries, state.attempts,
+                    period == null ? repository.remaining() : repository.monthlyRemaining(currentPeriod()),
+                    state.failures, state.cancelled, List.copyOf(state.urls), state.monthlyLimitReached);
         } finally {
             if (interrupted) {
                 Thread.currentThread().interrupt();
@@ -166,6 +230,7 @@ public class SearchPilotService {
         private int attempts;
         private int failures;
         private boolean cancelled;
+        private boolean monthlyLimitReached;
 
         private void cancel() {
             Thread.currentThread().interrupt();

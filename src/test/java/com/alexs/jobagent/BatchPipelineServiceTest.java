@@ -27,12 +27,15 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class BatchPipelineServiceTest {
     private final SourceRegistryService sources = mock(SourceRegistryService.class);
+    private final com.alexs.jobagent.source.service.SourceDiscoveryService discovery =
+            mock(com.alexs.jobagent.source.service.SourceDiscoveryService.class);
     private final OutboxService outbox = mock(OutboxService.class);
     private final SqsProducerService producer = mock(SqsProducerService.class);
     private final SqsEvaluationConsumerService consumer = mock(SqsEvaluationConsumerService.class);
@@ -43,8 +46,10 @@ class BatchPipelineServiceTest {
 
     @BeforeEach
     void setup() {
-        pipeline = new BatchPipelineService(sources, outbox, producer, consumer, queue, evaluations,
+        pipeline = new BatchPipelineService(sources, discovery, outbox, producer, consumer, queue, evaluations,
                 Clock.fixed(Instant.parse("2026-01-01T00:00:00Z"), ZoneOffset.UTC));
+        when(discovery.run()).thenReturn(new com.alexs.jobagent.source.dto.DiscoveryBatchDTO(
+                false, 0, 0, 0, 0, 0, 0, 0, 0, false));
         when(outbox.backlog()).thenReturn(new BacklogDTO(0, 0, 0, 0, 0));
         when(queue.backlog()).thenReturn(new SqsQueueBacklogDTO(0, 0, 0));
         when(evaluations.shortlist(any(), anyInt(), any())).thenReturn(new ShortlistDTO(List.of(), List.of()));
@@ -60,6 +65,9 @@ class BatchPipelineServiceTest {
         assertEquals("NO_NEW_VACANCIES", result.outcome());
         assertEquals(18, result.imported().unchanged());
         verify(consumer).consume(10, profile);
+        var order = inOrder(discovery, sources);
+        order.verify(discovery).run();
+        order.verify(sources).importActive();
     }
 
     @Test
@@ -162,7 +170,8 @@ class BatchPipelineServiceTest {
         Clock advancing = mock(Clock.class);
         Instant start = Instant.parse("2026-01-01T00:00:00Z");
         when(advancing.instant()).thenReturn(start, start.plusSeconds(901), start.plusSeconds(901));
-        var bounded = new BatchPipelineService(sources, outbox, producer, consumer, queue, evaluations, advancing);
+        var bounded = new BatchPipelineService(sources, discovery, outbox, producer, consumer, queue,
+                evaluations, advancing);
         when(sources.importActive()).thenReturn(new ActiveSourceImportResultDTO(1, 0, 1, 0, 0));
         var result = bounded.run(profile, 10, Duration.ofMinutes(10), 5);
         assertEquals("TIME_LIMIT", result.outcome());
