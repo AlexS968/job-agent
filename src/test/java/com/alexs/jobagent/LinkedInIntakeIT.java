@@ -216,6 +216,35 @@ class LinkedInIntakeIT {
         assertEquals(0, count("gmail_alert_messages"));
     }
 
+    @Test
+    void cardBudgetStopsBeforeTheNextMessageWithoutUndoingCommittedCards() {
+        StringBuilder first = new StringBuilder();
+        for (int id = 1000; id < 1100; id++) {
+            first.append("<a href='https://www.linkedin.com/jobs/view/").append(id)
+                    .append("/'>Java Engineer</a>");
+        }
+        mailbox.ids = List.of("first", "later");
+        mailbox.messages = Map.of("first", message("first", 1_795_000_000_000L, first.toString()),
+                "later", message("later", 1_795_000_001_000L,
+                        "<a href='https://www.linkedin.com/jobs/view/999999/'>Backend Engineer</a>"));
+        assertEquals("LinkedIn intake card limit reached; earlier messages remain durable",
+                assertThrows(IllegalStateException.class, () -> intake.run(2)).getMessage());
+        assertEquals(100, count("gmail_alert_cards"));
+        assertEquals(1, count("gmail_alert_messages"));
+        assertEquals(100, count("vacancies"));
+        assertEquals(0, count("gmail_alert_messages WHERE message_id = 'later'"));
+    }
+
+    @Test
+    void mismatchedGmailIdentityDoesNotRecordAnotherMessagesCards() {
+        mailbox.ids = List.of("listed");
+        mailbox.messages = Map.of("listed", message("different", 1_795_000_000_000L,
+                "<a href='https://www.linkedin.com/jobs/view/123456/'>Java Engineer</a>"));
+        assertThrows(IllegalStateException.class, () -> intake.run(1));
+        assertEquals(0, count("gmail_alert_messages"));
+        assertEquals(0, count("vacancies"));
+    }
+
     private int count(String table) {
         return jdbc.queryForObject("SELECT count(*) FROM " + table, Integer.class);
     }

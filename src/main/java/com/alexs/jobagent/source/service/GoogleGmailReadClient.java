@@ -12,6 +12,7 @@ import java.time.Duration;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Supplier;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.JsonNode;
@@ -25,6 +26,7 @@ public class GoogleGmailReadClient implements GmailReadClient {
     private static final String QUERY = "in:anywhere from:jobalerts-noreply@linkedin.com -in:spam -in:trash";
     private final HttpClient http;
     private final JsonMapper json;
+    private final Supplier<String> oauthConfiguration;
     private String accessToken;
 
     @Autowired
@@ -34,8 +36,13 @@ public class GoogleGmailReadClient implements GmailReadClient {
     }
 
     GoogleGmailReadClient(HttpClient http, JsonMapper json) {
+        this(http, json, () -> System.getenv("JOBAGENT_GMAIL_OAUTH_JSON"));
+    }
+
+    GoogleGmailReadClient(HttpClient http, JsonMapper json, Supplier<String> oauthConfiguration) {
         this.http = http;
         this.json = json;
+        this.oauthConfiguration = oauthConfiguration;
     }
 
     @Override
@@ -82,7 +89,7 @@ public class GoogleGmailReadClient implements GmailReadClient {
         if (accessToken != null) {
             return accessToken;
         }
-        String configured = System.getenv("JOBAGENT_GMAIL_OAUTH_JSON");
+        String configured = oauthConfiguration.get();
         if (configured == null || configured.length() > 16_384) {
             throw new IllegalStateException("Private Gmail OAuth configuration is unavailable");
         }

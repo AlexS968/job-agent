@@ -1,14 +1,34 @@
 package com.alexs.jobagent.source.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.json.JsonMapper;
 
 class GoogleGmailReadClientTest {
+    private static final String CONFIG = "{\"client_id\":\"synthetic-client\","
+            + "\"client_secret\":\"synthetic-secret\",\"refresh_token\":\"synthetic-refresh\"}";
+
     @Test
     void malformedResponseDoesNotExposeResponseFragments() {
         var client = new GoogleGmailReadClient(new JsonMapper());
@@ -17,4 +37,130 @@ class GoogleGmailReadClientTest {
         assertEquals("Gmail response was invalid", failure.getMessage());
         assertNull(failure.getCause());
     }
+
+    @Test
+    void refreshesOnceAndReadsBoundedArchivedAlertsWithExactSenderQuery() throws Exception {
+        List<HttpRequest> requests = new ArrayList<>();
+        var client = scripted(CONFIG, requests, response(200, "{\"access_token\":\"synthetic-access\"}"),
+                response(200, "{\"messages\":[{\"id\":\"mail-1\"},{\"id\":\"mail-2\"},"
+                        + "{\"id\":\"mail-3\"}]}"),
+                response(200, "{\"id\":\"mail-1\"}"), response(200, "{}"));
+        assertEquals(List.of("mail-1", "mail-2"), client.alertIds(2,
+                LocalDate.of(2026, 11, 9), LocalDate.of(2026, 11, 18)));
+        assertEquals("mail-1", client.alert("mail-1").path("id").asText());
+        assertEquals(List.of(), client.alertIds(1, null, null));
+        assertEquals(4, requests.size());
+        assertEquals("POST", requests.getFirst().method());
+        assertEquals("oauth2.googleapis.com", requests.getFirst().uri().getHost());
+        String search = java.net.URLDecoder.decode(requests.get(1).uri().getRawQuery(), StandardCharsets.UTF_8);
+        assertTrue(search.contains("in:anywhere from:jobalerts-noreply@linkedin.com"));
+        assertTrue(search.contains("after:2026/11/09 before:2026/11/18"));
+        assertTrue(search.contains("maxResults=2"));
+        assertEquals("Bearer synthetic-access", requests.get(1).headers().firstValue("Authorization").orElseThrow());
+        assertTrue(requests.get(2).uri().toString().endsWith("/mail-1?format=full"));
+        assertFalse(requests.get(1).uri().toString().contains("synthetic-secret"));
+        assertEquals("GET", requests.get(3).method());
+    }
+
+    @Test
+    void invalidConfigurationAndIdentifiersFailBeforeHttp() {
+        for (String configuration : List.of("{", "{\"client_id\":\"synthetic\"}")) {
+            HttpClient http = mock(HttpClient.class);
+            var client = new GoogleGmailReadClient(http, new JsonMapper(), () -> configuration);
+            assertThrows(IllegalStateException.class, () -> client.alertIds(1, null, null));
+            verifyNoInteractions(http);
+        }
+        HttpClient http = mock(HttpClient.class);
+        var missing = new GoogleGmailReadClient(http, new JsonMapper(), () -> null);
+        assertEquals("Private Gmail OAuth configuration is unavailable", assertThrows(IllegalStateException.class,
+                () -> missing.alertIds(1, null, null)).getMessage());
+        assertThrows(IllegalArgumentException.class, () -> missing.alertIds(0, null, null));
+        assertThrows(IllegalArgumentException.class, () -> missing.alertIds(21, null, null));
+        assertThrows(IllegalArgumentException.class, () -> missing.alert(null));
+        assertThrows(IllegalArgumentException.class, () -> missing.alert("../other"));
+        verifyNoInteractions(http);
+    }
+
+    @Test
+    void invalidListMetadataAndMissingOauthTokenAreSafeFailures() throws Exception {
+        var missingToken = scripted(CONFIG, new ArrayList<>(), response(200, "{}"));
+        assertEquals("Gmail OAuth refresh returned no token", assertThrows(IllegalStateException.class,
+                () -> missingToken.alertIds(1, null, null)).getMessage());
+        var invalidId = scripted(CONFIG, new ArrayList<>(), response(200, "{\"access_token\":\"synthetic\"}"),
+                response(200, "{\"messages\":[{\"id\":\"../private\"}]}"));
+        assertEquals("Gmail returned invalid message metadata", assertThrows(IllegalStateException.class,
+                () -> invalidId.alertIds(1, null, null)).getMessage());
+    }
+
+    @Test
+    void responseLimitAndHttpFailureCloseBodiesWithoutLeakingThem() throws Exception {
+        Reply tooLarge = response(200, new byte[2_000_001]);
+        var oversized = scripted(CONFIG, new ArrayList<>(), response(200, "{\"access_token\":\"synthetic\"}"),
+                tooLarge);
+        assertEquals("Gmail response exceeded the byte limit", assertThrows(IllegalStateException.class,
+                () -> oversized.alertIds(1, null, null)).getMessage());
+        assertTrue(tooLarge.closed().get());
+
+        Reply rejected = response(429, "synthetic private body");
+        var httpError = scripted(CONFIG, new ArrayList<>(), response(200, "{\"access_token\":\"synthetic\"}"),
+                rejected);
+        assertEquals("Gmail request failed with HTTP 429", assertThrows(IllegalStateException.class,
+                () -> httpError.alertIds(1, null, null)).getMessage());
+        assertTrue(rejected.closed().get());
+    }
+
+    @Test
+    void transportFailureAndInterruptionKeepSafeDiagnostics() throws Exception {
+        HttpClient http = mock(HttpClient.class);
+        when(http.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class)))
+                .thenThrow(new IOException("synthetic private detail"));
+        var client = new GoogleGmailReadClient(http, new JsonMapper(), () -> CONFIG);
+        assertEquals("Gmail request failed", assertThrows(IllegalStateException.class,
+                () -> client.alertIds(1, null, null)).getMessage());
+
+        HttpClient interruptedHttp = mock(HttpClient.class);
+        when(interruptedHttp.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class)))
+                .thenThrow(new InterruptedException("synthetic private detail"));
+        var interrupted = new GoogleGmailReadClient(interruptedHttp, new JsonMapper(), () -> CONFIG);
+        try {
+            assertEquals("Gmail request interrupted", assertThrows(IllegalStateException.class,
+                    () -> interrupted.alertIds(1, null, null)).getMessage());
+            assertTrue(Thread.currentThread().isInterrupted());
+        } finally {
+            Thread.interrupted();
+        }
+    }
+
+    private static GoogleGmailReadClient scripted(String configuration, List<HttpRequest> requests,
+                                                  Reply... replies) throws Exception {
+        HttpClient http = mock(HttpClient.class);
+        var queued = new ArrayDeque<>(List.of(replies));
+        when(http.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class)))
+                .thenAnswer(invocation -> {
+                    requests.add(invocation.getArgument(0));
+                    return queued.removeFirst().response();
+                });
+        return new GoogleGmailReadClient(http, new JsonMapper(), () -> configuration);
+    }
+
+    private static Reply response(int status, String body) {
+        return response(status, body.getBytes(StandardCharsets.UTF_8));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Reply response(int status, byte[] body) {
+        AtomicBoolean closed = new AtomicBoolean();
+        InputStream stream = new ByteArrayInputStream(body) {
+            @Override public void close() throws IOException {
+                closed.set(true);
+                super.close();
+            }
+        };
+        HttpResponse<InputStream> response = mock(HttpResponse.class);
+        when(response.statusCode()).thenReturn(status);
+        when(response.body()).thenReturn(stream);
+        return new Reply(response, closed);
+    }
+
+    private record Reply(HttpResponse<InputStream> response, AtomicBoolean closed) { }
 }
