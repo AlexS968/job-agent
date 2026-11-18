@@ -13,6 +13,34 @@ MAX_OFFSET = 1000
 MAX_BODY = 64_000
 MIN_COMPARABLE_FEEDBACK = 10
 
+LINKEDIN_SQL = """
+SELECT v.id, v.title, em.name, si.listing_id, e.decision,
+       e.role_classification, e.reasons::text, e.unknowns::text,
+       card.advertised_direction, card.direction_evidence
+FROM vacancies v
+JOIN employers em ON em.id = v.employer_id
+JOIN LATERAL (
+  SELECT si.id AS source_item_id, si.listing_id
+  FROM vacancy_sources vs JOIN source_items si ON si.id = vs.source_item_id
+  WHERE vs.vacancy_id = v.id AND si.source_namespace = 'linkedin:gmail'
+    AND si.input_version = 'linkedin-alert-v1'
+  ORDER BY si.fetched_at DESC, si.id DESC LIMIT 1
+) si ON TRUE
+JOIN gmail_alert_cards card ON card.source_item_id = si.source_item_id
+LEFT JOIN LATERAL (
+  SELECT decision, role_classification, reasons, unknowns
+  FROM vacancy_evaluations e
+  WHERE e.vacancy_id = v.id AND e.vacancy_revision = v.content_digest
+    AND e.profile_id = :profile AND e.policy_version = 'rules-v2'
+    AND e.profile_version = (
+      SELECT profile_version FROM evaluation_profiles
+      WHERE profile_id = :profile ORDER BY first_seen_at DESC, profile_version DESC LIMIT 1)
+  ORDER BY e.evaluated_at DESC, e.id DESC LIMIT 1
+) e ON TRUE
+WHERE v.source_namespace = 'linkedin' AND si.listing_id ~ '^[0-9]{4,32}$'
+ORDER BY v.id DESC LIMIT :limit OFFSET :offset
+"""
+
 CURRENT_CTE = """
 WITH current_profile AS (
   SELECT profile_id, profile_version, criteria_hash,
@@ -451,6 +479,50 @@ def read_page(event, client):
         return response(503, {"error": "Vacancies are temporarily unavailable"})
 
 
+def read_linkedin(event, client):
+    if not authorized(event):
+        return response(403, {"error": "Owner access required"})
+    query = event.get("queryStringParameters") or {}
+    profile = query.get("profile", "alex-de")
+    if profile not in ("alex-de", "alex-at"):
+        return response(400, {"error": "Choose Germany or Austria"})
+    try:
+        limit = integer(query.get("limit", "20"), 1, MAX_PAGE)
+        offset = integer(query.get("offset", "0"), 0, MAX_OFFSET)
+    except ValueError:
+        return response(400, {"error": "Invalid pagination"})
+    try:
+        result = client.execute_statement(
+            resourceArn=os.environ["DB_CLUSTER_ARN"], secretArn=os.environ["DB_READER_SECRET_ARN"],
+            database="job_agent", sql=LINKEDIN_SQL,
+            parameters=[{"name": "profile", "value": {"stringValue": profile}},
+                        {"name": "limit", "value": {"longValue": limit + 1}},
+                        {"name": "offset", "value": {"longValue": offset}}])
+        rows = result.get("records", [])
+        items = []
+        for row in rows[:limit]:
+            vacancy_id, title, employer, job_id, decision, role, reasons, unknowns, direction, evidence = (
+                cell_value(cell) for cell in row)
+            unknown_codes = json.loads(unknowns or "[]")[:20] if decision else [
+                "ROLE_NOT_ESTABLISHED", "WORK_ELIGIBILITY_UNCONFIRMED", "SALARY_UNKNOWN"]
+            items.append({"vacancyId": vacancy_id, "title": title,
+                          "employer": None if employer == "Employer unknown" else employer,
+                          "url": "https://www.linkedin.com/jobs/view/" + job_id + "/",
+                          "decision": decision or "PENDING_EVALUATION",
+                          "advertisedDirection": direction,
+                          "directionEvidence": evidence,
+                          "role": role or "UNKNOWN",
+                          "reasons": json.loads(reasons or "[]")[:20],
+                          "unknowns": unknown_codes})
+        body = {"profile": profile, "items": items,
+                "nextOffset": offset + limit if len(rows) > limit else None}
+        if len(json.dumps(body).encode("utf-8")) > MAX_BODY:
+            return response(502, {"error": "Page is too large; choose fewer entries"})
+        return response(200, body)
+    except Exception:  # No source text, SQL, credentials or token in logs.
+        return response(503, {"error": "LinkedIn observations are temporarily unavailable"})
+
+
 def read_yield(event, client):
     if not authorized(event):
         return response(403, {"error": "Owner access required"})
@@ -646,6 +718,8 @@ def handler(event, _context):
                               "feedbackEnabled": os.environ.get("PAGE_FEEDBACK_ENABLED") == "true"})
     if path == "/vacancies":
         return read_page(event, boto3.client("rds-data"))
+    if path == "/linkedin":
+        return read_linkedin(event, boto3.client("rds-data"))
     if path == "/yield":
         return read_yield(event, boto3.client("rds-data"))
     if path == "/quality":

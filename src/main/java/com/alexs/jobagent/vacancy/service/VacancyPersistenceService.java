@@ -86,6 +86,11 @@ public class VacancyPersistenceService {
 
     public LiveResult persistObserved(VacancyDTO vacancy, long sourceItemId, String description,
                                       Instant observationStartedAt, String contentDigest) {
+        return persistObserved(vacancy, sourceItemId, description, observationStartedAt, contentDigest, true);
+    }
+
+    public LiveResult persistObserved(VacancyDTO vacancy, long sourceItemId, String description,
+                                      Instant observationStartedAt, String contentDigest, boolean titleSupported) {
         if (!TransactionSynchronizationManager.isActualTransactionActive()) {
             throw new IllegalStateException("Vacancy persistence requires an ingestion transaction");
         }
@@ -108,6 +113,9 @@ public class VacancyPersistenceService {
             }
             if (observationStartedAt.isBefore(current.observationStartedAt())) {
                 change = VacancyChangeDTO.STALE;
+            } else if (!titleSupported) {
+                // A link-only observation retains provenance but cannot replace an established title.
+                change = VacancyChangeDTO.UNCHANGED;
             } else if (observationStartedAt.equals(current.observationStartedAt())) {
                 if (!contentDigest.equals(current.contentDigest())) {
                     throw new VacancyConflictException("Equal observation time has conflicting content");

@@ -11,6 +11,7 @@ import com.alexs.jobagent.source.service.SearchPilotService;
 import com.alexs.jobagent.source.service.SourceVerificationService;
 import com.alexs.jobagent.source.service.SourceRegistryService;
 import com.alexs.jobagent.source.service.SourceDiscoveryService;
+import com.alexs.jobagent.source.service.LinkedInIntakeService;
 import com.alexs.jobagent.source.dto.SourceCandidateDTO;
 import com.alexs.jobagent.source.dto.SearchPilotResultDTO;
 import com.alexs.jobagent.outbox.dto.DispatchResultDTO;
@@ -28,6 +29,7 @@ import com.alexs.jobagent.evaluation.dto.VacancyEvaluationDTO;
 import com.alexs.jobagent.batch.service.BatchPipelineService;
 import com.alexs.jobagent.batch.service.ScheduledBatchService;
 import java.time.Duration;
+import java.time.LocalDate;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
@@ -182,6 +184,7 @@ public class JobAgentApplication {
             case "--mode=activate-source" -> runActivateSource(args, registry);
             case "--mode=import-active-sources" -> runImportActiveSources(args, registry);
             case "--mode=source-discovery-once" -> runSourceDiscoveryOnce(args, context, registry);
+            case "--mode=linkedin-intake" -> runLinkedInIntake(args, context);
             case "--mode=evaluate-rules" -> runEvaluateRules(args, profiles, evaluations);
             case "--mode=shortlist" -> runShortlist(args, profiles, evaluations);
             case "--mode=evaluate-extraction" -> runEvaluateExtraction(args, profiles, evaluations);
@@ -192,6 +195,37 @@ public class JobAgentApplication {
             case "--mode=extract-primary" -> runExtraction(args, extraction, false);
             case "--mode=extract-compare" -> runExtraction(args, extraction, true);
             default -> throw new IllegalArgumentException("Unsupported batch mode");
+        }
+    }
+
+    private void runLinkedInIntake(String[] args, ApplicationContext context) {
+        requireOnlyOptions(args, "--mode=linkedin-intake", "--max-messages=", "--after-date=", "--before-date=");
+        long maximum = optionalLong(args, "--max-messages=", 10);
+        if (maximum < 1 || maximum > 20) {
+            throw new IllegalArgumentException("LinkedIn message limit must be between 1 and 20");
+        }
+        var result = context.getBean(LinkedInIntakeService.class).run((int) maximum,
+                optionalDate(args, "--after-date="), optionalDate(args, "--before-date="));
+        LOGGER.info("LinkedIn intake: messages={}, replayed={}, observed_cards={}, created={}, updated={}, review_required={}",
+                result.messages(), result.replayed(), result.cards(), result.created(), result.updated(),
+                result.reviewRequired());
+        if (result.reviewRequired() > 0) {
+            throw new IllegalStateException("LinkedIn intake has messages requiring review");
+        }
+    }
+
+    private static LocalDate optionalDate(String[] args, String prefix) {
+        List<String> values = Arrays.stream(args).filter(arg -> arg.startsWith(prefix)).toList();
+        if (values.isEmpty()) {
+            return null;
+        }
+        if (values.size() != 1) {
+            throw new IllegalArgumentException("Invalid LinkedIn date window");
+        }
+        try {
+            return LocalDate.parse(values.getFirst().substring(prefix.length()));
+        } catch (java.time.format.DateTimeParseException invalid) {
+            throw new IllegalArgumentException("Invalid LinkedIn date window");
         }
     }
 

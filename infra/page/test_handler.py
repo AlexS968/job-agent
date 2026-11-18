@@ -58,6 +58,32 @@ class PageTest(unittest.TestCase):
         self.assertEqual(403, result["statusCode"])
         self.assertEqual([], db.calls)
 
+    def test_linkedin_observation_is_owner_only_and_not_a_confirmed_recommendation(self):
+        values = [34, "Java Engineer", "Employer unknown", "123456", "NEEDS_REVIEW", "PREFERRED",
+                  '["JAVA_BACKEND_CANDIDATE"]', '["WORK_ELIGIBILITY_UNCONFIRMED","SALARY_UNKNOWN"]',
+                  "REMOTE_EUROPE", "Remote Europe"]
+        row_values = [{"longValue": value} if isinstance(value, int) else {"stringValue": value}
+                      for value in values]
+        db = FakeDataApi([row_values])
+        request = event(profile="alex-at", limit="1")
+        self.assertEqual(403, page.read_linkedin(event(owner=False), db)["statusCode"])
+        self.assertEqual([], db.calls)
+        result = json.loads(page.read_linkedin(request, db)["body"])
+        self.assertEqual("alex-at", result["profile"])
+        self.assertEqual("https://www.linkedin.com/jobs/view/123456/", result["items"][0]["url"])
+        self.assertIsNone(result["items"][0]["employer"])
+        self.assertIn("WORK_ELIGIBILITY_UNCONFIRMED", result["items"][0]["unknowns"])
+        self.assertEqual("REMOTE_EUROPE", result["items"][0]["advertisedDirection"])
+        self.assertEqual("Remote Europe", result["items"][0]["directionEvidence"])
+        self.assertEqual("alex-at", db.calls[0]["parameters"][0]["value"]["stringValue"])
+        self.assertNotIn("linkedin", page.SQL)  # The confirmed recommendation query stays separate.
+        pending = list(row_values)
+        pending[4:8] = [{"isNull": True}] * 4
+        db.records = [pending]
+        pending_result = json.loads(page.read_linkedin(request, db)["body"])
+        self.assertEqual("PENDING_EVALUATION", pending_result["items"][0]["decision"])
+        self.assertIn("SALARY_UNKNOWN", pending_result["items"][0]["unknowns"])
+
     def test_profiles_are_parameterized_and_separate(self):
         db = FakeDataApi([row()])
         for profile in ("alex-de", "alex-at"):

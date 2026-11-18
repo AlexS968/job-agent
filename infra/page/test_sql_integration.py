@@ -218,6 +218,67 @@ CREATE ROLE job_agent_page_reader LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NORE
         self.assertEqual(["2", "1", "1"], quality("alex-at")[:3])
         self.assertEqual("", quality("alex-de")[12])  # No previous registered profile version.
         self.assertEqual({"greenhouse-board-v1": 2}, json.loads(initial_de[23]))
+        self.sql("""
+INSERT INTO employers(source_namespace,external_id,name)
+ VALUES ('linkedin-unverified-job','123456','Employer unknown');
+INSERT INTO vacancies(employer_id,source_namespace,listing_id,title,content_digest)
+ VALUES (3,'linkedin','123456','Java Engineer',repeat('f',64));
+INSERT INTO source_items(id,source_namespace,source_item_id,listing_namespace,listing_id,
+ original_url,fetched_at,raw_payload,input_version,normalization_version,input_digest,content_digest)
+ OVERRIDING SYSTEM VALUE VALUES (1000,'linkedin:gmail','message-1:123456','linkedin','123456',
+ 'https://www.linkedin.com/jobs/view/123456/',TIMESTAMPTZ '2026-11-18 10:00:00+00',
+ '{}','linkedin-alert-v1',
+ 'linkedin-normalization-v1',repeat('f',64),repeat('f',64));
+INSERT INTO vacancy_sources(vacancy_id,source_item_id) VALUES (4,1000);
+INSERT INTO gmail_alert_messages(message_id,observed_at,recognized_cards,unsupported_links,status,completed_at)
+ VALUES ('message-1',TIMESTAMPTZ '2026-11-18 10:00:00+00',1,0,'COMPLETE',now());
+INSERT INTO gmail_alert_cards(message_id,linkedin_job_id,source_item_id,vacancy_id,outcome,
+ advertised_direction,direction_evidence)
+ VALUES ('message-1','123456',1000,4,'CREATED','GERMANY','Berlin, Germany');
+""")
+        linkedin = page.LINKEDIN_SQL.replace(":profile", "'alex-at'").replace(":limit", "20")
+        linkedin = linkedin.replace(":offset", "0")
+        observed = self.sql("SET ROLE job_agent_page_reader; " + linkedin + ";")
+        self.assertEqual(1, len(observed))
+        self.assertIn("Java Engineer", observed[0])
+        self.assertIn("GERMANY", observed[0])
+        self.assertIn("Berlin, Germany", observed[0])
+        self.assertNotIn("123456", "".join(quality("alex-at")))  # Not a confirmed recommendation.
+        self.sql("""
+INSERT INTO source_items(id,source_namespace,source_item_id,listing_namespace,listing_id,
+ original_url,fetched_at,raw_payload,input_version,normalization_version,input_digest,content_digest)
+ OVERRIDING SYSTEM VALUE VALUES (1001,'linkedin:gmail','message-2:123456','linkedin','123456',
+ 'https://www.linkedin.com/jobs/view/123456/',TIMESTAMPTZ '2026-11-18 11:00:00+00',
+ '{}','linkedin-alert-v1',
+ 'linkedin-normalization-v1',repeat('e',64),repeat('e',64));
+INSERT INTO vacancy_sources(vacancy_id,source_item_id) VALUES (4,1001);
+INSERT INTO gmail_alert_messages(message_id,observed_at,recognized_cards,unsupported_links,status,completed_at)
+ VALUES ('message-2',TIMESTAMPTZ '2026-11-18 11:00:00+00',1,0,'COMPLETE',now());
+INSERT INTO gmail_alert_cards(message_id,linkedin_job_id,source_item_id,vacancy_id,outcome,
+ advertised_direction,direction_evidence)
+ VALUES ('message-2','123456',1001,4,'UNCHANGED','REMOTE_EUROPE','Remote Europe');
+""")
+        latest = self.sql("SET ROLE job_agent_page_reader; " + linkedin + ";")
+        self.assertEqual(1, len(latest))
+        self.assertIn("Java Engineer", latest[0])
+        self.assertIn("REMOTE_EUROPE", latest[0])
+        self.sql("""
+INSERT INTO source_items(id,source_namespace,source_item_id,listing_namespace,listing_id,
+ original_url,fetched_at,raw_payload,input_version,normalization_version,input_digest,content_digest)
+ OVERRIDING SYSTEM VALUE VALUES (1002,'linkedin:gmail','message-3:123456','linkedin','123456',
+ 'https://www.linkedin.com/jobs/view/123456/',TIMESTAMPTZ '2026-11-18 09:00:00+00',
+ '{}','linkedin-alert-v1','linkedin-normalization-v1',repeat('d',64),repeat('d',64));
+INSERT INTO vacancy_sources(vacancy_id,source_item_id) VALUES (4,1002);
+INSERT INTO gmail_alert_messages(message_id,observed_at,recognized_cards,unsupported_links,status,completed_at)
+ VALUES ('message-3',TIMESTAMPTZ '2026-11-18 09:00:00+00',1,0,'COMPLETE',now());
+INSERT INTO gmail_alert_cards(message_id,linkedin_job_id,source_item_id,vacancy_id,outcome,
+ advertised_direction,direction_evidence)
+ VALUES ('message-3','123456',1002,4,'UNCHANGED','UNKNOWN',NULL);
+""")
+        out_of_order = self.sql("SET ROLE job_agent_page_reader; " + linkedin + ";")
+        self.assertEqual(1, len(out_of_order))
+        self.assertIn("REMOTE_EUROPE", out_of_order[0])
+        self.assertIn("Remote Europe", out_of_order[0])
         self.sql("CREATE ROLE job_agent_feedback_writer LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION; "
                  "GRANT CONNECT ON DATABASE job_agent TO job_agent_feedback_writer; "
                  "GRANT USAGE ON SCHEMA public TO job_agent_feedback_writer;")

@@ -5,7 +5,11 @@ import sys
 
 import prepare_reader as reader
 
-OLD_COLUMNS = reader.EXPECTED_COLUMNS - {
+PHASE7_COLUMNS = {f"gmail_alert_cards.{column}"
+                  for column in reader.TABLE_COLUMNS["gmail_alert_cards"]} | {"source_items.fetched_at"}
+EXPECTED_COLUMNS = reader.EXPECTED_COLUMNS - PHASE7_COLUMNS
+
+OLD_COLUMNS = EXPECTED_COLUMNS - {
     "source_items.source_namespace", "source_items.listing_id",
     "vacancy_evaluations.country_evidence_policy", "vacancy_evaluations.country_eligibility",
     *(f"verified_source_registry.{column}" for column in reader.TABLE_COLUMNS["verified_source_registry"]),
@@ -42,16 +46,16 @@ def upgrade(sts, clusters, rds, secrets, account, cluster, migrator):
     if state is None or not state["connect"] or not state["schemaUsage"]:
         raise RuntimeError("Reader bootstrap is incomplete")
     columns = set(state["selectedColumns"])
-    if not OLD_COLUMNS <= columns <= reader.EXPECTED_COLUMNS:
+    if not OLD_COLUMNS <= columns <= EXPECTED_COLUMNS:
         raise RuntimeError("Reader grants differ from reviewed baseline")
-    if columns == reader.EXPECTED_COLUMNS:
+    if columns == EXPECTED_COLUMNS:
         return
     for statement in ADDITIONAL_GRANTS:
         rds.execute_statement(resourceArn=cluster, secretArn=migrator,
                               database=reader.DATABASE, sql=statement)
     updated = reader.inspect_role(rds, cluster, migrator)
     reader.validate_role(updated)
-    if set(updated["selectedColumns"]) != reader.EXPECTED_COLUMNS:
+    if set(updated["selectedColumns"]) != EXPECTED_COLUMNS:
         raise RuntimeError("Reader grant upgrade is incomplete")
 
 

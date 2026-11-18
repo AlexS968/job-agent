@@ -47,6 +47,11 @@ output "application_task_definition_arn" {
   value = var.enable_runtime ? aws_ecs_task_definition.app[0].arn : null
 }
 
+output "linkedin_intake_task_definition_arn" {
+  description = "Manual Gmail read-only intake task; null until explicitly enabled."
+  value       = var.enable_linkedin_intake ? aws_ecs_task_definition.linkedin_intake[0].arn : null
+}
+
 output "migration_task_definition_arn" {
   value = var.enable_runtime ? aws_ecs_task_definition.migrate[0].arn : null
 }
