@@ -19,7 +19,7 @@ SECRET_NAME = "job-agent-p5a-page-reader"
 REGION = "us-east-1"
 DATABASE = "job_agent"
 TABLE_COLUMNS = {
-    "source_items": ("id", "source_namespace", "listing_id", "content_digest", "input_version"),
+    "source_items": ("id", "source_namespace", "listing_id", "content_digest", "input_version", "fetched_at"),
     "vacancy_sources": ("vacancy_id", "source_item_id"),
     "vacancies": ("id", "employer_id", "source_namespace", "title", "content_digest"),
     "employers": ("id", "name"),
@@ -29,6 +29,7 @@ TABLE_COLUMNS = {
                             "decision", "role_classification", "reasons", "unknowns", "preference_rank",
                             "evaluated_at", "country_evidence_policy", "country_eligibility"),
     "verified_source_registry": ("platform", "region", "source_id", "status", "active"),
+    "gmail_alert_cards": ("source_item_id", "advertised_direction", "direction_evidence"),
 }
 EXPECTED_COLUMNS = {f"{table}.{column}" for table, columns in TABLE_COLUMNS.items() for column in columns}
 GRANTS = (

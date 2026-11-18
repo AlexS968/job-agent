@@ -34,7 +34,7 @@ class UpgradeReaderTest(unittest.TestCase):
     def test_partial_state_gets_only_additive_grants_and_can_replay(self):
         old = {"connect": True, "schemaUsage": True,
                "selectedColumns": list(upgrade.OLD_COLUMNS)}
-        complete = {**old, "selectedColumns": list(upgrade.reader.EXPECTED_COLUMNS)}
+        complete = {**old, "selectedColumns": list(upgrade.EXPECTED_COLUMNS)}
         with patch.object(upgrade.reader, "inspect_role", side_effect=[old, complete, complete]), \
              patch.object(upgrade.reader, "validate_role"):
             self.run_upgrade()

@@ -101,6 +101,26 @@ variable "enable_runtime" {
   default     = false
 }
 
+variable "enable_linkedin_intake" {
+  description = "Register a manual Gmail read-only intake task; no schedule or mailbox writes."
+  type        = bool
+  default     = false
+  validation {
+    condition     = !var.enable_linkedin_intake || var.enable_runtime
+    error_message = "LinkedIn intake requires the reviewed application runtime."
+  }
+}
+
+variable "gmail_oauth_secret_arn" {
+  description = "Existing private Secrets Manager JSON with client_id, client_secret and refresh_token; never enter values in Terraform."
+  type        = string
+  default     = null
+  validation {
+    condition     = !var.enable_linkedin_intake || (var.gmail_oauth_secret_arn != null && can(regex("^arn:aws:secretsmanager:us-east-1:[0-9]{12}:secret:", var.gmail_oauth_secret_arn)))
+    error_message = "Enabled LinkedIn intake requires a private Gmail OAuth secret ARN."
+  }
+}
+
 variable "enable_bootstrap" {
   description = "Temporarily register the one-off DB bootstrap task and narrowly scoped IAM role; disable after grant finalization."
   type        = bool

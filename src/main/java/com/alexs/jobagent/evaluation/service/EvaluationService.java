@@ -253,12 +253,14 @@ public class EvaluationService {
     }
 
     private static boolean trustedLiveSource(String namespace) {
-        return namespace != null && (namespace.startsWith("greenhouse:") || namespace.startsWith("lever:"));
+        return namespace != null && (namespace.startsWith("greenhouse:") || namespace.startsWith("lever:")
+                || namespace.equals("linkedin"));
     }
 
     private static boolean trustedLiveEvidence(String namespace, String version) {
         return namespace.startsWith("greenhouse:") && "greenhouse-board-v1".equals(version)
-                || namespace.startsWith("lever:") && "lever-postings-v1".equals(version);
+                || namespace.startsWith("lever:") && "lever-postings-v1".equals(version)
+                || namespace.equals("linkedin") && "linkedin-alert-v1".equals(version);
     }
 
     private SelectedExtractionDTO select(String version, long vacancyId, long sourceId, String revision) {

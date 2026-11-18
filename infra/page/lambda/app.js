@@ -11,6 +11,7 @@ const qualityState = document.querySelector("#quality-state");
 const qualityDetails = document.querySelector("#quality-details");
 const qualityRetry = document.querySelector("#quality-retry");
 let yieldOffset = 0;
+let linkedinOffset = 0;
 const base64url = bytes => btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 const configPromise = fetch("/config", {cache: "no-store"}).then(r => { if (!r.ok) throw Error(); return r.json(); });
 async function signIn() {
@@ -45,9 +46,59 @@ async function exchangeCode(code, returnedState) {
   document.querySelector("#profiles").hidden = false;
   document.querySelector("#quality-section").hidden = false;
   document.querySelector("#yield-section").hidden = false;
+  document.querySelector("#linkedin-section").hidden = false;
   await load();
+  await loadLinkedIn();
   await loadQuality();
   await loadYield();
+}
+async function loadLinkedIn() {
+  const selectedProfile = profile, requestedOffset = linkedinOffset;
+  const country = selectedProfile === "alex-de" ? "Germany" : "Austria";
+  const status = document.querySelector("#linkedin-state");
+  const list = document.querySelector("#linkedin-items");
+  const retryButton = document.querySelector("#linkedin-retry");
+  const moreButton = document.querySelector("#linkedin-more");
+  status.textContent = "Loading stored LinkedIn observations…";
+  retryButton.hidden = true; moreButton.hidden = true;
+  try {
+    const query = new URLSearchParams({profile:selectedProfile,offset:String(requestedOffset),limit:"20"});
+    const response = await fetch("/linkedin?" + query,
+      {headers:{Authorization:"Bearer " + token},cache:"no-store"});
+    if (!response.ok) throw Error("Stored LinkedIn observations are temporarily unavailable.");
+    const page = await response.json();
+    if (selectedProfile !== profile || requestedOffset !== linkedinOffset) return;
+    if (requestedOffset === 0) list.replaceChildren();
+    for (const item of page.items) {
+      const card = document.createElement("article");
+      const heading = document.createElement("h3");
+      const link = document.createElement("a");
+      link.href = item.url; link.rel = "noopener noreferrer"; link.textContent = item.title;
+      heading.append(link);
+      const employer = document.createElement("p");
+      employer.textContent = item.employer || "Employer not verified";
+      const directions = {GERMANY:"Germany", AUSTRIA:"Austria", REMOTE_EUROPE:"Remote Europe",
+        REMOTE_WORLDWIDE:"Remote Worldwide", UNKNOWN:"Unknown direction"};
+      const advertised = directions[item.advertisedDirection] || "Unknown direction";
+      card.append(heading, employer,
+        document.createTextNode(`Advertised direction: ${advertised}`),
+        document.createTextNode(item.directionEvidence ? ` (card says: ${item.directionEvidence})` :
+          " (the card gives insufficient location evidence)"),
+        line("Evaluation", [item.decision]),
+        line("Role", [item.role]), line("Reasons", item.reasons),
+        line("Unknown conditions", item.unknowns),
+        document.createTextNode("Country eligibility has not been confirmed from this alert."));
+      list.append(card);
+    }
+    status.textContent = page.items.length ?
+      `Showing ${list.children.length} stored LinkedIn observations across advertised directions. ` +
+      `Selected evaluation profile: ${country}. None is confirmed as a ${country} recommendation from this alert.` :
+      `No stored LinkedIn observations in this sample. Selected evaluation profile: ${country}.`;
+    if (page.nextOffset !== null) { linkedinOffset = page.nextOffset; moreButton.hidden = false; }
+  } catch (error) {
+    if (selectedProfile !== profile) return;
+    status.textContent = error.message; retryButton.hidden = false;
+  }
 }
 function line(label, values) {
   const p = document.createElement("p");
@@ -261,13 +312,16 @@ document.querySelector("#signout").addEventListener("click", () => {
   location.assign(url);
 });
 document.querySelectorAll("[data-profile]").forEach(button => button.addEventListener("click", () => {
-  profile = button.dataset.profile; offset = 0; yieldOffset = 0; load(); loadQuality(); loadYield();
+  profile = button.dataset.profile; offset = 0; yieldOffset = 0; linkedinOffset = 0;
+  load(); loadLinkedIn(); loadQuality(); loadYield();
 }));
 more.addEventListener("click", load);
 retry.addEventListener("click", load);
 yieldMore.addEventListener("click", loadYield);
 yieldRetry.addEventListener("click", loadYield);
 qualityRetry.addEventListener("click", loadQuality);
+document.querySelector("#linkedin-retry").addEventListener("click", loadLinkedIn);
+document.querySelector("#linkedin-more").addEventListener("click", loadLinkedIn);
 const code = new URL(location.href).searchParams.get("code");
 if (code) exchangeCode(code, new URL(location.href).searchParams.get("state"))
   .catch(error => state.textContent = error.message);
