@@ -1,5 +1,7 @@
 # Phase 9A.1: bounded source discovery and Java/backend candidate screen
 
+**Historical experiment, not the current source-coverage architecture.** On 2026-11-17 the owner agreed to implement LinkedIn-alert intake first, then multiple vacancy channels and an employer registry with optional verified career-page monitoring. Direct aggregator vacancies must not be blocked by missing Greenhouse/Lever association. See the [master plan](../MASTER_PLAN.md), [two target architecture diagrams](TARGET_ARCHITECTURE.md) and [retirement register](SOURCE_ARCHITECTURE_RETIREMENT_REGISTER.md). The results below remain evidence about the existing code and AWS runs; they do not establish the revised design as deployed.
+
 Status: one controlled AWS `source-discovery-once` task exited 0 on 2026-11-17. Four Tavily requests returned 35 distinct URL leads; five were checked, with zero confirmed associations, activations or new listings. The V23 prioritization/diagnostics follow-up is local only. Phase 9A.1 has not met its new-source/import acceptance criterion. Phase 9A.2 is the separate protected opportunity report page.
 
 ## Autonomous path and trust boundary

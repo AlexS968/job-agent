@@ -6,7 +6,7 @@ The [owner-only vacancy page](docs/PHASE_6A_PAGE.md) is deployed. On 2026-11-15,
 
 A portfolio project for an autonomous job-search assistant built with Java 21, Spring Boot and PostgreSQL. The scheduled business pipeline is deployed; its updated combined-result path passed a controlled AWS run on 2026-11-15, while a regular Tuesday/Thursday run of that version remains unverified.
 
-The planned agent discovers vacancies and employers, normalizes and deduplicates results, evaluates explicit criteria, and produces an explained shortlist. Feedback, application drafts and outcome tracking follow in later phases. Applications require human approval.
+The revised target starts by ingesting the existing LinkedIn job-alert stream into Job Agent, then adds approved vacancy channels and verified employer career-page monitoring. Direct channel vacancies remain useful even without a readable employer page. The agent preserves provenance, deduplicates across channels, evaluates evidence and presents an explained shortlist for Germany, Austria, Remote Europe and Remote Worldwide. Later monthly analysis and AI recommendations use comparable stored evidence; owner-selected vacancies can produce tailored CV and Bewerbungsschreiben drafts. Applications require human approval. See the [master plan](MASTER_PLAN.md), [system and AWS architecture diagrams](docs/TARGET_ARCHITECTURE.md) and [replacement/retirement register](docs/SOURCE_ARCHITECTURE_RETIREMENT_REGISTER.md). This design is not deployed.
 
 ## Current status
 
@@ -298,7 +298,7 @@ The existing Google Sheet remains the sole master of the old pipeline until veri
 
 ## Next milestone
 
-Next: review the dated source-to-import evidence and the remaining Phase 3 discovery gaps. The latest verified main run passed `Build and test` and `Sonar Quality Gate`; historical failures remain documented above. Evaluation and cloud transport remain later phases.
+Next: Phase 7A LinkedIn-alert intake through separately authorized Java Gmail access, followed by Phase 7B Sheet reconciliation and controlled cutover. Then expand channel/employer coverage in Phase 9A.1 and add the protected opportunity report in 9A.2. The previous Tavily-to-ATS expansion remains a measured but unsuccessful source-activation experiment. Consult the [target architecture](docs/TARGET_ARCHITECTURE.md) before changing source code or AWS infrastructure.
 
 ## Extraction-aware offline shortlist (local review increment)
 
