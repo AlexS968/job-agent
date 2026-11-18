@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+case "${1:-all}" in
+  all) suite=(discover -v -s /tests) ;;
+  sheet) suite=(test_sheet_snapshot) ;;
+  *) exit 2 ;;
+esac
+
 test_network="job-agent-bootstrap-test-$$"
 test_db="job-agent-bootstrap-db-$$"
 export POSTGRES_PASSWORD="synthetic-bootstrap-test-only"
@@ -18,7 +24,7 @@ docker run -d --name "$test_db" --network "$test_network" \
   -e POSTGRES_DB=job_agent -e POSTGRES_USER=test_admin -e POSTGRES_PASSWORD \
   postgres:17.11-alpine >/dev/null
 for attempt in {1..30}; do
-  if docker exec "$test_db" pg_isready -U test_admin -d job_agent >/dev/null 2>&1; then
+  if docker exec "$test_db" pg_isready -h 127.0.0.1 -U test_admin -d job_agent >/dev/null 2>&1; then
     break
   fi
   if [[ "$attempt" -eq 30 ]]; then
@@ -28,7 +34,16 @@ for attempt in {1..30}; do
   sleep 1
 done
 
-docker run --rm --read-only --network "$test_network" --entrypoint python \
-  -e "TEST_DB_HOST=$test_db" -e TEST_DB_PORT=5432 -e TEST_DB_PASSWORD \
-  -v "$PWD/infra/bootstrap/tests:/tests:ro" \
-  "$bootstrap_test_image" -m unittest discover -v -s /tests
+run_suite() {
+  docker run --rm --read-only --network "$test_network" --entrypoint python \
+    -e "TEST_DB_HOST=$test_db" -e TEST_DB_PORT=5432 -e TEST_DB_PASSWORD \
+    -e PYTHONPATH=/tests:/sheet:/opt/bootstrap \
+    -v "$PWD/infra/bootstrap/tests:/tests:ro" \
+    -v "$PWD/infra/reconciliation:/sheet:ro" \
+    -v "$PWD/src/main/resources/db/migration:/migrations:ro" \
+    "$bootstrap_test_image" -m unittest "$@"
+}
+run_suite "${suite[@]}"
+if [[ "${1:-all}" == all ]]; then
+  run_suite test_sheet_snapshot
+fi
