@@ -23,6 +23,7 @@ import tools.jackson.databind.JsonNode;
 public class LinkedInAlertParser {
     private static final Pattern JOB_PATH = Pattern.compile("/(?:comm/)?jobs/view/(\\d{4,32})(?:/|$)");
     private static final Pattern PLAIN_URL = Pattern.compile("https://[^\\s<>\"']{1,2048}");
+    private static final String HREF_LINK = "a[href]";
     private static final Set<String> NAVIGATION = Set.of("/comm/jobs/search-results", "/comm/jobs/search-results/",
             "/comm/jobs/alerts", "/comm/jobs/alerts/");
     private static final String TITLE = "h1, h2, h3, h4, .job-title, .job-card-title, .job-card__title, [data-job-title]";
@@ -106,7 +107,7 @@ public class LinkedInAlertParser {
         }
         String body = new String(bytes, StandardCharsets.UTF_8);
         if ("text/html".equalsIgnoreCase(mime)) {
-            for (Element link : Jsoup.parse(body).select("a[href]")) {
+            for (Element link : Jsoup.parse(body).select(HREF_LINK)) {
                 add(link.attr("href"), link, cards, counts);
             }
         } else {
@@ -119,31 +120,8 @@ public class LinkedInAlertParser {
 
     private static void add(String raw, Element link,
                             Map<String, LinkedInAlertDTO.CardDTO> cards, int[] counts) {
-        URI uri;
-        try {
-            uri = URI.create(raw.strip().replaceAll("[.,;)]{1,6}$", "").replace("&amp;", "&"));
-        } catch (IllegalArgumentException invalid) {
-            unsupported(counts);
-            return;
-        }
-        String host = uri.getHost();
-        if (host != null && host.equalsIgnoreCase("lnkd.in")) {
-            unsupported(counts);
-            return;
-        }
-        if (!supportedHost(uri)) {
-            if (host != null && (host.equalsIgnoreCase("linkedin.com")
-                    || host.toLowerCase(java.util.Locale.ROOT).endsWith(".linkedin.com"))
-                    && uri.getPath() != null && uri.getPath().contains("/jobs/")) {
-                unsupported(counts);
-            }
-            return;
-        }
-        String jobId = jobId(uri);
+        String jobId = acceptedJobId(raw, counts);
         if (jobId == null) {
-            if (uri.getPath() != null && uri.getPath().contains("/jobs/") && !NAVIGATION.contains(uri.getRawPath())) {
-                unsupported(counts);
-            }
             return;
         }
         if (cards.size() >= MAX_CARDS && !cards.containsKey(jobId)) {
@@ -159,6 +137,39 @@ public class LinkedInAlertParser {
         cards.merge(jobId, new LinkedInAlertDTO.CardDTO(jobId, cleanTitle,
                         "https://www.linkedin.com/jobs/view/" + jobId + "/", direction, fields.location(), fields.employer()),
                 LinkedInAlertParser::merge);
+    }
+
+    private static String acceptedJobId(String raw, int[] counts) {
+        URI uri;
+        try {
+            uri = URI.create(raw.strip().replaceAll("[.,;)]{1,6}$", "").replace("&amp;", "&"));
+        } catch (IllegalArgumentException invalid) {
+            unsupported(counts);
+            return null;
+        }
+        String host = uri.getHost();
+        if (host != null && host.equalsIgnoreCase("lnkd.in")) {
+            unsupported(counts);
+            return null;
+        }
+        if (!supportedHost(uri)) {
+            if (isLinkedInJobPath(uri)) {
+                unsupported(counts);
+            }
+            return null;
+        }
+        String jobId = jobId(uri);
+        if (jobId == null && uri.getPath().contains("/jobs/") && !NAVIGATION.contains(uri.getRawPath())) {
+            unsupported(counts);
+        }
+        return jobId;
+    }
+
+    private static boolean isLinkedInJobPath(URI uri) {
+        String host = uri.getHost();
+        return host != null && (host.equalsIgnoreCase("linkedin.com")
+                || host.toLowerCase(Locale.ROOT).endsWith(".linkedin.com"))
+                && uri.getPath() != null && uri.getPath().contains("/jobs/");
     }
 
     private static LinkedInAlertDTO.CardDTO merge(LinkedInAlertDTO.CardDTO previous,
@@ -210,7 +221,7 @@ public class LinkedInAlertParser {
         String location = field(link, LOCATION, 120, "data-job-location");
         Element parent = link.parent();
         if (location == null && link.select(LOCATION).isEmpty() && parent != null
-                && !"body".equals(parent.normalName()) && parent.select("a[href]").size() == 1) {
+                && !"body".equals(parent.normalName()) && parent.select(HREF_LINK).size() == 1) {
             location = field(parent, LOCATION, 120, "data-job-location");
         }
         return new CardFields(title, employer, location);
@@ -221,22 +232,23 @@ public class LinkedInAlertParser {
         String title = bounded(content(titleLink).text(), 255);
         CardFields titleOnly = new CardFields(title, null, null);
         Element table = row.closest("table");
-        Element wrapper = table == null ? null : table.closest("a[href]");
+        Element wrapper = table == null ? null : table.closest(HREF_LINK);
         if (wrapper != null && !linksToJob(wrapper, jobId)) {
             return titleOnly;
         }
         Element metadata = row.nextElementSibling();
         if (metadata == null || !metadata.is("tr") || metadata.childrenSize() != 1
-                || !metadata.child(0).is("td") || metadata.selectFirst("table, a[href]") != null) {
+                || !metadata.child(0).is("td") || metadata.selectFirst("table, " + HREF_LINK) != null) {
             return titleOnly;
         }
         var paragraphs = metadata.child(0).select("p");
-        if (paragraphs.size() != 1 || row.select("a[href]").stream().anyMatch(a -> !linksToJob(a, jobId))) {
+        if (paragraphs.size() != 1 || row.select(HREF_LINK).stream().anyMatch(a -> !linksToJob(a, jobId))) {
             return titleOnly;
         }
         Element paragraph = content(paragraphs.first());
         paragraph.select("br").before(" · ");
-        String[] parts = paragraph.text().split("\\s+[·•]\\s+", -1);
+        // Jsoup text() normalizes whitespace to single spaces.
+        String[] parts = paragraph.text().split(" [·•] ", 3);
         return parts.length == 2
                 ? new CardFields(title, bounded(parts[0], 255), bounded(parts[1], 120)) : titleOnly;
     }

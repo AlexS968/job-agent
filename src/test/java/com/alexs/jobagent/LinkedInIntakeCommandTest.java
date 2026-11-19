@@ -5,18 +5,23 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.alexs.jobagent.source.dto.LinkedInIntakeResultDTO;
 import com.alexs.jobagent.source.service.LinkedInIntakeService;
+import com.alexs.jobagent.source.service.LinkedInRepairService;
 import java.time.LocalDate;
+import java.util.List;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.context.ApplicationContext;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.mock.env.MockEnvironment;
 import tools.jackson.databind.json.JsonMapper;
 
 class LinkedInIntakeCommandTest {
@@ -65,5 +70,40 @@ class LinkedInIntakeCommandTest {
         assertThrows(IllegalArgumentException.class,
                 () -> runner.run("--mode=linkedin-intake", "--unexpected=yes"));
         verifyNoInteractions(intake);
+    }
+
+    @Test
+    void repairUsesPrivateSelectionAndFailsIfReviewRemains() throws Exception {
+        repairSelection("sample-first,sample-second");
+        var repair = mock(LinkedInRepairService.class);
+        when(context.getBean(LinkedInRepairService.class)).thenReturn(repair);
+        var ids = List.of("sample-first", "sample-second");
+        when(repair.repair(ids)).thenReturn(new LinkedInRepairService.Result(2, 1, 0, 1, 1),
+                new LinkedInRepairService.Result(2, 0, 1, 1, 0));
+
+        runner.run("--mode=linkedin-repair");
+        assertEquals("LinkedIn repair has messages requiring review", assertThrows(IllegalStateException.class,
+                () -> runner.run("--mode=linkedin-repair")).getMessage());
+        verify(repair, times(2)).repair(ids);
+        verifyNoInteractions(intake);
+    }
+
+    @Test
+    void repairRejectsMissingOrOversizedConfigurationAndExtraOptions() {
+        repairSelection(null);
+        assertThrows(IllegalArgumentException.class, () -> runner.run("--mode=linkedin-repair"));
+        repairSelection("a".repeat(651));
+        assertThrows(IllegalArgumentException.class, () -> runner.run("--mode=linkedin-repair"));
+        assertThrows(IllegalArgumentException.class,
+                () -> runner.run("--mode=linkedin-repair", "--JOBAGENT_LINKEDIN_REPAIR_IDS=sample-id"));
+        verify(context, never()).getBean(LinkedInRepairService.class);
+    }
+
+    private void repairSelection(String selection) {
+        var environment = new MockEnvironment();
+        if (selection != null) {
+            environment.setProperty("JOBAGENT_LINKEDIN_REPAIR_IDS", selection);
+        }
+        when(context.getEnvironment()).thenReturn(environment);
     }
 }

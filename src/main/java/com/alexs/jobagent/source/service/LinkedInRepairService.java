@@ -43,29 +43,39 @@ public class LinkedInRepairService {
                 skipped++;
                 continue;
             }
-            LinkedInAlertDTO alert;
-            try {
-                alert = parser.parse(gmail.alert(id));
-            } catch (LinkedInAlertException unsupported) {
-                checkInterrupted();
+            LinkedInAlertDTO alert = readAlert(id);
+            if (alert == null) {
                 review++;
-                continue;
-            }
-            if (cards + alert.cards().size() > MAX_CARDS) {
-                throw new IllegalStateException("LinkedIn repair card limit reached; earlier repairs remain committed");
-            }
-            checkInterrupted();
-            RepairOutcome outcome = transaction.execute(status -> apply(id, alert));
-            switch (outcome) {
-                case COMPLETE -> completed++;
-                case REVIEW_UPDATED, EVIDENCE_MISMATCH -> review++;
-                case SKIPPED -> skipped++;
-            }
-            if (outcome == RepairOutcome.COMPLETE || outcome == RepairOutcome.REVIEW_UPDATED) {
-                cards += alert.cards().size();
+            } else {
+                if (cards + alert.cards().size() > MAX_CARDS) {
+                    throw new IllegalStateException("LinkedIn repair card limit reached; earlier repairs remain committed");
+                }
+                checkInterrupted();
+                RepairOutcome outcome = transaction.execute(status -> apply(id, alert));
+                switch (outcome) {
+                    case COMPLETE -> {
+                        completed++;
+                        cards += alert.cards().size();
+                    }
+                    case REVIEW_UPDATED -> {
+                        review++;
+                        cards += alert.cards().size();
+                    }
+                    case EVIDENCE_MISMATCH -> review++;
+                    case SKIPPED -> skipped++;
+                }
             }
         }
         return new Result(ids.size(), completed, review, skipped, cards);
+    }
+
+    private LinkedInAlertDTO readAlert(String id) {
+        try {
+            return parser.parse(gmail.alert(id));
+        } catch (LinkedInAlertException unsupported) {
+            checkInterrupted();
+            return null;
+        }
     }
 
     private RepairOutcome apply(String id, LinkedInAlertDTO alert) {

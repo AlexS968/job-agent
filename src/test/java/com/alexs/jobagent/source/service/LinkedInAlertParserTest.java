@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import com.alexs.jobagent.source.exception.LinkedInAlertException;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.json.JsonMapper;
@@ -95,6 +96,41 @@ class LinkedInAlertParserTest {
         assertEquals("Example Studio", card.advertisedEmployer());
         assertEquals("Belgium (Hybrid)", card.directionEvidence());
         assertEquals("UNKNOWN", card.advertisedDirection());
+    }
+
+    @Test
+    void keepsTitleButRejectsMetadataWithoutClearBoundariesOrMatchingJobIdentity() {
+        var parsed = parser.parse(message("jobalerts-noreply@linkedin.com", """
+                <table><tr><td><a class="font-bold text-md"
+                    href="https://at.linkedin.com/jobs/view/432100/"><span>Platform Engineer</span></a></td></tr>
+                    <tr><td><p>Example Studio · Vienna · Newly posted</p></td></tr></table>
+                <a href="https://www.linkedin.com/jobs/view/432101/">
+                    <table><tr><td><a class="font-bold text-md"
+                        href="https://www.linkedin.com/jobs/view/432102/"><span>Systems Engineer</span></a></td></tr>
+                        <tr><td><p>Another Employer · Remote Europe</p></td></tr></table>
+                </a>
+                <table><tr><td><a class="font-bold text-md"
+                    href="https://www.linkedin.com/jobs/view/432103/"><span>Software Engineer</span></a></td></tr></table>
+                """, ""));
+        for (String title : List.of("Platform Engineer", "Systems Engineer", "Software Engineer")) {
+            var card = parsed.cards().stream().filter(entry -> title.equals(entry.title())).findFirst().orElseThrow();
+            assertNull(card.advertisedEmployer());
+            assertNull(card.directionEvidence());
+        }
+    }
+
+    @Test
+    void acceptsSupportedJobHostsAndRejectsLinksWithUnsafeAuthority() {
+        var parsed = parser.parse(message("jobalerts-noreply@linkedin.com", """
+                <a href="https://linkedin.com/jobs/view/432100/">Engineer</a>
+                <a href="https://www.linkedin.com:8443/jobs/view/432101/">Wrong port</a>
+                <a href="https://username@www.linkedin.com/jobs/view/432102/">User info</a>
+                <a href="http://www.linkedin.com/jobs/view/432103/">Plain HTTP</a>
+                <a href="https://www.linkedin.com.example.test/jobs/view/432104/">Unrelated host</a>
+                <a href="https://www.linkedin.com/about/">Ordinary navigation</a>
+                """, ""));
+        assertEquals(List.of("432100"), parsed.cards().stream().map(card -> card.jobId()).toList());
+        assertEquals(3, parsed.unsupportedLinks());
     }
 
     @Test

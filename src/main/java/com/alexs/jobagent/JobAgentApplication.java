@@ -208,7 +208,7 @@ public class JobAgentApplication {
 
     private void runLinkedInRepair(String[] args, ApplicationContext context) {
         requireOnlyOptions(args, "--mode=linkedin-repair");
-        String selected = System.getenv("JOBAGENT_LINKEDIN_REPAIR_IDS");
+        String selected = context.getEnvironment().getProperty("JOBAGENT_LINKEDIN_REPAIR_IDS");
         if (selected == null || selected.length() > 650) {
             throw new IllegalArgumentException("Set a private LinkedIn repair sample");
         }

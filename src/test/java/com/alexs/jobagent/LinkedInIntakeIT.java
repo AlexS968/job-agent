@@ -496,6 +496,45 @@ class LinkedInIntakeIT {
         assertEquals(0, count("gmail_mailbox_actions"));
     }
 
+    @Test
+    void malformedRepairLeavesOriginalEvidenceAndDoesNotBlockLaterCardCorrection() {
+        long observed = 1_795_000_000_000L;
+        String unsupportedLink = "<a href='https://www.linkedin.com/jobs/search/'>Unrecognized</a>";
+        mailbox.ids = List.of("malformed", "partial");
+        mailbox.messages = Map.of(
+                "malformed", message("malformed", observed,
+                        "<a href='https://www.linkedin.com/jobs/view/123456/'>First engineer</a>" + unsupportedLink),
+                "partial", message("partial", observed,
+                        "<a href='https://www.linkedin.com/jobs/view/654321/'>Second engineer</a>" + unsupportedLink));
+        assertEquals(2, intake.run(2).reviewRequired());
+        mailbox.messages = Map.of(
+                "malformed", json.readTree("{}"),
+                "partial", message("partial", observed, """
+                        <a href='https://www.linkedin.com/jobs/view/654321/'>
+                          <span class='job-location'>Remote Europe</span>
+                        </a>
+                        """ + unsupportedLink));
+
+        assertEquals(new LinkedInRepairService.Result(2, 0, 2, 0, 1), repair.repair(mailbox.ids));
+        assertEquals(1, count("""
+                gmail_alert_messages WHERE message_id='malformed' AND status='NEEDS_REVIEW'
+                AND pre_repair_unsupported_links IS NULL
+                """));
+        assertEquals(1, count("""
+                gmail_alert_messages WHERE message_id='partial' AND status='NEEDS_REVIEW'
+                AND review_reason='UNRECOGNIZED_LINK' AND unsupported_links=1 AND pre_repair_unsupported_links=1
+                """));
+        assertEquals(1, count("""
+                gmail_alert_cards WHERE message_id='partial' AND advertised_title='Second engineer'
+                AND parsed_direction='REMOTE_EUROPE'
+                """));
+        mailbox.failingId = "partial";
+        assertEquals(new LinkedInRepairService.Result(1, 0, 0, 1, 0), repair.repair(List.of("partial")));
+        assertEquals(2, count("source_items"));
+        assertEquals(2, count("outbox_events"));
+        assertEquals(0, count("gmail_mailbox_actions"));
+    }
+
     private int count(String table) {
         return jdbc.queryForObject("SELECT count(*) FROM " + table, Integer.class);
     }
