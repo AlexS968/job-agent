@@ -380,6 +380,49 @@ class LinkedInIntakeIT {
         assertEquals(end, jdbc.queryForObject("SELECT window_start FROM gmail_cutover", Long.class));
     }
 
+    @Test
+    void livePageSkipsMailBeforeHandoffAndAtWindowEnd() {
+        long end = java.time.Instant.now().getEpochSecond() - 60;
+        long since = end - 300;
+        jdbc.update("""
+                INSERT INTO gmail_cutover(enabled,since_epoch,window_start,window_end,scan_start)
+                VALUES(true,?,?,?,?)
+                """, since, since, end, since);
+        String card = "<a href='https://www.linkedin.com/jobs/view/123456/'>Java Engineer</a>";
+        mailbox.messages = Map.of("before", message("before", since * 1000 - 1, card),
+                "future", message("future", end * 1000, card));
+        mailbox.page = token -> new GmailCutoverClient.Page(List.of("before", "future"), null);
+
+        var result = cutover.run();
+        assertEquals(2, result.seen());
+        assertEquals(0, result.applied());
+        assertEquals(0, count("gmail_alert_messages"));
+        assertEquals(0, count("vacancies"));
+        assertEquals(0, count("gmail_mailbox_actions"));
+        assertEquals(end, jdbc.queryForObject("SELECT window_start FROM gmail_cutover", Long.class));
+    }
+
+    @Test
+    void pausingAfterListingRollsBackCompletionAndLeavesPageForRetry() {
+        long since = java.time.Instant.now().getEpochSecond() - 60;
+        jdbc.update("INSERT INTO gmail_cutover(enabled,since_epoch,window_start) VALUES(true,?,?)", since, since);
+        mailbox.messages = Map.of("eligible", message("eligible", since * 1000,
+                "<a href='https://www.linkedin.com/jobs/view/123456/'>Java Engineer</a>"));
+        mailbox.page = token -> {
+            jdbc.update("UPDATE gmail_cutover SET enabled=false");
+            return new GmailCutoverClient.Page(List.of("eligible"), "next");
+        };
+
+        assertEquals("Mailbox cutover paused during intake",
+                assertThrows(IllegalStateException.class, cutover::run).getMessage());
+        assertEquals(0, count("gmail_alert_messages"));
+        assertEquals(0, count("vacancies"));
+        assertEquals(0, count("outbox_events"));
+        assertEquals(0, count("gmail_mailbox_actions"));
+        assertEquals(since, jdbc.queryForObject("SELECT window_start FROM gmail_cutover", Long.class));
+        assertEquals(1, count("gmail_cutover WHERE page_token IS NULL AND window_end IS NOT NULL"));
+    }
+
     private int count(String table) {
         return jdbc.queryForObject("SELECT count(*) FROM " + table, Integer.class);
     }

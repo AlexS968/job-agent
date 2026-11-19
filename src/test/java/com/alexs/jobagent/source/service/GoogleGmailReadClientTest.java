@@ -153,7 +153,9 @@ class GoogleGmailReadClientTest {
                 buffer.get(part);
                 bytes.writeBytes(part);
             }
-            public void onComplete() { }
+            public void onComplete() {
+                // onNext already collected all bytes from the request body.
+            }
             public void onError(Throwable error) { throw new AssertionError(error); }
         });
         var mapper = new JsonMapper();
@@ -172,6 +174,46 @@ class GoogleGmailReadClientTest {
                 assertThrows(IllegalStateException.class, () -> client.livePage(100, 200, "next")).getMessage());
         assertEquals("Gmail request failed with HTTP 429",
                 assertThrows(IllegalStateException.class, () -> client.livePage(100, 200, "next")).getMessage());
+    }
+
+    @Test
+    void malformedListMetadataCannotBeMistakenForAnEmptyOrFinishedWindow() throws Exception {
+        var client = scripted(CONFIG, new ArrayList<>(), response(200, "{\"access_token\":\"synthetic\"}"),
+                response(200, "[]"), response(200, "{\"messages\":{}}"),
+                response(200, "{\"nextPageToken\":123}"), response(200, "{\"nextPageToken\":\" \"}"),
+                response(200, "{\"nextPageToken\":\"" + "x".repeat(4097) + "\"}"));
+        assertEquals("Invalid Gmail list response",
+                assertThrows(IllegalStateException.class, () -> client.livePage(100, 200, null)).getMessage());
+        assertEquals("Gmail returned invalid message metadata",
+                assertThrows(IllegalStateException.class, () -> client.livePage(100, 200, null)).getMessage());
+        for (int i = 0; i < 3; i++) {
+            assertEquals("Invalid Gmail pagination metadata",
+                    assertThrows(IllegalStateException.class, () -> client.livePage(100, 200, null)).getMessage());
+        }
+    }
+
+    @Test
+    void rejectsAnUnusableProcessedLabelAndAnAcknowledgementForAnotherMessage() throws Exception {
+        List<HttpRequest> requests = new ArrayList<>();
+        var client = scripted(CONFIG, requests, response(200, "{\"access_token\":\"synthetic\"}"),
+                response(200, """
+                        {"labels":[{"name":"Inbox","type":"system","id":"INBOX"},
+                          {"name":"LinkedIn Processed","type":"system","id":"Label_1"}]}
+                        """),
+                response(200, """
+                        {"labels":[{"name":"LinkedIn Processed","type":"user","id":"../unsafe"}]}
+                        """),
+                response(200, "{\"id\":\"other-mail\"}"));
+        for (int i = 0; i < 2; i++) {
+            assertEquals("Existing processed label was not uniquely identified",
+                    assertThrows(IllegalStateException.class, client::processedLabel).getMessage());
+        }
+        assertEquals(3, requests.size());
+        assertThrows(IllegalArgumentException.class, () -> client.applyLabels("../unsafe", "Label_1"));
+        assertThrows(IllegalArgumentException.class, () -> client.applyLabels("mail-1", "../unsafe"));
+        assertEquals(3, requests.size());
+        assertEquals("Gmail modification acknowledgement was invalid",
+                assertThrows(IllegalStateException.class, () -> client.applyLabels("mail-1", "Label_1")).getMessage());
     }
 
     private static GoogleGmailReadClient scripted(String configuration, List<HttpRequest> requests,
