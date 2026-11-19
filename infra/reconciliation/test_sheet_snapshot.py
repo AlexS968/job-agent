@@ -41,6 +41,9 @@ class SnapshotIT(unittest.TestCase):
         employer = row(2, 'stable', 'https://www.linkedin.com/jobs/view/123', 'Open', subject='org-1')
         self.doc['tabs']['domestic_employers']['rows'] = [employer, row(3, 'removed')]
         self.doc['tabs']['domestic_actions']['rows'] = [row(2, 'past', action='Contacted', subject='org-1')]
+        self.doc['action_reviews'] = {'domestic_actions': {
+            'past': dict(kind='STANDALONE', evidence='Verified historical contact in the fixture'),
+        }}
         self.doc['tabs']['domestic_gaps']['rows'] = [row(2, 'research', employer['posting'])]
         self.conn.execute('SET ROLE sheet_import_fixture')
         self.addCleanup(self.conn.execute, 'RESET ROLE')
@@ -68,7 +71,7 @@ class SnapshotIT(unittest.TestCase):
             (SELECT count(*) FROM outbox_events),(SELECT count(*) FROM gmail_alert_messages),
             (SELECT count(*) FROM scheduled_result_items)''').fetchone())
 
-    def test_ambiguous_identity_unknown_status_and_conflicting_actions(self):
+    def test_ambiguous_identity_and_unknown_status(self):
         rows = [row(2, 'same', status='Unmapped', action='Send', subject='legacy-1'),
                 row(3, 'same', action='Stop', subject='legacy-1'), row(4, 'distinct')]
         self.doc['tabs']['international_employers']['rows'] = rows
@@ -76,5 +79,62 @@ class SnapshotIT(unittest.TestCase):
         self.assertEqual(2, result['tabs']['international_employers']['REVIEW'])
         self.assertEqual(1, result['tabs']['international_employers']['IMPORTED'])
         stored = self.conn.execute('SELECT vacancy_id,reasons FROM sheet_reconciliation ORDER BY position').fetchall()
-        self.assertEqual((None, ['AMBIGUOUS_ROW_IDENTITY','UNKNOWN_STATUS','CONFLICTING_ACTIONS']), stored[0])
+        self.assertEqual((None, ['AMBIGUOUS_ROW_IDENTITY', 'UNKNOWN_STATUS']), stored[0])
         self.assertEqual((None, []), stored[2])
+
+    def test_reviewed_action_records_preserve_the_plan_and_replay(self):
+        plan = 'Contact if the role opens'
+        self.doc['tabs']['domestic_employers']['rows'] = [row(2, 'employer-row', action=plan)]
+        self.doc['tabs']['domestic_actions']['rows'] = [
+            row(2, 'linked-row', action='Contacted'),
+            row(3, 'standalone-row', action='Requested role details'),
+            row(4, 'note-row', action='Research reminder'),
+        ]
+        self.doc['action_reviews'] = {'domestic_actions': {
+            'linked-row': dict(kind='LINK', employer={'tab': 'domestic_employers', 'key': 'employer-row'},
+                               occurred_on='2026-10-03', supersedes_plan=plan,
+                               evidence='Fixture date and source reference confirm the contact'),
+            'standalone-row': dict(kind='STANDALONE', evidence='Fixture records a historical request'),
+            'note-row': dict(kind='NOTE', evidence='Fixture contains only a reminder'),
+        }}
+
+        result = reconcile(self.conn, self.doc)
+        self.assertEqual(dict(IMPORTED=2, LINKED=1, UNCHANGED=0, REVIEW=0), result['tabs']['domestic_actions'])
+        records = self.conn.execute('''SELECT outcome, vacancy_id FROM sheet_reconciliation
+                                       WHERE tab = 'domestic_actions' ORDER BY position''').fetchall()
+        self.assertEqual([('LINKED', None), ('IMPORTED', None), ('IMPORTED', None)], records)
+        stored, = self.conn.execute('SELECT document FROM sheet_snapshots').fetchone()
+        self.assertEqual(self.doc, stored)
+        self.assertEqual(dict(result, replay=True), reconcile(self.conn, self.doc))
+
+    def test_conflicting_event_dates_and_missing_decision_require_review(self):
+        self.doc['tabs']['international_actions']['rows'] = [
+            row(2, 'first', action='Contacted'), row(3, 'second', action='Contacted'), row(4, 'unreviewed'),
+        ]
+        first = dict(kind='STANDALONE', evidence='Fixture date', event_key='historical-contact',
+                     occurred_on='2026-10-01')
+        self.doc['action_reviews'] = {'international_actions': {
+            'first': first, 'second': dict(first, occurred_on='2026-10-02'),
+        }}
+        result = reconcile(self.conn, self.doc)
+        self.assertEqual(3, result['tabs']['international_actions']['REVIEW'])
+        records = self.conn.execute('''SELECT reasons FROM sheet_reconciliation
+                                       WHERE tab = 'international_actions' ORDER BY position''').fetchall()
+        self.assertEqual([(['CONFLICTING_ACTIONS'],), (['CONFLICTING_ACTIONS'],),
+                          (['MISSING_ACTION_REVIEW'],)], records)
+
+    def test_invalid_target_is_rejected_and_ambiguous_target_requires_review(self):
+        self.doc['tabs']['domestic_actions']['rows'] = [row(2, 'contact', action='Contacted')]
+        self.doc['action_reviews'] = {'domestic_actions': {
+            'contact': dict(kind='LINK', employer={'tab': 'domestic_employers', 'key': 'duplicate'},
+                            evidence='Fixture reference'),
+        }}
+        with self.assertRaises(ValueError):
+            reconcile(self.conn, self.doc)
+        self.assertEqual((0,), self.conn.execute('SELECT count(*) FROM sheet_snapshots').fetchone())
+
+        self.doc['tabs']['domestic_employers']['rows'] = [row(2, 'duplicate'), row(3, 'duplicate')]
+        result = reconcile(self.conn, self.doc)
+        self.assertEqual(1, result['tabs']['domestic_actions']['REVIEW'])
+        self.assertEqual((['AMBIGUOUS_EMPLOYER_REFERENCE'],), self.conn.execute(
+            "SELECT reasons FROM sheet_reconciliation WHERE tab = 'domestic_actions'").fetchone())

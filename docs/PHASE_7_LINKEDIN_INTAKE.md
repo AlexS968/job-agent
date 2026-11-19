@@ -55,9 +55,32 @@ Each of `domestic_employers`, `international_employers`, `domestic_actions`, `in
 Preserve **all** original columns in `cells` as strings, including empty values. Disambiguate duplicate column labels with their column letters. Preserve hidden links or formula targets in separate named cells alongside the original display text. Copy status, action and posting from the corresponding cells, using an empty string when absent. A website or role title alone gives no vacancy identity. The export mapping, status translations, row counts and any generated keys need private review against the actual Sheet.
 
 * Use an immutable row identifier within its tab, or a privately reconciled stable key carried across exports. Never derive one from position or employer name. Missing keys use exact cell content for comparison and always require review. Duplicate keys retain every coordinate for review. An optional shared subject identifies a documented legacy employer record across tabs. Never construct it from name similarity.
-* Employer records retain history. Exact LinkedIn, Greenhouse and Lever posting identities can link to an existing vacancy by source namespace and listing ID. Unmatched or unsupported postings require review. This link-only checkpoint leaves live vacancy creation to intake. Employer-only rows remain historical records. Action-list rows retain historical state. Different action values for a shared subject or posting require review, including cases where a human can later establish chronology. Domestic gap rows remain research.
+* Employer records retain history. Exact LinkedIn, Greenhouse and Lever posting identities can link employer rows to an existing vacancy by source namespace and listing ID. Unmatched or unsupported postings require review. Action-list rows use the private review decisions below. Domestic gap rows remain research.
 * Each snapshot commits atomically. A single writer lock and predecessor check protect against forks. Replaying the current document returns its stored report. Older snapshots cannot advance the head. Unique keys distinguish additions, edits and moves within a tab. One row may be edited and moved. Cross-tab moves or key replacements appear as removal plus addition and need manual reconciliation. Missing stable identity cannot prove an edit. Removed coordinates reference the predecessor and retain its full history.
-* Each current row has one disposition per tab: IMPORTED, LINKED, UNCHANGED or REVIEW. Position-only moves retain the previous successful substantive outcome as UNCHANGED. Changes to a link, review state or status mapping are reclassified. Removed rows are counted separately. Inspect `sheet_reconciliation` by snapshot/tab/position for reasons, and `sheet_removals` for predecessor coordinates. Only aggregate counters and the snapshot digest are printed. An identical replay reproduces the original reconciliation totals with `replay=true`.
+* Each current row has one disposition per tab: IMPORTED, LINKED, UNCHANGED or REVIEW. Position-only moves of resolved rows are UNCHANGED. Changes to a link, review decision or status mapping are reclassified. Removed rows are counted separately. Inspect `sheet_reconciliation` by snapshot/tab/position for reasons, and `sheet_removals` for predecessor coordinates. Only aggregate counters and the snapshot digest are printed. An identical replay reproduces the original reconciliation totals with `replay=true`, including for checkpoints imported before action reviews were introduced.
+
+### Private action review
+
+Add an optional `action_reviews` object to the private snapshot. Within `domestic_actions` or `international_actions`, key each decision by the action row's stable `key`. Every decision includes nonempty `evidence` identifying the source or explaining the owner's judgment. This synthetic example links one historical record to a specific employer row:
+
+```json
+{
+  "domestic_actions": {
+    "synthetic-contact": {
+      "kind": "LINK",
+      "employer": {"tab": "domestic_employers", "key": "synthetic-employer"},
+      "occurred_on": "2026-10-03",
+      "supersedes_plan": "Contact if the role opens",
+      "evidence": "The fixture records a dated contact after the conditional plan."
+    }
+  }
+}
+```
+
+* `LINK` requires the employer tab and stable row key. `STANDALONE` preserves a historical action with no employer link. Both require historical action text in the source row's `action` field. `NOTE` preserves the original cells as a note or incomplete record without recording a historical action. It takes only `kind` and `evidence`.
+* The source `action` field on employer rows represents the next step. On action-list rows it preserves historical text. The two values remain on their original records. For a linked historical event, use `supersedes_plan` only when evidence establishes that the dated event supersedes that exact conditional next step. Supply the verified `occurred_on` date as YYYY-MM-DD. Both source records and the rationale remain in the private snapshot. These fields create no application date, submission or outcome.
+* Use an optional `event_key` for action rows that evidence identifies as the same historical occurrence. Incompatible dates, employer links or historical actions for that key require review. Distinct events may have different historical text, and different wording between a historical action and a next step is expected.
+* Missing decisions and ambiguous row or employer keys remain REVIEW. References to absent rows or unsupported tabs reject the snapshot. A successful employer link reports LINKED with a null vacancy ID. Standalone actions and notes report IMPORTED and retain their kind in the private snapshot. Supply reviewed decisions explicitly with each new checkpoint. They apply to the listed legacy rows and do not carry forward to future postings or create live actions.
 
 ### Shared Phase 7 release and owner checkpoints
 
