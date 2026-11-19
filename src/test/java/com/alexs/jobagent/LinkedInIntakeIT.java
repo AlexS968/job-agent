@@ -9,6 +9,7 @@ import com.alexs.jobagent.source.service.GmailCutoverClient;
 import com.alexs.jobagent.source.service.GmailCutoverService;
 import com.alexs.jobagent.source.exception.InvalidGmailPageTokenException;
 import com.alexs.jobagent.source.service.LinkedInIntakeService;
+import com.alexs.jobagent.source.service.LinkedInRepairService;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.List;
@@ -74,6 +75,7 @@ class LinkedInIntakeIT {
 
     @Autowired GmailCutoverService cutover;
     @Autowired LinkedInIntakeService intake;
+    @Autowired LinkedInRepairService repair;
     @Autowired SyntheticMailbox mailbox;
     @Autowired JdbcTemplate jdbc;
     @Autowired JsonMapper json;
@@ -421,6 +423,77 @@ class LinkedInIntakeIT {
         assertEquals(0, count("gmail_mailbox_actions"));
         assertEquals(since, jdbc.queryForObject("SELECT window_start FROM gmail_cutover", Long.class));
         assertEquals(1, count("gmail_cutover WHERE page_token IS NULL AND window_end IS NOT NULL"));
+    }
+
+    @Test
+    void repairsLegacyReviewWithoutReplacingProvenanceOrReplayingEffects() {
+        long observed = 1_795_000_000_000L;
+        String legacyTitle = "Backend Engineer Example Works Belgium (Hybrid) View job";
+        mailbox.ids = List.of("legacy");
+        mailbox.messages = Map.of("legacy", message("legacy", observed,
+                "<a href='https://www.linkedin.com/jobs/view/123456/'>" + legacyTitle + "</a>"
+                        + "<a href='https://www.linkedin.com/jobs/search/'>Legacy unsupported link</a>"));
+        assertEquals(1, intake.run(1).reviewRequired());
+        jdbc.update("""
+                UPDATE gmail_alert_cards SET advertised_title=NULL,advertised_employer=NULL,
+                    advertised_location=NULL,parsed_direction=NULL
+                """);
+        var original = jdbc.queryForMap("SELECT id,source_item_id,fetched_at,raw_payload::text FROM source_items");
+        var vacancy = jdbc.queryForMap("SELECT id,title,content_digest,observation_started_at FROM vacancies");
+        assertEquals(legacyTitle, vacancy.get("title"));
+        mailbox.messages = Map.of("legacy", message("legacy", observed, """
+                <a href='https://www.linkedin.com/jobs/view/123456/'>
+                  <h3>Backend Engineer</h3><div class='job-company'>Example Works</div>
+                  <span class='job-location'>Belgium (Hybrid)</span><button>View job</button>
+                </a>
+                <a href='https://www.linkedin.com/comm/jobs/search-results/'>Search</a>
+                <a href='https://www.linkedin.com/comm/jobs/alerts'>Alerts</a>
+                """));
+
+        var result = repair.repair(List.of("legacy"));
+        assertEquals(1, result.completed());
+        assertEquals(1, result.repairedCards());
+        assertEquals(0, result.reviewRequired());
+        assertEquals(1, count("""
+                gmail_alert_messages WHERE status='COMPLETE' AND review_reason IS NULL
+                AND unsupported_links=0 AND pre_repair_unsupported_links=1
+                """));
+        assertEquals(1, count("""
+                gmail_alert_cards WHERE advertised_title='Backend Engineer' AND advertised_employer='Example Works'
+                AND advertised_location='Belgium (Hybrid)' AND parsed_direction='UNKNOWN'
+                """));
+
+        mailbox.failingId = "legacy";  // Replay must skip the Gmail fetch.
+        assertEquals(1, repair.repair(List.of("legacy")).skipped());
+        assertEquals(original, jdbc.queryForMap("SELECT id,source_item_id,fetched_at,raw_payload::text FROM source_items"));
+        assertEquals(vacancy, jdbc.queryForMap("SELECT id,title,content_digest,observation_started_at FROM vacancies"));
+        assertEquals(1, count("gmail_alert_cards"));
+        assertEquals(1, count("vacancy_sources"));
+        assertEquals(1, count("outbox_events"));
+        assertEquals(0, count("gmail_mailbox_actions"));
+    }
+
+    @Test
+    void repairKeepsOriginalReviewWhenReparsedCardIdentitiesDiffer() {
+        long observed = 1_795_000_000_000L;
+        mailbox.ids = List.of("legacy");
+        mailbox.messages = Map.of("legacy", message("legacy", observed, """
+                <a href='https://www.linkedin.com/jobs/view/123456/'>Engineer</a>
+                <a href='https://www.linkedin.com/jobs/search/'>Unrecognized</a>
+                """));
+        intake.run(1);
+        mailbox.messages = Map.of("legacy", message("legacy", observed,
+                "<a href='https://www.linkedin.com/jobs/view/654321/'>Different role</a>"));
+
+        assertEquals(1, repair.repair(List.of("legacy")).reviewRequired());
+        assertEquals(1, count("""
+                gmail_alert_messages WHERE status='NEEDS_REVIEW' AND review_reason='UNRECOGNIZED_LINK'
+                AND pre_repair_unsupported_links IS NULL
+                """));
+        assertEquals(1, count("gmail_alert_cards WHERE linkedin_job_id='123456'"));
+        assertEquals(1, count("source_items"));
+        assertEquals(1, count("outbox_events"));
+        assertEquals(0, count("gmail_mailbox_actions"));
     }
 
     private int count(String table) {

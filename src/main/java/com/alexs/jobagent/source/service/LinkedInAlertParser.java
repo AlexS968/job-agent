@@ -11,6 +11,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.jsoup.Jsoup;
@@ -22,6 +23,13 @@ import tools.jackson.databind.JsonNode;
 public class LinkedInAlertParser {
     private static final Pattern JOB_PATH = Pattern.compile("/(?:comm/)?jobs/view/(\\d{4,32})(?:/|$)");
     private static final Pattern PLAIN_URL = Pattern.compile("https://[^\\s<>\"']{1,2048}");
+    private static final Set<String> NAVIGATION = Set.of("/comm/jobs/search-results", "/comm/jobs/search-results/",
+            "/comm/jobs/alerts", "/comm/jobs/alerts/");
+    private static final String TITLE = "h1, h2, h3, h4, .job-title, .job-card-title, .job-card__title, [data-job-title]";
+    private static final String EMPLOYER = ".job-company, .job-employer, .job-card-company, "
+            + ".job-card__company, [data-job-employer], [data-job-company]";
+    private static final String LOCATION = ".job-location, .job-card-location, .job-card__location, "
+            + "[data-job-location], .job-card-container__metadata-item";
     private static final int MAX_PARTS = 60;
     private static final int MAX_PART_BYTES = 512_000;
     private static final int MAX_CARDS = 100;
@@ -99,17 +107,17 @@ public class LinkedInAlertParser {
         String body = new String(bytes, StandardCharsets.UTF_8);
         if ("text/html".equalsIgnoreCase(mime)) {
             for (Element link : Jsoup.parse(body).select("a[href]")) {
-                add(link.attr("href"), link.text(), location(link), cards, counts);
+                add(link.attr("href"), link, cards, counts);
             }
         } else {
             Matcher links = PLAIN_URL.matcher(body);
             while (links.find()) {
-                add(links.group(), null, null, cards, counts);
+                add(links.group(), null, cards, counts);
             }
         }
     }
 
-    private static void add(String raw, String title, String location,
+    private static void add(String raw, Element link,
                             Map<String, LinkedInAlertDTO.CardDTO> cards, int[] counts) {
         URI uri;
         try {
@@ -123,10 +131,7 @@ public class LinkedInAlertParser {
             unsupported(counts);
             return;
         }
-        if (!"https".equalsIgnoreCase(uri.getScheme()) || host == null
-                || !(host.equalsIgnoreCase("linkedin.com") || host.equalsIgnoreCase("www.linkedin.com")
-                || host.equalsIgnoreCase("de.linkedin.com") || host.equalsIgnoreCase("at.linkedin.com"))
-                || uri.getUserInfo() != null) {
+        if (!supportedHost(uri)) {
             if (host != null && (host.equalsIgnoreCase("linkedin.com")
                     || host.toLowerCase(java.util.Locale.ROOT).endsWith(".linkedin.com"))
                     && uri.getPath() != null && uri.getPath().contains("/jobs/")) {
@@ -134,10 +139,9 @@ public class LinkedInAlertParser {
             }
             return;
         }
-        Matcher path = JOB_PATH.matcher(uri.getPath() == null ? "" : uri.getPath());
-        String jobId = path.find() ? path.group(1) : queryJobId(uri.getRawQuery());
+        String jobId = jobId(uri);
         if (jobId == null) {
-            if (uri.getPath() != null && uri.getPath().contains("/jobs/")) {
+            if (uri.getPath() != null && uri.getPath().contains("/jobs/") && !NAVIGATION.contains(uri.getRawPath())) {
                 unsupported(counts);
             }
             return;
@@ -145,14 +149,15 @@ public class LinkedInAlertParser {
         if (cards.size() >= MAX_CARDS && !cards.containsKey(jobId)) {
             throw new LinkedInAlertException("TOO_MANY_CARDS");
         }
-        String cleanTitle = title == null ? null : Jsoup.parse(title).text().strip();
+        CardFields fields = link == null ? new CardFields(null, null, null) : fields(link, jobId);
+        String cleanTitle = fields.title();
         if (cleanTitle == null || cleanTitle.isBlank() || cleanTitle.length() > 255
                 || cleanTitle.matches("(?i)(?:view|see|apply(?: for)?|open) (?:this )?job")) {
             cleanTitle = "LinkedIn job " + jobId;
         }
-        String direction = direction(location);
+        String direction = direction(fields.location());
         cards.merge(jobId, new LinkedInAlertDTO.CardDTO(jobId, cleanTitle,
-                        "https://www.linkedin.com/jobs/view/" + jobId + "/", direction, location),
+                        "https://www.linkedin.com/jobs/view/" + jobId + "/", direction, fields.location(), fields.employer()),
                 LinkedInAlertParser::merge);
     }
 
@@ -169,26 +174,108 @@ public class LinkedInAlertParser {
                 : direction.equals(previous.advertisedDirection())
                 ? previous.directionEvidence() == null ? incoming.directionEvidence() : previous.directionEvidence()
                 : incoming.directionEvidence();
+        String employer = previous.advertisedEmployer() == null ? incoming.advertisedEmployer()
+                : previous.advertisedEmployer();
         return new LinkedInAlertDTO.CardDTO(previous.jobId(),
                 previous.title().startsWith("LinkedIn job ") ? incoming.title() : previous.title(),
-                previous.originalUrl(), direction, evidence);
+                previous.originalUrl(), direction, evidence, employer);
     }
 
-    private static String location(Element link) {
-        Element parent = link.parent();
-        if (parent == null || "body".equals(parent.normalName()) || parent.select("a[href]").size() != 1) {
-            return null;
-        }
-        var locations = parent.select(".job-location, [data-job-location], .job-card-container__metadata-item");
-        if (locations.size() != 1) {
-            return null;
-        }
-        Element location = locations.first();
-        String value = location.hasAttr("data-job-location")
-                ? location.attr("data-job-location") : location.text();
-        value = value.strip();
-        return value.isEmpty() || value.length() > 120 ? null : value;
+    private static boolean supportedHost(URI uri) {
+        String host = uri.getHost();
+        return "https".equalsIgnoreCase(uri.getScheme()) && host != null
+                && (host.equalsIgnoreCase("linkedin.com") || host.equalsIgnoreCase("www.linkedin.com")
+                || host.equalsIgnoreCase("de.linkedin.com") || host.equalsIgnoreCase("at.linkedin.com"))
+                && uri.getUserInfo() == null && uri.getPort() == -1;
     }
+
+    private static String jobId(URI uri) {
+        Matcher path = JOB_PATH.matcher(uri.getPath());
+        return path.find() ? path.group(1) : queryJobId(uri.getRawQuery());
+    }
+
+    private static CardFields fields(Element link, String jobId) {
+        String title = field(link, TITLE, 255, "data-job-title");
+        if (title == null && link.is("a.font-bold.text-md")) {
+            Element row = link.closest("tr");
+            if (row != null && row.previousElementSibling() == null) {
+                return tableCard(link, row, jobId);
+            }
+        }
+        // The legacy simple link contains only a title. A composite card needs a title element.
+        if (title == null && link.childrenSize() == 0) {
+            title = link.text();
+        }
+        String employer = field(link, EMPLOYER, 255, "data-job-employer", "data-job-company");
+        String location = field(link, LOCATION, 120, "data-job-location");
+        Element parent = link.parent();
+        if (location == null && link.select(LOCATION).isEmpty() && parent != null
+                && !"body".equals(parent.normalName()) && parent.select("a[href]").size() == 1) {
+            location = field(parent, LOCATION, 120, "data-job-location");
+        }
+        return new CardFields(title, employer, location);
+    }
+
+    private static CardFields tableCard(Element titleLink, Element row, String jobId) {
+        // Jsoup can separate nested anchors. Start at the identified title and stay in its row group.
+        String title = bounded(content(titleLink).text(), 255);
+        CardFields titleOnly = new CardFields(title, null, null);
+        Element table = row.closest("table");
+        Element wrapper = table == null ? null : table.closest("a[href]");
+        if (wrapper != null && !linksToJob(wrapper, jobId)) {
+            return titleOnly;
+        }
+        Element metadata = row.nextElementSibling();
+        if (metadata == null || !metadata.is("tr") || metadata.childrenSize() != 1
+                || !metadata.child(0).is("td") || metadata.selectFirst("table, a[href]") != null) {
+            return titleOnly;
+        }
+        var paragraphs = metadata.child(0).select("p");
+        if (paragraphs.size() != 1 || row.select("a[href]").stream().anyMatch(a -> !linksToJob(a, jobId))) {
+            return titleOnly;
+        }
+        Element paragraph = content(paragraphs.first());
+        paragraph.select("br").before(" · ");
+        String[] parts = paragraph.text().split("\\s+[·•]\\s+", -1);
+        return parts.length == 2
+                ? new CardFields(title, bounded(parts[0], 255), bounded(parts[1], 120)) : titleOnly;
+    }
+
+    private static boolean linksToJob(Element link, String expected) {
+        try {
+            URI uri = URI.create(link.attr("href"));
+            return supportedHost(uri) && expected.equals(jobId(uri));
+        } catch (IllegalArgumentException invalid) {
+            return false;
+        }
+    }
+
+    private static String field(Element scope, String selector, int limit, String... attributes) {
+        var matches = scope.select(selector);
+        if (matches.size() != 1) {
+            return null;
+        }
+        Element item = matches.first();
+        for (String attribute : attributes) {
+            if (item.hasAttr(attribute)) {
+                return bounded(item.attr(attribute), limit);
+            }
+        }
+        return bounded(content(item).text(), limit);
+    }
+
+    private static Element content(Element item) {
+        Element copy = item.clone();
+        copy.select("button, [role=button], .social-proof, .job-card-social").remove();
+        return copy;
+    }
+
+    private static String bounded(String value, int limit) {
+        String clean = value.strip();
+        return clean.isEmpty() || clean.length() > limit ? null : clean;
+    }
+
+    private record CardFields(String title, String employer, String location) { }
 
     private static String direction(String evidence) {
         if (evidence == null) {

@@ -39,6 +39,65 @@ class LinkedInAlertParserTest {
     }
 
     @Test
+    void exactNavigationIsIgnoredUnlessItCarriesASupportedJobIdentity() {
+        var result = parser.parse(message("jobalerts-noreply@linkedin.com", """
+                <a href='https://www.linkedin.com/comm/jobs/search-results/?trk=alert'>Search results</a>
+                <a href='https://de.linkedin.com/comm/jobs/alerts'>Manage alerts</a>
+                <a href='https://www.linkedin.com/comm/jobs/alerts/extra'>Unknown route</a>
+                <a href='https://www.linkedin.com/comm/jobs/search-results/?currentJobId=123456'>Engineer</a>
+                """, """
+                https://www.linkedin.com/comm/jobs/alerts
+                https://www.linkedin.com/comm/jobs/search-results/
+                https://www.linkedin.com/jobs/view/123456/
+                """));
+        assertEquals(1, result.cards().size());
+        assertEquals("123456", result.cards().getFirst().jobId());
+        assertEquals(1, result.unsupportedLinks());
+    }
+
+    @Test
+    void wrapperCardExtractsOnlyStructuredFieldsAndLeavesAmbiguousFieldsUnknown() {
+        var result = parser.parse(message("jobalerts-noreply@linkedin.com", """
+                <a href='https://www.linkedin.com/comm/jobs/view/123456/'>
+                  <h3>Backend Engineer</h3><div class='job-company'>Example Works</div>
+                  <span class='job-location'>Belgium (Hybrid)</span>
+                  <span class='social-proof'>Two former colleagues</span><button>View job</button>
+                </a>
+                <a href='https://www.linkedin.com/comm/jobs/view/654321/'>
+                  <div>Composite text</div><div>Auxiliary text</div>
+                </a>
+                """, "https://www.linkedin.com/jobs/view/123456/"));
+        var card = result.cards().getFirst();
+        assertEquals("Backend Engineer", card.title());
+        assertEquals("Example Works", card.advertisedEmployer());
+        assertEquals("Belgium (Hybrid)", card.directionEvidence());
+        assertEquals("UNKNOWN", card.advertisedDirection());
+        assertEquals("LinkedIn job 654321", result.cards().get(1).title());
+        assertNull(result.cards().get(1).advertisedEmployer());
+    }
+
+    @Test
+    void nestedTitleLinkAndAdjacentMetadataBelongToOneTableCard() {
+        var result = parser.parse(message("jobalerts-noreply@linkedin.com", """
+                <a href="https://www.linkedin.com/comm/jobs/view/432100/">
+                  <table><tbody>
+                    <tr><td><a class="font-bold text-md leading-regular text-system-blue-50"
+                        href="https://www.linkedin.com/jobs/view/432100/"><span>Systems Engineer</span></a></td></tr>
+                    <tr><td><p>Example Studio &middot; Belgium (Hybrid)</p></td></tr>
+                    <tr><td><span>People in your network</span><button>View job</button></td></tr>
+                  </tbody></table>
+                </a>
+                """, "https://www.linkedin.com/jobs/view/432100/"));
+        assertEquals(1, result.cards().size());
+        var card = result.cards().getFirst();
+        assertEquals("432100", card.jobId());
+        assertEquals("Systems Engineer", card.title());
+        assertEquals("Example Studio", card.advertisedEmployer());
+        assertEquals("Belgium (Hybrid)", card.directionEvidence());
+        assertEquals("UNKNOWN", card.advertisedDirection());
+    }
+
+    @Test
     void plainTextSentencePunctuationDoesNotObscureAJobId() {
         var parsed = parser.parse(message("jobalerts-noreply@linkedin.com", "",
                 "See https://www.linkedin.com/jobs/view/777777/)."));

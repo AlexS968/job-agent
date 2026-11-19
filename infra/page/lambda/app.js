@@ -76,7 +76,8 @@ async function loadLinkedIn() {
       link.href = item.url; link.rel = "noopener noreferrer"; link.textContent = item.title;
       heading.append(link);
       const employer = document.createElement("p");
-      employer.textContent = item.employer || "Employer not verified";
+      employer.textContent = item.advertisedEmployer ?
+        `Advertised employer: ${item.advertisedEmployer} (unverified)` : item.employer || "Employer not verified";
       const directions = {GERMANY:"Germany", AUSTRIA:"Austria", REMOTE_EUROPE:"Remote Europe",
         REMOTE_WORLDWIDE:"Remote Worldwide", UNKNOWN:"Unknown direction"};
       const advertised = directions[item.advertisedDirection] || "Unknown direction";

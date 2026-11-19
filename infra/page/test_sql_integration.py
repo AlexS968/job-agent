@@ -279,6 +279,15 @@ INSERT INTO gmail_alert_cards(message_id,linkedin_job_id,source_item_id,vacancy_
         self.assertEqual(1, len(out_of_order))
         self.assertIn("REMOTE_EUROPE", out_of_order[0])
         self.assertIn("Remote Europe", out_of_order[0])
+        self.sql("""
+UPDATE gmail_alert_cards SET advertised_title='Backend Developer', advertised_employer='Synthetic employer',
+ advertised_location='Belgium (Hybrid)', parsed_direction='UNKNOWN' WHERE message_id='message-2';
+""")
+        repaired = self.sql("SET ROLE job_agent_page_reader; " + linkedin + ";")
+        self.assertEqual(1, len(repaired))
+        for value in ("Backend Developer", "Synthetic employer", "Belgium (Hybrid)", "UNKNOWN"):
+            self.assertIn(value, repaired[0])
+        self.assertNotIn("REMOTE_EUROPE", repaired[0])
         self.sql("CREATE ROLE job_agent_feedback_writer LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION; "
                  "GRANT CONNECT ON DATABASE job_agent TO job_agent_feedback_writer; "
                  "GRANT USAGE ON SCHEMA public TO job_agent_feedback_writer;")

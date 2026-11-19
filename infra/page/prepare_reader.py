@@ -29,7 +29,8 @@ TABLE_COLUMNS = {
                             "decision", "role_classification", "reasons", "unknowns", "preference_rank",
                             "evaluated_at", "country_evidence_policy", "country_eligibility"),
     "verified_source_registry": ("platform", "region", "source_id", "status", "active"),
-    "gmail_alert_cards": ("source_item_id", "advertised_direction", "direction_evidence"),
+    "gmail_alert_cards": ("source_item_id", "advertised_direction", "direction_evidence",
+                         "advertised_title", "advertised_employer", "advertised_location", "parsed_direction"),
 }
 EXPECTED_COLUMNS = {f"{table}.{column}" for table, columns in TABLE_COLUMNS.items() for column in columns}
 GRANTS = (

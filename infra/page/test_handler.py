@@ -61,7 +61,7 @@ class PageTest(unittest.TestCase):
     def test_linkedin_observation_is_owner_only_and_not_a_confirmed_recommendation(self):
         values = [34, "Java Engineer", "Employer unknown", "123456", "NEEDS_REVIEW", "PREFERRED",
                   '["JAVA_BACKEND_CANDIDATE"]', '["WORK_ELIGIBILITY_UNCONFIRMED","SALARY_UNKNOWN"]',
-                  "REMOTE_EUROPE", "Remote Europe"]
+                  "REMOTE_EUROPE", "Remote Europe", "Synthetic employer"]
         row_values = [{"longValue": value} if isinstance(value, int) else {"stringValue": value}
                       for value in values]
         db = FakeDataApi([row_values])
@@ -72,6 +72,7 @@ class PageTest(unittest.TestCase):
         self.assertEqual("alex-at", result["profile"])
         self.assertEqual("https://www.linkedin.com/jobs/view/123456/", result["items"][0]["url"])
         self.assertIsNone(result["items"][0]["employer"])
+        self.assertEqual("Synthetic employer", result["items"][0]["advertisedEmployer"])
         self.assertIn("WORK_ELIGIBILITY_UNCONFIRMED", result["items"][0]["unknowns"])
         self.assertEqual("REMOTE_EUROPE", result["items"][0]["advertisedDirection"])
         self.assertEqual("Remote Europe", result["items"][0]["directionEvidence"])
