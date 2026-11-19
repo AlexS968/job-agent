@@ -1,7 +1,7 @@
 """Manual, offline Sheet checkpoint. Only reconciliation tables are writable."""
 import argparse
 from collections import defaultdict
-from datetime import datetime
+from datetime import date, datetime
 import hashlib
 import json
 import re
@@ -11,8 +11,9 @@ from urllib.parse import urlsplit
 import psycopg
 from psycopg.types.json import Jsonb
 
-TABS = {'domestic_employers', 'international_employers', 'domestic_actions',
-        'international_actions', 'domestic_gaps'}
+EMPLOYER_TABS = {'domestic_employers', 'international_employers'}
+ACTION_TABS = {'domestic_actions', 'international_actions'}
+TABS = EMPLOYER_TABS | ACTION_TABS | {'domestic_gaps'}
 STATUSES = {'OPEN', 'CONTACTED', 'APPLIED', 'CLOSED', 'ON_HOLD'}
 MAX_BYTES = 8 * 1024 * 1024
 
@@ -34,7 +35,8 @@ def distinct_fields(pairs):
 
 
 def validate(doc):
-    require(set(doc) == {'workbook', 'captured_at', 'previous', 'tabs', 'status_map', 'timezone'})
+    required = {'workbook', 'captured_at', 'previous', 'tabs', 'status_map', 'timezone'}
+    require(required <= set(doc) <= required | {'action_reviews'})
     require(isinstance(doc['workbook'], str) and doc['workbook'].strip())
     require(isinstance(doc['timezone'], str) and doc['timezone'].strip())
     captured = datetime.fromisoformat(doc['captured_at'].replace('Z', '+00:00'))
@@ -97,39 +99,78 @@ def groups(rows):
     return result
 
 
-def action_groups(doc):
-    result = defaultdict(set)
-    for kind, tab in doc['tabs'].items():
-        if kind == 'domestic_gaps':
-            continue
-        for row in tab['rows']:
-            if row['action']:
-                for key in subjects(row):
-                    result[key].add(row['action'])
-    return result
+def nonempty_text(value):
+    return isinstance(value, str) and bool(value.strip())
 
 
-def subjects(row):
-    if row['subject']:
-        yield ('legacy', row['subject'])
-    posting = listing(row['posting'])
-    if posting:
-        yield posting
+def validate_decision(decision):
+    required = {'kind', 'evidence'}
+    optional = {'employer', 'event_key', 'occurred_on', 'supersedes_plan'}
+    require(isinstance(decision, dict) and required <= set(decision) <= required | optional)
+    kind = decision['kind']
+    require(kind in ('LINK', 'STANDALONE', 'NOTE') and nonempty_text(decision['evidence']))
+    require(('employer' in decision) == (kind == 'LINK'))
+    if kind == 'NOTE':
+        require(set(decision) == required)
+    for field in ('event_key', 'occurred_on', 'supersedes_plan'):
+        require(field not in decision or nonempty_text(decision[field]))
+    if 'occurred_on' in decision:
+        value = decision['occurred_on']
+        require(date.fromisoformat(value).isoformat() == value)
+    if 'supersedes_plan' in decision:
+        require(kind == 'LINK' and 'occurred_on' in decision)
 
 
-def classify(cur, kind, row, mapping, actions, employer_subjects, ambiguous):
+def review_actions(doc):
+    """Validate private decisions and identify contradictions about the same occurrence."""
+    reviews = doc.get('action_reviews', {})
+    require(isinstance(reviews, dict) and set(reviews) <= ACTION_TABS)
+    by_key = {tab: groups(doc['tabs'][tab]['rows']) for tab in EMPLOYER_TABS | ACTION_TABS}
+    reasons = {}
+    events = defaultdict(list)
+    for tab, decisions in reviews.items():
+        require(isinstance(decisions, dict))
+        for key, decision in decisions.items():
+            rows = by_key[tab].get(('key', key), [])
+            require(rows)
+            validate_decision(decision)
+            reference = (tab, key)
+            if decision['kind'] == 'LINK':
+                target = decision['employer']
+                require(isinstance(target, dict) and set(target) == {'tab', 'key'})
+                require(target['tab'] in EMPLOYER_TABS and nonempty_text(target['key']))
+                employers = by_key[target['tab']].get(('key', target['key']), [])
+                require(employers)
+                if len(employers) > 1:
+                    reasons[reference] = 'AMBIGUOUS_EMPLOYER_REFERENCE'
+                elif 'supersedes_plan' in decision:
+                    require(decision['supersedes_plan'] == employers[0]['action'])
+            if len(rows) == 1 and 'event_key' in decision:
+                signature = (decision['kind'], decision.get('employer'), decision.get('occurred_on'),
+                             rows[0]['action'])
+                events[decision['event_key']].append((reference, signature))
+    for records in events.values():
+        if any(signature != records[0][1] for _, signature in records):
+            for reference, _ in records:
+                reasons.setdefault(reference, 'CONFLICTING_ACTIONS')
+    return reviews, reasons
+
+
+def classify(cur, kind, row, mapping, decision, review_reason, ambiguous):
     reasons = []
     if ambiguous or not row['key']:
         reasons.append('AMBIGUOUS_ROW_IDENTITY')
     if row['status'] and row['status'] not in mapping:
         reasons.append('UNKNOWN_STATUS')
     vacancy = None
-    if kind != 'domestic_gaps':
-        if any(len(actions[key]) > 1 for key in subjects(row)):
-            reasons.append('CONFLICTING_ACTIONS')
-        if kind.endswith('_actions') and (not row['action'] or (not listing(row['posting'])
-                and row['subject'] not in employer_subjects)):
-            reasons.append('UNRESOLVED_ACTION')
+    if kind in ACTION_TABS:
+        if decision is None:
+            reasons.append('MISSING_ACTION_REVIEW')
+        elif decision['kind'] != 'NOTE' and not row['action']:
+            reasons.append('MISSING_HISTORICAL_ACTION')
+        if review_reason:
+            reasons.append(review_reason)
+    if kind in EMPLOYER_TABS:
         if row['posting']:
             source = listing(row['posting'])
             if source:
@@ -156,6 +197,7 @@ def report(cur, checkpoint):
 
 def reconcile(conn, doc):
     captured = validate(doc)
+    reviews, review_reasons = review_actions(doc)
     checkpoint = digest(doc)
     with conn.transaction(), conn.cursor() as cur:
         cur.execute('SELECT pg_advisory_xact_lock(710025)')
@@ -172,9 +214,7 @@ def reconcile(conn, doc):
             require(all(previous_tabs[k]['id'] == doc['tabs'][k]['id'] for k in TABS))
         cur.execute('INSERT INTO public.sheet_snapshots VALUES (%s,%s,%s,%s)',
                     (checkpoint, doc['previous'], captured, Jsonb(doc)))
-        actions = action_groups(doc)
-        employer_subjects = {row['subject'] for kind, tab in doc['tabs'].items() if kind.endswith('_employers')
-                             for row in tab['rows'] if row['subject']}
+        previous_reviews = head[1].get('action_reviews', {}) if head else {}
         for kind, tab in doc['tabs'].items():
             old = groups(previous_tabs.get(kind, {}).get('rows', []))
             current = groups(tab['rows'])
@@ -183,11 +223,14 @@ def reconcile(conn, doc):
                 ambiguous = len(rows) > 1 or len(before) > 1
                 prior = before[0] if before and not ambiguous else None
                 for row in rows:
-                    reasons, vacancy = classify(cur, kind, row, doc['status_map'], actions, employer_subjects, ambiguous)
+                    decision = reviews.get(kind, {}).get(row['key'])
+                    review_reason = review_reasons.get((kind, row['key']))
+                    reasons, vacancy = classify(cur, kind, row, doc['status_map'], decision, review_reason, ambiguous)
                     edited = prior is not None and any(row[k] != prior[k] for k in row if k != 'position')
                     moved = prior is not None and prior['position'] != row['position']
-                    outcome = 'LINKED' if vacancy else 'IMPORTED'
-                    if prior and not edited:
+                    linked = vacancy is not None or (decision and decision['kind'] == 'LINK')
+                    outcome = 'LINKED' if linked else 'IMPORTED'
+                    if prior and not edited and decision == previous_reviews.get(kind, {}).get(row['key']):
                         cur.execute('''SELECT outcome,vacancy_id FROM public.sheet_reconciliation
                                        WHERE snapshot=%s AND tab=%s AND position=%s''',
                                     (doc['previous'], kind, prior['position']))
