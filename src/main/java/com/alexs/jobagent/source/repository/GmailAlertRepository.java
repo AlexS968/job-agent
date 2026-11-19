@@ -13,6 +13,13 @@ public class GmailAlertRepository {
         this.jdbc = jdbc;
     }
 
+    public void enqueueLiveAction(String id) {
+        if (jdbc.update("""
+                INSERT INTO gmail_mailbox_actions(message_id)
+                SELECT ? FROM gmail_cutover WHERE enabled FOR SHARE
+                """, id) != 1) throw new IllegalStateException("Mailbox cutover paused during intake");
+    }
+
     public String status(String id) {
         return jdbc.query("SELECT status FROM gmail_alert_messages WHERE message_id = ?",
                 rs -> rs.next() ? rs.getString(1) : null, id);

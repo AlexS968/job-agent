@@ -12,6 +12,7 @@ import com.alexs.jobagent.source.service.SourceVerificationService;
 import com.alexs.jobagent.source.service.SourceRegistryService;
 import com.alexs.jobagent.source.service.SourceDiscoveryService;
 import com.alexs.jobagent.source.service.LinkedInIntakeService;
+import com.alexs.jobagent.source.service.GmailCutoverService;
 import com.alexs.jobagent.source.dto.SourceCandidateDTO;
 import com.alexs.jobagent.source.dto.SearchPilotResultDTO;
 import com.alexs.jobagent.outbox.dto.DispatchResultDTO;
@@ -56,10 +57,11 @@ public class JobAgentApplication {
     private static final String LIMIT_OPTION = "--limit=";
     private static final String VACANCY_ID_OPTION = "--vacancy-id=";
     private static final String COMPARISON_OPTION = "--comparison=";
+    private static final String GMAIL_CUTOVER_MODE = "--mode=gmail-cutover";
     private static final String EVENT_ID_OPTION = "--event-id=";
 
     public static void main(String[] args) {
-        if (Arrays.asList(args).contains("--mode=scheduled-batch")) {
+        if (Arrays.asList(args).contains("--mode=scheduled-batch") || Arrays.asList(args).contains(GMAIL_CUTOVER_MODE)) {
             startScheduledDeadline();
         }
         try (ConfigurableApplicationContext context = SpringApplication.run(JobAgentApplication.class, args)) {
@@ -184,6 +186,10 @@ public class JobAgentApplication {
             case "--mode=activate-source" -> runActivateSource(args, registry);
             case "--mode=import-active-sources" -> runImportActiveSources(args, registry);
             case "--mode=source-discovery-once" -> runSourceDiscoveryOnce(args, context, registry);
+            case GMAIL_CUTOVER_MODE -> {
+                requireOnlyOptions(args, GMAIL_CUTOVER_MODE);
+                LOGGER.info("Gmail cutover: {}", context.getBean(GmailCutoverService.class).run());
+            }
             case "--mode=linkedin-intake" -> runLinkedInIntake(args, context);
             case "--mode=evaluate-rules" -> runEvaluateRules(args, profiles, evaluations);
             case "--mode=shortlist" -> runShortlist(args, profiles, evaluations);

@@ -5,6 +5,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.alexs.jobagent.source.service.GmailReadClient;
+import com.alexs.jobagent.source.service.GmailCutoverClient;
+import com.alexs.jobagent.source.service.GmailCutoverService;
+import com.alexs.jobagent.source.exception.InvalidGmailPageTokenException;
 import com.alexs.jobagent.source.service.LinkedInIntakeService;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
@@ -25,7 +28,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
-@SpringBootTest
+@SpringBootTest(properties = "jobagent.gmail.cutover=true")
 class LinkedInIntakeIT {
     private static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:17.11-alpine")
             .withDatabaseName("linkedin_test").withUsername("test_user").withPassword("synthetic_test_secret_123");
@@ -43,7 +46,18 @@ class LinkedInIntakeIT {
         @Bean @Primary SyntheticMailbox mailbox() { return new SyntheticMailbox(); }
     }
 
-    static class SyntheticMailbox implements GmailReadClient {
+    static class SyntheticMailbox implements GmailReadClient, GmailCutoverClient {
+        java.util.function.Function<String, Page> page;
+        java.util.function.Consumer<String> modify;
+        long lastStart;
+        long lastEnd;
+        @Override public Page livePage(long start, long end, String token) {
+            lastStart = start;
+            lastEnd = end;
+            return page.apply(token);
+        }
+        @Override public String processedLabel() { return "Label_1"; }
+        @Override public void applyLabels(String id, String label) { modify.accept(id); }
         private List<String> ids = List.of();
         private Map<String, JsonNode> messages = Map.of();
         private String failingId;
@@ -58,6 +72,7 @@ class LinkedInIntakeIT {
         }
     }
 
+    @Autowired GmailCutoverService cutover;
     @Autowired LinkedInIntakeService intake;
     @Autowired SyntheticMailbox mailbox;
     @Autowired JdbcTemplate jdbc;
@@ -65,10 +80,12 @@ class LinkedInIntakeIT {
 
     @BeforeEach
     void clear() {
-        jdbc.execute("TRUNCATE gmail_alert_cards, gmail_alert_messages, vacancy_sources, source_items, "
+        jdbc.execute("TRUNCATE gmail_cutover, gmail_alert_cards, gmail_alert_messages, vacancy_sources, source_items, "
                 + "vacancies, employers, agent_runs RESTART IDENTITY CASCADE");
         mailbox.ids = List.of();
         mailbox.messages = Map.of();
+        mailbox.page = token -> { throw new AssertionError("Unexpected live list"); };
+        mailbox.modify = id -> { throw new AssertionError("Unexpected mailbox change"); };
         mailbox.failingId = null;
     }
 
@@ -243,6 +260,167 @@ class LinkedInIntakeIT {
         assertThrows(IllegalStateException.class, () -> intake.run(1));
         assertEquals(0, count("gmail_alert_messages"));
         assertEquals(0, count("vacancies"));
+    }
+
+    @Test
+    void disabledCutoverNeverListsOrModifiesMail() {
+        assertEquals(false, cutover.run().active());
+    }
+
+    @Test
+    void savedPageTokenAdvancesPastRehearsalAndReviewToEligibleMessage() {
+        long now = System.currentTimeMillis() - 60_000;
+        String card = "<a href='https://www.linkedin.com/jobs/view/123456/'>Java Engineer</a>";
+        mailbox.ids = List.of("rehearsed");
+        mailbox.messages = Map.of("rehearsed", message("rehearsed", now, card),
+                "review", message("review", now, "No identifiable cards"), "eligible", message("eligible", now, card));
+        intake.run(1);
+        jdbc.update("INSERT INTO gmail_cutover(enabled,since_epoch,window_start) VALUES(true,?,?)",
+                now / 1000, now / 1000);
+        mailbox.page = token -> token == null ? new GmailCutoverClient.Page(List.of("rehearsed", "review"), "next")
+                : new GmailCutoverClient.Page(List.of("eligible"), null);
+        mailbox.modify = id -> {
+            assertEquals("eligible", id);
+            assertTrue(!org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive());
+            assertEquals(1, count("gmail_alert_messages WHERE message_id='eligible' AND status='COMPLETE'"));
+            assertEquals(1, count("gmail_mailbox_actions WHERE message_id='eligible' AND applied_at IS NULL"));
+        };
+        var first = cutover.run();
+        assertTrue(first.morePages());
+        assertEquals(1, first.review());
+        assertEquals(0, first.applied());
+        var second = cutover.run();
+        assertEquals(false, second.morePages());
+        assertEquals(1, second.applied());
+        assertEquals(0, second.outstanding());
+        assertEquals(1, count("gmail_mailbox_actions"));
+    }
+
+    @Test
+    void lostAcknowledgementRetriesCommittedActionWithoutImportingAgain() {
+        long now = System.currentTimeMillis() - 60_000;
+        jdbc.update("INSERT INTO gmail_cutover(enabled,since_epoch,window_start) VALUES(true,?,?)",
+                now / 1000, now / 1000);
+        mailbox.page = token -> new GmailCutoverClient.Page(List.of("eligible"), null);
+        mailbox.messages = Map.of("eligible", message("eligible", now,
+                "<a href='https://www.linkedin.com/jobs/view/123456/'>Java Engineer</a>"));
+        var calls = new java.util.ArrayList<String>();
+        mailbox.modify = calls::add;
+        jdbc.execute("ALTER TABLE gmail_mailbox_actions ADD CONSTRAINT synthetic_ack_failure CHECK (applied_at IS NULL)");
+        try {
+            assertThrows(org.springframework.dao.DataIntegrityViolationException.class, cutover::run);
+        } finally {
+            jdbc.execute("ALTER TABLE gmail_mailbox_actions DROP CONSTRAINT synthetic_ack_failure");
+        }
+        assertEquals(1, count("gmail_mailbox_actions WHERE applied_at IS NULL AND attempts=1"));
+        jdbc.update("UPDATE gmail_mailbox_actions SET next_attempt=now()");
+        mailbox.failingId = "eligible";
+        cutover.run();
+        assertEquals(List.of("eligible", "eligible"), calls);
+        assertEquals(1, count("gmail_mailbox_actions WHERE applied_at IS NOT NULL AND attempts=2"));
+        assertEquals(1, count("agent_runs"));
+        assertEquals(1, count("outbox_events"));
+    }
+
+    @Test
+    void nextWindowFindsLateIndexedMailAndAdvancesPastOverlap() {
+        long end = java.time.Instant.now().getEpochSecond() - 60;
+        long since = end - 300;
+        jdbc.update("""
+                INSERT INTO gmail_cutover(enabled,since_epoch,window_start,window_end,scan_start)
+                VALUES(true,?,?,?,?)
+                """, since, since, end, since);
+        String card = "<a href='https://www.linkedin.com/jobs/view/123456/'>Java Engineer</a>";
+        mailbox.messages = Map.of("early", message("early", (end - 30) * 1000, card),
+                "late", message("late", (end - 20) * 1000, card));
+        mailbox.page = token -> new GmailCutoverClient.Page(List.of("early"), null);
+        var modified = new java.util.ArrayList<String>();
+        mailbox.modify = modified::add;
+        assertEquals(1, cutover.run().applied());
+        assertEquals(end, jdbc.queryForObject("SELECT window_start FROM gmail_cutover", Long.class));
+
+        mailbox.page = token -> {
+            assertEquals(since, mailbox.lastStart);
+            assertTrue(mailbox.lastEnd > end);
+            return new GmailCutoverClient.Page(List.of("early", "late"), null);
+        };
+        assertEquals(1, cutover.run().applied());
+        assertEquals(List.of("early", "late"), modified);
+        assertEquals(mailbox.lastEnd, jdbc.queryForObject("SELECT window_start FROM gmail_cutover", Long.class));
+        assertEquals(2, count("gmail_alert_messages"));
+        assertEquals(2, count("gmail_mailbox_actions"));
+        assertEquals(1, count("vacancies"));
+    }
+
+    @Test
+    void explicitlyRejectedTokenRestartsSameWindowOnNextInvocation() {
+        long end = java.time.Instant.now().getEpochSecond() - 60;
+        long start = end - 300;
+        jdbc.update("""
+                INSERT INTO gmail_cutover(enabled,since_epoch,window_start,window_end,scan_start,page_token)
+                VALUES(true,?,?,?,?,'stale')
+                """, start, start + 60, end, start);
+        mailbox.page = token -> { throw new IllegalStateException("Synthetic HTTP 503"); };
+        assertThrows(IllegalStateException.class, cutover::run);
+        assertEquals("stale", jdbc.queryForObject("SELECT page_token FROM gmail_cutover", String.class));
+
+        mailbox.page = token -> {
+            assertEquals("stale", token);
+            throw new InvalidGmailPageTokenException();
+        };
+        assertTrue(cutover.run().windowRestartRequired());
+        assertEquals(null, jdbc.queryForObject("SELECT page_token FROM gmail_cutover", String.class));
+        mailbox.page = token -> {
+            assertEquals(null, token);
+            assertEquals(start, mailbox.lastStart);
+            assertEquals(end, mailbox.lastEnd);
+            return new GmailCutoverClient.Page(List.of(), null);
+        };
+        assertEquals(false, cutover.run().morePages());
+        assertEquals(end, jdbc.queryForObject("SELECT window_start FROM gmail_cutover", Long.class));
+    }
+
+    @Test
+    void livePageSkipsMailBeforeHandoffAndAtWindowEnd() {
+        long end = java.time.Instant.now().getEpochSecond() - 60;
+        long since = end - 300;
+        jdbc.update("""
+                INSERT INTO gmail_cutover(enabled,since_epoch,window_start,window_end,scan_start)
+                VALUES(true,?,?,?,?)
+                """, since, since, end, since);
+        String card = "<a href='https://www.linkedin.com/jobs/view/123456/'>Java Engineer</a>";
+        mailbox.messages = Map.of("before", message("before", since * 1000 - 1, card),
+                "future", message("future", end * 1000, card));
+        mailbox.page = token -> new GmailCutoverClient.Page(List.of("before", "future"), null);
+
+        var result = cutover.run();
+        assertEquals(2, result.seen());
+        assertEquals(0, result.applied());
+        assertEquals(0, count("gmail_alert_messages"));
+        assertEquals(0, count("vacancies"));
+        assertEquals(0, count("gmail_mailbox_actions"));
+        assertEquals(end, jdbc.queryForObject("SELECT window_start FROM gmail_cutover", Long.class));
+    }
+
+    @Test
+    void pausingAfterListingRollsBackCompletionAndLeavesPageForRetry() {
+        long since = java.time.Instant.now().getEpochSecond() - 60;
+        jdbc.update("INSERT INTO gmail_cutover(enabled,since_epoch,window_start) VALUES(true,?,?)", since, since);
+        mailbox.messages = Map.of("eligible", message("eligible", since * 1000,
+                "<a href='https://www.linkedin.com/jobs/view/123456/'>Java Engineer</a>"));
+        mailbox.page = token -> {
+            jdbc.update("UPDATE gmail_cutover SET enabled=false");
+            return new GmailCutoverClient.Page(List.of("eligible"), "next");
+        };
+
+        assertEquals("Mailbox cutover paused during intake",
+                assertThrows(IllegalStateException.class, cutover::run).getMessage());
+        assertEquals(0, count("gmail_alert_messages"));
+        assertEquals(0, count("vacancies"));
+        assertEquals(0, count("outbox_events"));
+        assertEquals(0, count("gmail_mailbox_actions"));
+        assertEquals(since, jdbc.queryForObject("SELECT window_start FROM gmail_cutover", Long.class));
+        assertEquals(1, count("gmail_cutover WHERE page_token IS NULL AND window_end IS NOT NULL"));
     }
 
     private int count(String table) {

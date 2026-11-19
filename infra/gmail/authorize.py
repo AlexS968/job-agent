@@ -1,4 +1,4 @@
-"""One-time local consent for the application's Gmail read-only OAuth client.
+"""One-time local consent for the application's Gmail OAuth client.
 
 The owner runs this interactively with private paths outside the repository.
 No token or message content is printed. No mailbox read occurs here.
@@ -27,7 +27,8 @@ def private_path(name, must_exist):
     return path
 
 
-def authorize(client_file, output_file):
+def authorize(client_file, output_file, modify=False):
+    scope = "https://www.googleapis.com/auth/gmail.modify" if modify else SCOPE
     client_path = private_path(client_file, True)
     output_path = private_path(output_file, False)
     if client_path.stat().st_size > 16_384:
@@ -62,13 +63,13 @@ def authorize(client_file, output_file):
         redirect = f"http://127.0.0.1:{server.server_port}/callback"
         authorization = "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode({
             "client_id": client_id, "redirect_uri": redirect, "response_type": "code",
-            "scope": SCOPE, "access_type": "offline", "prompt": "consent", "state": state,
+            "scope": scope, "access_type": "offline", "prompt": "consent", "state": state,
             "code_challenge": challenge, "code_challenge_method": "S256"})
         if not webbrowser.open(authorization):
             raise RuntimeError("Browser authorization could not be opened")
         server.handle_request()
     if "code" not in result:
-        raise RuntimeError("Read-only authorization was not completed")
+        raise RuntimeError("Authorization was not completed")
     request = Request("https://oauth2.googleapis.com/token", data=urlencode({
         "code": result["code"], "client_id": client_id, "client_secret": client_secret,
         "redirect_uri": redirect, "grant_type": "authorization_code",
@@ -76,6 +77,8 @@ def authorize(client_file, output_file):
         headers={"Content-Type": "application/x-www-form-urlencoded"}, method="POST")
     with urlopen(request, timeout=20) as response:
         token = json.loads(response.read(16_385))
+    if set(token.get("scope", "").split()) != {scope}:
+        raise RuntimeError("Issued Gmail scope did not match the requested authorization")
     refresh = token.get("refresh_token")
     if not isinstance(refresh, str) or not refresh:
         raise RuntimeError("No refresh token was issued; review consent configuration")
@@ -84,12 +87,13 @@ def authorize(client_file, output_file):
     descriptor = os.open(output_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, "wb") as output:
         output.write(payload)
-    print("Private Gmail read-only OAuth material saved outside the repository.")
+    print("Private Gmail OAuth material saved outside the repository.")
 
 
 if __name__ == "__main__":
-    arguments = argparse.ArgumentParser(description="Authorize Gmail read-only intake once")
+    arguments = argparse.ArgumentParser(description="Authorize Gmail intake once (read-only by default)")
     arguments.add_argument("--client-file", required=True)
     arguments.add_argument("--output-file", required=True)
+    arguments.add_argument("--cutover-modify", action="store_true", help="Request separate cutover consent")
     options = arguments.parse_args()
-    authorize(options.client_file, options.output_file)
+    authorize(options.client_file, options.output_file, options.cutover_modify)

@@ -16,8 +16,10 @@ import com.alexs.jobagent.vacancy.service.VacancyPersistenceService;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.LongFunction;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
@@ -73,66 +75,82 @@ public class LinkedInIntakeService {
         if (Thread.currentThread().isInterrupted()) {
             throw new IllegalStateException("LinkedIn intake interrupted");
         }
+        return process(gmail.alertIds(maximum, after, before), null, null);
+    }
+
+    LinkedInIntakeResultDTO process(List<String> ids, Long liveStart, Long liveEnd) {
+        if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            throw new IllegalStateException("LinkedIn intake owns its transaction boundary");
+        }
         int replayed = 0;
         int cards = 0;
         int created = 0;
         int updated = 0;
         int review = 0;
-        int seen = 0;
-        for (String id : gmail.alertIds(maximum, after, before)) {
+        for (String id : ids) {
             if (Thread.currentThread().isInterrupted()) {
                 throw new IllegalStateException("LinkedIn intake interrupted");
             }
-            seen++;
-            String priorStatus = messages.status(id);
-            if (priorStatus != null) {
-                replayed++;
-                review += "NEEDS_REVIEW".equals(priorStatus) ? 1 : 0;
-                continue;
-            }
-            LinkedInAlertDTO alert;
-            try {
-                alert = parser.parse(gmail.alert(id));
-            } catch (LinkedInAlertException unsupported) {
-                if (Thread.currentThread().isInterrupted()) {
-                    throw new IllegalStateException("LinkedIn intake interrupted", unsupported);
-                }
-                long runId = runs.start();
-                try {
-                    MessageOutcome outcome = transaction.execute(status -> {
-                        boolean inserted = messages.recordReview(id, unsupported.reason());
-                        runs.succeedLive(runId, RunResultDTO.UNCHANGED);
-                        return new MessageOutcome(!inserted, 0, 0, 0,
-                                inserted || "NEEDS_REVIEW".equals(messages.status(id)));
-                    });
-                    replayed += outcome.replayed() ? 1 : 0;
-                    review += outcome.review() ? 1 : 0;
-                } catch (RuntimeException failure) {
-                    failRun(runId, failure);
-                    throw failure;
-                }
-                continue;
-            }
-            if (!id.equals(alert.messageId())) {
-                throw new IllegalStateException("Gmail message identity mismatch");
-            }
-            if (cards + alert.cards().size() > MAX_CARDS_PER_RUN) {
-                throw new IllegalStateException("LinkedIn intake card limit reached; earlier messages remain durable");
-            }
-            long runId = runs.start();
-            try {
-                MessageOutcome result = transaction.execute(status -> importMessage(alert, runId));
-                replayed += result.replayed() ? 1 : 0;
-                cards += result.cards();
-                created += result.created();
-                updated += result.updated();
-                review += result.review() ? 1 : 0;
-            } catch (RuntimeException failure) {
-                failRun(runId, failure);
-                throw failure;
-            }
+            MessageOutcome result = processMessage(id, liveStart, liveEnd, MAX_CARDS_PER_RUN - cards);
+            replayed += result.replayed() ? 1 : 0;
+            cards += result.cards();
+            created += result.created();
+            updated += result.updated();
+            review += result.review() ? 1 : 0;
         }
-        return new LinkedInIntakeResultDTO(seen, replayed, cards, created, updated, review);
+        return new LinkedInIntakeResultDTO(ids.size(), replayed, cards, created, updated, review);
+    }
+
+    private MessageOutcome processMessage(String id, Long liveStart, Long liveEnd, int remainingCards) {
+        String priorStatus = messages.status(id);
+        if (priorStatus != null) {
+            return new MessageOutcome(true, 0, 0, 0, "NEEDS_REVIEW".equals(priorStatus));
+        }
+        LinkedInAlertDTO alert;
+        try {
+            alert = parser.parse(gmail.alert(id));
+        } catch (LinkedInAlertException unsupported) {
+            return recordReview(id, unsupported);
+        }
+        if (!id.equals(alert.messageId())) {
+            throw new IllegalStateException("Gmail message identity mismatch");
+        }
+        long observed = alert.observedAt().getEpochSecond();
+        if (liveStart != null && (observed < liveStart || observed >= liveEnd)) {
+            return new MessageOutcome(false, 0, 0, 0, false);
+        }
+        if (alert.cards().size() > remainingCards) {
+            throw new IllegalStateException("LinkedIn intake card limit reached; earlier messages remain durable");
+        }
+        return persist(runId -> {
+            MessageOutcome outcome = importMessage(alert, runId);
+            if (liveStart != null && !outcome.replayed() && !outcome.review()) {
+                messages.enqueueLiveAction(id);
+            }
+            return outcome;
+        });
+    }
+
+    private MessageOutcome recordReview(String id, LinkedInAlertException unsupported) {
+        if (Thread.currentThread().isInterrupted()) {
+            throw new IllegalStateException("LinkedIn intake interrupted", unsupported);
+        }
+        return persist(runId -> {
+            boolean inserted = messages.recordReview(id, unsupported.reason());
+            runs.succeedLive(runId, RunResultDTO.UNCHANGED);
+            return new MessageOutcome(!inserted, 0, 0, 0,
+                    inserted || "NEEDS_REVIEW".equals(messages.status(id)));
+        });
+    }
+
+    private MessageOutcome persist(LongFunction<MessageOutcome> work) {
+        long runId = runs.start();
+        try {
+            return transaction.execute(status -> work.apply(runId));
+        } catch (RuntimeException failure) {
+            failRun(runId, failure);
+            throw failure;
+        }
     }
 
     private void failRun(long runId, RuntimeException failure) {

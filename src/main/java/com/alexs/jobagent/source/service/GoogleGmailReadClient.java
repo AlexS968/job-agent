@@ -1,5 +1,6 @@
 package com.alexs.jobagent.source.service;
 
+import com.alexs.jobagent.source.exception.InvalidGmailPageTokenException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
@@ -13,13 +14,15 @@ import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Supplier;
+import java.util.regex.Pattern;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 @Component
-public class GoogleGmailReadClient implements GmailReadClient {
+public class GoogleGmailReadClient implements GmailReadClient, GmailCutoverClient {
+    private static final Pattern GMAIL_ID = Pattern.compile("[A-Za-z0-9_-]{1,128}");
     private static final int MAX_RESPONSE = 2_000_000;
     private static final URI TOKEN_URI = URI.create("https://oauth2.googleapis.com/token");
     private static final String API = "https://gmail.googleapis.com/gmail/v1/users/me/messages";
@@ -52,17 +55,35 @@ public class GoogleGmailReadClient implements GmailReadClient {
         }
         String query = QUERY + (after == null ? "" : " after:" + after.toString().replace('-', '/'))
                 + (before == null ? "" : " before:" + before.toString().replace('-', '/'));
+        return list(limit, query, null).ids();
+    }
+
+    @Override
+    public Page livePage(long start, long end, String token) {
+        return list(10, QUERY + " after:" + (start - 1) + " before:" + end, token);
+    }
+
+    private Page list(int limit, String query, String token) {
         String url = API + "?maxResults=" + limit + "&q=" + URLEncoder.encode(query, StandardCharsets.UTF_8);
-        JsonNode response = get(URI.create(url));
+        JsonNode response = get(URI.create(token == null ? url : url + "&pageToken=" + encode(token)), token != null);
+        if (!response.isObject()) {
+            throw new IllegalStateException("Invalid Gmail list response");
+        }
+        return new Page(messageIds(response.path("messages"), limit), nextToken(response.get("nextPageToken")));
+    }
+
+    private static List<String> messageIds(JsonNode messages, int limit) {
         List<String> ids = new ArrayList<>();
-        JsonNode messages = response.path("messages");
+        if (!messages.isMissingNode() && !messages.isArray()) {
+            throw new IllegalStateException("Gmail returned invalid message metadata");
+        }
         if (messages.isArray()) {
             for (JsonNode item : messages) {
                 if (ids.size() >= limit) {
                     break;
                 }
                 String id = item.path("id").asText();
-                if (!id.matches("[A-Za-z0-9_-]{1,128}")) {
+                if (!GMAIL_ID.matcher(id).matches()) {
                     throw new IllegalStateException("Gmail returned invalid message metadata");
                 }
                 ids.add(id);
@@ -71,18 +92,59 @@ public class GoogleGmailReadClient implements GmailReadClient {
         return List.copyOf(ids);
     }
 
+    private static String nextToken(JsonNode next) {
+        if (next != null && (!next.isString() || next.asText().isBlank() || next.asText().length() > 4096)) {
+            throw new IllegalStateException("Invalid Gmail pagination metadata");
+        }
+        return next == null ? null : next.asText();
+    }
+
+    @Override
+    public String processedLabel() {
+        JsonNode labels = get(URI.create("https://gmail.googleapis.com/gmail/v1/users/me/labels")).path("labels");
+        List<String> matches = new ArrayList<>();
+        for (JsonNode label : labels) {
+            if ("LinkedIn Processed".equals(label.path("name").asText()) && "user".equals(label.path("type").asText())) {
+                matches.add(label.path("id").asText());
+            }
+        }
+        if (matches.size() != 1 || !GMAIL_ID.matcher(matches.getFirst()).matches()) {
+            throw new IllegalStateException("Existing processed label was not uniquely identified");
+        }
+        return matches.getFirst();
+    }
+
+    @Override
+    public void applyLabels(String messageId, String labelId) {
+        if (!GMAIL_ID.matcher(messageId).matches() || !GMAIL_ID.matcher(labelId).matches()) {
+            throw new IllegalArgumentException("Invalid Gmail metadata");
+        }
+        String body = json.writeValueAsString(java.util.Map.of("addLabelIds", List.of(labelId),
+                "removeLabelIds", List.of("UNREAD", "INBOX")));
+        JsonNode result = send(HttpRequest.newBuilder(URI.create(API + "/" + messageId + "/modify"))
+                .timeout(Duration.ofSeconds(25)).header("Authorization", "Bearer " + token())
+                .header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString(body)).build());
+        if (!messageId.equals(result.path("id").asText())) {
+            throw new IllegalStateException("Gmail modification acknowledgement was invalid");
+        }
+    }
+
     @Override
     public JsonNode alert(String messageId) {
-        if (messageId == null || !messageId.matches("[A-Za-z0-9_-]{1,128}")) {
+        if (messageId == null || !GMAIL_ID.matcher(messageId).matches()) {
             throw new IllegalArgumentException("Invalid Gmail message ID");
         }
         return get(URI.create(API + "/" + messageId + "?format=full"));
     }
 
     private JsonNode get(URI uri) {
+        return get(uri, false);
+    }
+
+    private JsonNode get(URI uri, boolean continuation) {
         HttpRequest request = HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(25))
                 .header("Authorization", "Bearer " + token()).GET().build();
-        return send(request);
+        return send(request, continuation);
     }
 
     private synchronized String token() {
@@ -124,6 +186,10 @@ public class GoogleGmailReadClient implements GmailReadClient {
     }
 
     private JsonNode send(HttpRequest request) {
+        return send(request, false);
+    }
+
+    private JsonNode send(HttpRequest request, boolean continuation) {
         try {
             HttpResponse<InputStream> response = http.send(request, HttpResponse.BodyHandlers.ofInputStream());
             try (InputStream body = response.body()) {
@@ -132,6 +198,9 @@ public class GoogleGmailReadClient implements GmailReadClient {
                     throw new IllegalStateException("Gmail response exceeded the byte limit");
                 }
                 if (response.statusCode() != 200) {
+                    if (continuation && response.statusCode() == 400 && invalidPageToken(bytes)) {
+                        throw new InvalidGmailPageTokenException();
+                    }
                     throw new IllegalStateException("Gmail request failed with HTTP " + response.statusCode());
                 }
                 return parseResponse(bytes);
@@ -142,6 +211,26 @@ public class GoogleGmailReadClient implements GmailReadClient {
         } catch (IOException failure) {
             throw new IllegalStateException("Gmail request failed", failure);
         }
+    }
+
+    private boolean invalidPageToken(byte[] bytes) {
+        JsonNode error;
+        try {
+            error = json.readTree(bytes).path("error");
+        } catch (RuntimeException invalid) {
+            return false;
+        }
+        if (error.path("message").asText().matches("(?i)invalid (page token|pagetoken)\\.?")) {
+            return true;
+        }
+        for (JsonNode detail : error.path("errors")) {
+            String reason = detail.path("reason").asText();
+            if ("invalidPageToken".equals(reason)
+                    || ("invalid".equals(reason) && "pageToken".equals(detail.path("location").asText()))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     JsonNode parseResponse(byte[] bytes) {
