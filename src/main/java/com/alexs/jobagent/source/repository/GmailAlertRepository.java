@@ -2,6 +2,8 @@ package com.alexs.jobagent.source.repository;
 
 import com.alexs.jobagent.source.dto.LinkedInAlertDTO;
 import java.sql.Timestamp;
+import java.time.Instant;
+import java.util.List;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
@@ -45,8 +47,50 @@ public class GmailAlertRepository {
     public void card(String messageId, LinkedInAlertDTO.CardDTO card, long sourceItemId,
                      long vacancyId, String outcome) {
         jdbc.update("INSERT INTO gmail_alert_cards(message_id, linkedin_job_id, source_item_id, vacancy_id, "
-                        + "outcome, advertised_direction, direction_evidence) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        + "outcome, advertised_direction, direction_evidence, advertised_title, advertised_employer, "
+                        + "advertised_location, parsed_direction) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 messageId, card.jobId(), sourceItemId, vacancyId, outcome,
-                card.advertisedDirection(), card.directionEvidence());
+                card.advertisedDirection(), card.directionEvidence(), card.hasAdvertisedTitle() ? card.title() : null,
+                card.advertisedEmployer(), card.directionEvidence(), card.advertisedDirection());
+    }
+
+    public boolean repairEligible(String id) {
+        return jdbc.queryForObject("""
+                SELECT EXISTS (SELECT FROM gmail_alert_messages WHERE message_id = ?
+                  AND status = 'NEEDS_REVIEW' AND review_reason = 'UNRECOGNIZED_LINK'
+                  AND pre_repair_unsupported_links IS NULL)
+                """, Boolean.class, id);
+    }
+
+    public Instant lockRepairCandidate(String id) {
+        return jdbc.query("""
+                SELECT observed_at FROM gmail_alert_messages WHERE message_id = ?
+                  AND status = 'NEEDS_REVIEW' AND review_reason = 'UNRECOGNIZED_LINK'
+                  AND pre_repair_unsupported_links IS NULL FOR UPDATE
+                """, rs -> rs.next() ? rs.getTimestamp(1).toInstant() : null, id);
+    }
+
+    public List<String> cardIds(String id) {
+        return jdbc.queryForList("SELECT linkedin_job_id FROM gmail_alert_cards WHERE message_id = ?", String.class, id);
+    }
+
+    public void storeCardFields(String id, LinkedInAlertDTO.CardDTO card) {
+        String title = card.hasAdvertisedTitle() ? card.title() : null;
+        jdbc.update("""
+                UPDATE gmail_alert_cards SET advertised_title = coalesce(?, advertised_title), advertised_employer = ?,
+                    advertised_location = ?, parsed_direction = ?
+                WHERE message_id = ? AND linkedin_job_id = ?
+                """, title, card.advertisedEmployer(), card.directionEvidence(), card.advertisedDirection(),
+                id, card.jobId());
+    }
+
+    public void recordRepair(String id, int unsupportedLinks) {
+        boolean complete = unsupportedLinks == 0;
+        jdbc.update("""
+                UPDATE gmail_alert_messages SET pre_repair_unsupported_links = unsupported_links,
+                    unsupported_links = ?, status = ?, review_reason = ?, completed_at = ?
+                WHERE message_id = ?
+                """, unsupportedLinks, complete ? "COMPLETE" : "NEEDS_REVIEW",
+                complete ? null : "UNRECOGNIZED_LINK", complete ? Timestamp.from(Instant.now()) : null, id);
     }
 }

@@ -12,6 +12,7 @@ import com.alexs.jobagent.source.service.SourceVerificationService;
 import com.alexs.jobagent.source.service.SourceRegistryService;
 import com.alexs.jobagent.source.service.SourceDiscoveryService;
 import com.alexs.jobagent.source.service.LinkedInIntakeService;
+import com.alexs.jobagent.source.service.LinkedInRepairService;
 import com.alexs.jobagent.source.service.GmailCutoverService;
 import com.alexs.jobagent.source.dto.SourceCandidateDTO;
 import com.alexs.jobagent.source.dto.SearchPilotResultDTO;
@@ -190,6 +191,7 @@ public class JobAgentApplication {
                 requireOnlyOptions(args, GMAIL_CUTOVER_MODE);
                 LOGGER.info("Gmail cutover: {}", context.getBean(GmailCutoverService.class).run());
             }
+            case "--mode=linkedin-repair" -> runLinkedInRepair(args, context);
             case "--mode=linkedin-intake" -> runLinkedInIntake(args, context);
             case "--mode=evaluate-rules" -> runEvaluateRules(args, profiles, evaluations);
             case "--mode=shortlist" -> runShortlist(args, profiles, evaluations);
@@ -201,6 +203,20 @@ public class JobAgentApplication {
             case "--mode=extract-primary" -> runExtraction(args, extraction, false);
             case "--mode=extract-compare" -> runExtraction(args, extraction, true);
             default -> throw new IllegalArgumentException("Unsupported batch mode");
+        }
+    }
+
+    private void runLinkedInRepair(String[] args, ApplicationContext context) {
+        requireOnlyOptions(args, "--mode=linkedin-repair");
+        String selected = context.getEnvironment().getProperty("JOBAGENT_LINKEDIN_REPAIR_IDS");
+        if (selected == null || selected.length() > 650) {
+            throw new IllegalArgumentException("Set a private LinkedIn repair sample");
+        }
+        var result = context.getBean(LinkedInRepairService.class).repair(
+                Arrays.asList(selected.strip().split(",", -1)));
+        LOGGER.info("LinkedIn repair: {}", result);
+        if (result.reviewRequired() > 0) {
+            throw new IllegalStateException("LinkedIn repair has messages requiring review");
         }
     }
 

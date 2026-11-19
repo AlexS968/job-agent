@@ -187,7 +187,7 @@ public class LinkedInIntakeService {
             VacancyDTO vacancy = new VacancyDTO("linkedin", card.jobId(), card.title(), null, employer);
             VacancyPersistenceService.LiveResult stored = vacancies.persistObserved(
                     vacancy, sourceId, null, observed, digest,
-                    !card.title().equals("LinkedIn job " + card.jobId()));
+                    card.hasAdvertisedTitle());
             if (stored.change() == VacancyChangeDTO.CREATED) {
                 outbox.vacancyDiscovered(stored.vacancyId(), runId);
                 created++;

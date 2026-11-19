@@ -14,9 +14,14 @@ MAX_BODY = 64_000
 MIN_COMPARABLE_FEEDBACK = 10
 
 LINKEDIN_SQL = """
-SELECT v.id, v.title, em.name, si.listing_id, e.decision,
+SELECT v.id,
+       CASE WHEN card.parsed_direction IS NULL THEN v.title
+            ELSE coalesce(card.advertised_title, prior.title, v.title) END,
+       em.name, si.listing_id, e.decision,
        e.role_classification, e.reasons::text, e.unknowns::text,
-       card.advertised_direction, card.direction_evidence
+       coalesce(card.parsed_direction, card.advertised_direction),
+       CASE WHEN card.parsed_direction IS NULL THEN card.direction_evidence ELSE card.advertised_location END,
+       card.advertised_employer
 FROM vacancies v
 JOIN employers em ON em.id = v.employer_id
 JOIN LATERAL (
@@ -27,6 +32,14 @@ JOIN LATERAL (
   ORDER BY si.fetched_at DESC, si.id DESC LIMIT 1
 ) si ON TRUE
 JOIN gmail_alert_cards card ON card.source_item_id = si.source_item_id
+LEFT JOIN LATERAL (
+  SELECT prior_card.advertised_title AS title
+  FROM vacancy_sources vs
+  JOIN source_items observation ON observation.id = vs.source_item_id
+  JOIN gmail_alert_cards prior_card ON prior_card.source_item_id = observation.id
+  WHERE vs.vacancy_id = v.id AND prior_card.advertised_title IS NOT NULL
+  ORDER BY observation.fetched_at DESC, observation.id DESC LIMIT 1
+) prior ON card.parsed_direction IS NOT NULL AND card.advertised_title IS NULL
 LEFT JOIN LATERAL (
   SELECT decision, role_classification, reasons, unknowns
   FROM vacancy_evaluations e
@@ -501,12 +514,13 @@ def read_linkedin(event, client):
         rows = result.get("records", [])
         items = []
         for row in rows[:limit]:
-            vacancy_id, title, employer, job_id, decision, role, reasons, unknowns, direction, evidence = (
+            vacancy_id, title, employer, job_id, decision, role, reasons, unknowns, direction, evidence, advertised_employer = (
                 cell_value(cell) for cell in row)
             unknown_codes = json.loads(unknowns or "[]")[:20] if decision else [
                 "ROLE_NOT_ESTABLISHED", "WORK_ELIGIBILITY_UNCONFIRMED", "SALARY_UNKNOWN"]
             items.append({"vacancyId": vacancy_id, "title": title,
                           "employer": None if employer == "Employer unknown" else employer,
+                          "advertisedEmployer": advertised_employer,
                           "url": "https://www.linkedin.com/jobs/view/" + job_id + "/",
                           "decision": decision or "PENDING_EVALUATION",
                           "advertisedDirection": direction,
