@@ -73,13 +73,20 @@ public class LinkedInIntakeService {
         if (Thread.currentThread().isInterrupted()) {
             throw new IllegalStateException("LinkedIn intake interrupted");
         }
+        return process(gmail.alertIds(maximum, after, before), null, null);
+    }
+
+    LinkedInIntakeResultDTO process(java.util.List<String> ids, Long liveStart, Long liveEnd) {
+        if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            throw new IllegalStateException("LinkedIn intake owns its transaction boundary");
+        }
         int replayed = 0;
         int cards = 0;
         int created = 0;
         int updated = 0;
         int review = 0;
         int seen = 0;
-        for (String id : gmail.alertIds(maximum, after, before)) {
+        for (String id : ids) {
             if (Thread.currentThread().isInterrupted()) {
                 throw new IllegalStateException("LinkedIn intake interrupted");
             }
@@ -116,12 +123,22 @@ public class LinkedInIntakeService {
             if (!id.equals(alert.messageId())) {
                 throw new IllegalStateException("Gmail message identity mismatch");
             }
+            if (liveStart != null && (alert.observedAt().getEpochSecond() < liveStart
+                    || alert.observedAt().getEpochSecond() >= liveEnd)) {
+                continue;
+            }
             if (cards + alert.cards().size() > MAX_CARDS_PER_RUN) {
                 throw new IllegalStateException("LinkedIn intake card limit reached; earlier messages remain durable");
             }
             long runId = runs.start();
             try {
-                MessageOutcome result = transaction.execute(status -> importMessage(alert, runId));
+                MessageOutcome result = transaction.execute(status -> {
+                    MessageOutcome outcome = importMessage(alert, runId);
+                    if (liveStart != null && !outcome.replayed() && !outcome.review()) {
+                        messages.enqueueLiveAction(id);
+                    }
+                    return outcome;
+                });
                 replayed += result.replayed() ? 1 : 0;
                 cards += result.cards();
                 created += result.created();

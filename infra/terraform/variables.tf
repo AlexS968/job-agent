@@ -337,3 +337,46 @@ variable "restore_expected_agent_runs" {
     error_message = "Enabled restore drill requires a nonnegative integer source reference count."
   }
 }
+
+variable "prepare_gmail_cutover" {
+  type    = bool
+  default = false
+  validation {
+    condition     = !var.prepare_gmail_cutover || var.enable_linkedin_intake
+    error_message = "Prepare and verify the read-only intake first."
+  }
+}
+
+variable "gmail_modify_secret_arn" {
+  type    = string
+  default = null
+  validation {
+    condition     = !var.prepare_gmail_cutover || (can(regex("^arn:aws:secretsmanager:us-east-1:[0-9]{12}:secret:", var.gmail_modify_secret_arn)) && var.gmail_modify_secret_arn != var.gmail_oauth_secret_arn)
+    error_message = "Cutover needs a separate reviewed Gmail modify credential."
+  }
+}
+
+variable "enable_gmail_schedule" {
+  type    = bool
+  default = false
+  validation {
+    condition     = !var.enable_gmail_schedule || var.prepare_gmail_cutover
+    error_message = "Prepare the cutover task before enabling its schedule."
+  }
+}
+
+variable "gmail_schedule_expression" {
+  description = "EventBridge Scheduler expression for owner-approved Gmail cadence. Cron uses Europe/Berlin."
+  type        = string
+  default     = "cron(15 * * * ? *)"
+}
+
+variable "gmail_overlap_seconds" {
+  description = "Lookback for late-indexed Gmail alerts when opening a fresh search window."
+  type        = number
+  default     = 7200
+  validation {
+    condition     = var.gmail_overlap_seconds >= 0 && var.gmail_overlap_seconds <= 86400 && floor(var.gmail_overlap_seconds) == var.gmail_overlap_seconds
+    error_message = "Gmail overlap must be a whole number of seconds between 0 and 86400."
+  }
+}

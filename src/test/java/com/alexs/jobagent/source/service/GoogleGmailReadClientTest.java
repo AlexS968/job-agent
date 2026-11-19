@@ -10,6 +10,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import com.alexs.jobagent.source.exception.InvalidGmailPageTokenException;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -129,6 +130,48 @@ class GoogleGmailReadClientTest {
         } finally {
             Thread.interrupted();
         }
+    }
+
+    @Test
+    void cutoverContinuesSearchAndUsesOnlyTheExistingProcessedLabel() throws Exception {
+        List<HttpRequest> requests = new ArrayList<>();
+        var client = scripted(CONFIG, requests, response(200, "{\"access_token\":\"synthetic\"}"),
+                response(200, "{\"messages\":[],\"nextPageToken\":\"following\"}"),
+                response(200, "{\"labels\":[{\"name\":\"LinkedIn Processed\",\"type\":\"user\",\"id\":\"Label_1\"}]}"),
+                response(200, "{\"id\":\"mail-1\"}"));
+        assertEquals("following", client.livePage(100, 200, "cursor/+").nextToken());
+        assertTrue(requests.get(1).uri().getRawQuery().contains("pageToken=cursor%2F%2B"));
+        client.applyLabels("mail-1", client.processedLabel());
+        var request = requests.get(3);
+        assertEquals("POST", request.method());
+        assertTrue(request.uri().getPath().endsWith("/messages/mail-1/modify"));
+        var bytes = new java.io.ByteArrayOutputStream();
+        request.bodyPublisher().orElseThrow().subscribe(new java.util.concurrent.Flow.Subscriber<java.nio.ByteBuffer>() {
+            public void onSubscribe(java.util.concurrent.Flow.Subscription subscription) { subscription.request(Long.MAX_VALUE); }
+            public void onNext(java.nio.ByteBuffer buffer) {
+                byte[] part = new byte[buffer.remaining()];
+                buffer.get(part);
+                bytes.writeBytes(part);
+            }
+            public void onComplete() { }
+            public void onError(Throwable error) { throw new AssertionError(error); }
+        });
+        var mapper = new JsonMapper();
+        assertEquals(mapper.readTree("{\"addLabelIds\":[\"Label_1\"],\"removeLabelIds\":[\"UNREAD\",\"INBOX\"]}"),
+                mapper.readTree(bytes.toByteArray()));
+    }
+
+    @Test
+    void onlyExplicitContinuationRejectionIsRecoverable() throws Exception {
+        var client = scripted(CONFIG, new ArrayList<>(), response(200, "{\"access_token\":\"synthetic\"}"),
+                response(400, "{\"error\":{\"errors\":[{\"reason\":\"invalid\",\"location\":\"pageToken\"}]}}"),
+                response(400, "{\"error\":{\"message\":\"Invalid argument\"}}"),
+                response(429, "{\"error\":{\"message\":\"Invalid page token\"}}"));
+        assertThrows(InvalidGmailPageTokenException.class, () -> client.livePage(100, 200, "stale"));
+        assertEquals("Gmail request failed with HTTP 400",
+                assertThrows(IllegalStateException.class, () -> client.livePage(100, 200, "next")).getMessage());
+        assertEquals("Gmail request failed with HTTP 429",
+                assertThrows(IllegalStateException.class, () -> client.livePage(100, 200, "next")).getMessage());
     }
 
     private static GoogleGmailReadClient scripted(String configuration, List<HttpRequest> requests,
