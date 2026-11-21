@@ -13,16 +13,21 @@ import com.alexs.jobagent.outbox.service.SqsEvaluationConsumerService;
 import com.alexs.jobagent.outbox.service.SqsGateway;
 import com.alexs.jobagent.outbox.service.SqsProducerService;
 import com.alexs.jobagent.source.dto.ActiveSourceImportResultDTO;
+import com.alexs.jobagent.source.dto.HimalayasImportResultDTO;
+import com.alexs.jobagent.source.service.HimalayasIntakeService;
 import com.alexs.jobagent.source.service.SourceRegistryService;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -37,6 +42,7 @@ class BatchPipelineServiceTest {
     private final com.alexs.jobagent.source.service.SourceDiscoveryService discovery =
             mock(com.alexs.jobagent.source.service.SourceDiscoveryService.class);
     private final OutboxService outbox = mock(OutboxService.class);
+    private final HimalayasIntakeService himalayas = mock(HimalayasIntakeService.class);
     private final SqsProducerService producer = mock(SqsProducerService.class);
     private final SqsEvaluationConsumerService consumer = mock(SqsEvaluationConsumerService.class);
     private final SqsGateway queue = mock(SqsGateway.class);
@@ -46,8 +52,9 @@ class BatchPipelineServiceTest {
 
     @BeforeEach
     void setup() {
-        pipeline = new BatchPipelineService(sources, discovery, outbox, producer, consumer, queue, evaluations,
+        pipeline = new BatchPipelineService(sources, discovery, outbox, producer, consumer, queue, evaluations, himalayas,
                 Clock.fixed(Instant.parse("2026-01-01T00:00:00Z"), ZoneOffset.UTC));
+        when(himalayas.runUntil(any())).thenReturn(new HimalayasImportResultDTO(3, 0, 0, 0, 0, 0, 0, 0, Map.of()));
         when(discovery.run()).thenReturn(new com.alexs.jobagent.source.dto.DiscoveryBatchDTO(
                 false, 0, 0, 0, 0, 0, 0, 0, 0, false));
         when(outbox.backlog()).thenReturn(new BacklogDTO(0, 0, 0, 0, 0));
@@ -77,6 +84,7 @@ class BatchPipelineServiceTest {
         assertEquals("BACKLOG_REMAINS", result.outcome());
         assertEquals(0, result.imported().sources());
         verify(sources, never()).importActive();
+        verify(himalayas, never()).runUntil(any());
         verify(producer, never()).publish(anyInt());
         verify(consumer, never()).consume(anyInt(), any());
     }
@@ -91,6 +99,41 @@ class BatchPipelineServiceTest {
         verify(evaluations, never()).shortlist(any(), anyInt(), any());
         var snapshot = pipeline.snapshot(profile, 20);
         assertEquals("EVALUATION_SWEEP", snapshot.outcome());
+    }
+
+    @Test
+    void failedHimalayasFiltersDoNotBlockHealthySourcesOrEventProcessing() {
+        when(sources.importActive()).thenReturn(new ActiveSourceImportResultDTO(1, 0, 1, 0, 0));
+        Instant deadline = Instant.parse("2026-01-01T00:10:00Z");
+        when(himalayas.runUntil(deadline)).thenReturn(new HimalayasImportResultDTO(
+                3, 0, 0, 0, 0, 0, 0, 0, Map.of("DE", "HTTP_503", "AT", "INVALID_RESPONSE")));
+        when(producer.publish(1)).thenReturn(new SqsBatchResultDTO(1, 0, 0, 0));
+        when(consumer.consume(1, profile)).thenReturn(new SqsEvaluationBatchDTO(1, 0, 0, 0));
+
+        var result = pipeline.runWithoutShortlist(profile, 1, Duration.ofMinutes(10), 20);
+
+        assertEquals("QUIESCENT_SNAPSHOT", result.outcome());
+        assertEquals(0, result.failed());
+        assertEquals(1, result.imported().created());
+        assertEquals(1, result.published());
+        assertEquals(1, result.evaluated());
+        var order = inOrder(sources, himalayas, producer, consumer);
+        order.verify(sources).importActive();
+        order.verify(himalayas).runUntil(deadline);
+        order.verify(producer).publish(1);
+        order.verify(consumer).consume(1, profile);
+    }
+
+    @Test
+    void propagatesHimalayasDatabaseFailureBeforePublication() {
+        when(sources.importActive()).thenReturn(new ActiveSourceImportResultDTO(1, 0, 1, 0, 0));
+        var failure = new DataAccessResourceFailureException("Synthetic database outage");
+        when(himalayas.runUntil(any())).thenThrow(failure);
+
+        assertSame(failure, assertThrows(DataAccessResourceFailureException.class,
+                () -> pipeline.runWithoutShortlist(profile, 1, Duration.ofMinutes(10), 20)));
+        verify(producer, never()).publish(anyInt());
+        verify(consumer, never()).consume(anyInt(), any());
     }
 
     @Test
@@ -171,7 +214,7 @@ class BatchPipelineServiceTest {
         Instant start = Instant.parse("2026-01-01T00:00:00Z");
         when(advancing.instant()).thenReturn(start, start.plusSeconds(901), start.plusSeconds(901));
         var bounded = new BatchPipelineService(sources, discovery, outbox, producer, consumer, queue,
-                evaluations, advancing);
+                evaluations, himalayas, advancing);
         when(sources.importActive()).thenReturn(new ActiveSourceImportResultDTO(1, 0, 1, 0, 0));
         var result = bounded.run(profile, 10, Duration.ofMinutes(10), 5);
         assertEquals("TIME_LIMIT", result.outcome());

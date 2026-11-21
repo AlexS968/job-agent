@@ -16,6 +16,7 @@ import com.alexs.jobagent.source.dto.ActiveSourceImportResultDTO;
 import com.alexs.jobagent.evaluation.dto.ShortlistDTO;
 import com.alexs.jobagent.source.service.SourceRegistryService;
 import com.alexs.jobagent.source.service.SourceDiscoveryService;
+import com.alexs.jobagent.source.service.HimalayasIntakeService;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -30,6 +31,7 @@ public class BatchPipelineService {
     private static final org.slf4j.Logger LOGGER = org.slf4j.LoggerFactory.getLogger(BatchPipelineService.class);
     private final SourceRegistryService sources;
     private final SourceDiscoveryService discovery;
+    private final HimalayasIntakeService himalayas;
     private final OutboxService outbox;
     private final SqsProducerService producer;
     private final SqsEvaluationConsumerService consumer;
@@ -39,7 +41,8 @@ public class BatchPipelineService {
 
     public BatchPipelineService(SourceRegistryService sources, SourceDiscoveryService discovery, OutboxService outbox,
                                 SqsProducerService producer, SqsEvaluationConsumerService consumer,
-                                SqsGateway queue, EvaluationService evaluations, Clock clock) {
+                                SqsGateway queue, EvaluationService evaluations, HimalayasIntakeService himalayas,
+                                Clock clock) {
         this.sources = sources;
         this.discovery = discovery;
         this.outbox = outbox;
@@ -47,6 +50,7 @@ public class BatchPipelineService {
         this.consumer = consumer;
         this.queue = queue;
         this.evaluations = evaluations;
+        this.himalayas = himalayas;
         this.clock = clock;
     }
 
@@ -70,6 +74,11 @@ public class BatchPipelineService {
                         + "review={}, retryable={}, listings_created={}, listings_updated={}, discovery_failures={}",
                 found.queries(), found.attempts(), found.leads(), found.confirmed(), found.activated(),
                 found.review(), found.retryable(), imported.created(), imported.updated(), found.failures());
+        var direct = himalayas.runUntil(deadline);
+        LOGGER.info("Batch Himalayas intake: requests={}, fetched={}, distinct={}, role_relevant={}, created={}, "
+                        + "updated={}, unchanged={}, failed_rows={}, failed_filters={}",
+                direct.requests(), direct.fetched(), direct.distinct(), direct.roleRelevant(), direct.created(),
+                direct.updated(), direct.unchanged(), direct.failed(), direct.failedFilters());
         SqsBatchResultDTO publication = new SqsBatchResultDTO(0, 0, 0, 0);
         SqsEvaluationBatchDTO consumption = new SqsEvaluationBatchDTO(0, 0, 0, 0);
         if (imported.failures() == 0 && found.failures() == 0) {
@@ -82,7 +91,8 @@ public class BatchPipelineService {
         var queued = queue.backlog();
         int failures = found.failures() + imported.failures() + publication.failed() + publication.deferred()
                 + consumption.failed();
-        String outcome = outcome(imported, publication, consumption, failures, pending, queued, deadline);
+        boolean vacanciesChanged = imported.created() + imported.updated() + direct.created() + direct.updated() > 0;
+        String outcome = outcome(vacanciesChanged, publication, consumption, failures, pending, queued, deadline);
         return new BatchPipelineResultDTO(outcome, imported, publication.processed(), consumption.evaluated(),
                 consumption.duplicates(), consumption.stale(), failures, pending, queued,
                 new ShortlistDTO(java.util.List.of(), java.util.List.of()));
@@ -150,7 +160,7 @@ public class BatchPipelineService {
         return new SqsEvaluationBatchDTO(evaluated, duplicates, stale, failed);
     }
 
-    private String outcome(ActiveSourceImportResultDTO imported, SqsBatchResultDTO publication,
+    private String outcome(boolean vacanciesChanged, SqsBatchResultDTO publication,
                            SqsEvaluationBatchDTO consumption, int failures, BacklogDTO pending,
                            SqsQueueBacklogDTO queued, Instant deadline) {
         if (failures > 0) {
@@ -165,8 +175,7 @@ public class BatchPipelineService {
         if (remaining > 0) {
             return "BACKLOG_REMAINS";
         }
-        if (imported.created() + imported.updated() == 0
-                && publication.processed() + consumption.evaluated() == 0) {
+        if (!vacanciesChanged && publication.processed() + consumption.evaluated() == 0) {
             return "NO_NEW_VACANCIES";
         }
         return "QUIESCENT_SNAPSHOT";
