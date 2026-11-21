@@ -7,7 +7,7 @@ import java.util.Set;
 /** Ordering hints only; neither a search URL nor this classification proves employer ownership. */
 public final class DiscoveryLeadPolicy {
     private static final Set<String> AGGREGATORS = Set.of("linkedin.com", "indeed.com",
-            "glassdoor.com", "wellfound.com", "remotefront.com", "devjobs.de", "devjobs.at");
+            "glassdoor.com", "wellfound.com", "remotefront.com", "devjobs.de", "devjobs.at", "himalayas.app");
     private static final Set<String> VENDOR_TOOLS = Set.of("greenhouse.com", "tavily.com");
     private static final Set<String> ATS_HOSTS = Set.of("boards.greenhouse.io", "job-boards.greenhouse.io",
             "jobs.lever.co", "jobs.eu.lever.co");
@@ -24,7 +24,7 @@ public final class DiscoveryLeadPolicy {
             if (isVendorTool(host)) {
                 return Kind.NON_EMPLOYER;
             }
-            if (ATS_HOSTS.contains(host)) {
+            if (ATS_HOSTS.contains(host) || AtsSourceIdentityParser.isGreenhouse(host)) {
                 return Kind.NON_EMPLOYER;
             }
             if (isAggregator(host)) {

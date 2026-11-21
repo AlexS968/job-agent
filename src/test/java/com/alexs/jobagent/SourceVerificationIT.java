@@ -63,7 +63,7 @@ class SourceVerificationIT {
 
     @BeforeEach
     void clear() {
-        jdbc.execute("TRUNCATE source_verification_attempts, source_verification_decisions, "
+        jdbc.execute("TRUNCATE vacancy_employer_leads, source_verification_attempts, source_verification_decisions, "
                 + "verified_source_registry, active_source_import_claims, "
                 + "source_discovery_candidates, search_pilot_attempts RESTART IDENTITY");
         jdbc.execute("TRUNCATE vacancy_sources, source_items, vacancies, employers, agent_runs RESTART IDENTITY CASCADE");

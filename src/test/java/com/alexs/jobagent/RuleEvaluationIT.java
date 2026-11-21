@@ -26,6 +26,7 @@ import com.alexs.jobagent.outbox.mapper.SqsEventMapper;
 import com.alexs.jobagent.outbox.service.SqsGateway;
 import com.alexs.jobagent.outbox.service.SqsProducerService;
 import com.alexs.jobagent.source.dto.ActiveSourceImportResultDTO;
+import com.alexs.jobagent.source.service.EmployerMonitoringService;
 import com.alexs.jobagent.source.service.SourceRegistryService;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -97,7 +98,7 @@ class RuleEvaluationIT {
 
     @Test
     void migrationReplayVersionsAndStaleEvaluations() throws Exception {
-        assertEquals(27, jdbc.queryForObject("SELECT count(*) FROM flyway_schema_history", Integer.class));
+        assertEquals(28, jdbc.queryForObject("SELECT count(*) FROM flyway_schema_history", Integer.class));
         long vacancy = insert("Backend Engineer", COUNTRY_REMOTE);
         LoadedProfileDTO v1 = profile("v1", "Backend Engineer");
         assertEquals(1, evaluation.evaluate(v1, 0, 100, RuleEvaluationPolicy.VERSION).created());
@@ -169,7 +170,7 @@ class RuleEvaluationIT {
         when(himalayas.runUntil(org.mockito.ArgumentMatchers.any())).thenReturn(
                 new com.alexs.jobagent.source.dto.HimalayasImportResultDTO(3, 0, 0, 0, 0, 0, 0, 0, java.util.Map.of()));
         var pipeline = new BatchPipelineService(sources, discovery, outbox, producer, consumer, queue,
-                evaluation, himalayas, clock);
+                evaluation, himalayas, mock(EmployerMonitoringService.class), clock);
         var scheduledRepository = new ScheduledBatchRepository(jdbc);
         var formatter = new BatchReportFormatter();
         var scheduled = new ScheduledBatchService(scheduledRepository,
