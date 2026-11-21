@@ -25,6 +25,7 @@ import com.alexs.jobagent.outbox.service.SqsProducerService;
 import com.alexs.jobagent.outbox.mapper.SqsEventMapper;
 import com.alexs.jobagent.outbox.repository.ConsumerDeliveryRepository;
 import com.alexs.jobagent.source.dto.SyntheticInputDTO;
+import com.alexs.jobagent.source.service.EmployerMonitoringService;
 import com.alexs.jobagent.source.service.BoundedSourceHttpTransport;
 import com.alexs.jobagent.source.service.HimalayasIntakeService;
 import com.alexs.jobagent.source.service.SyntheticIngestionService;
@@ -99,7 +100,7 @@ class SqsEvaluationIT {
         Queue queue = new Queue();
         var pipeline = new BatchPipelineService(registry, discovery, outbox,
                 new SqsProducerService(outbox, queue, json, mapper),
-                consumer(queue), queue, evaluations, himalayas, clock);
+                consumer(queue), queue, evaluations, himalayas, mock(EmployerMonitoringService.class), clock);
         var selected = profile("v1");
         var first = pipeline.run(selected, 10, Duration.ofMinutes(10), 5);
         assertEquals(1, first.published());
@@ -125,7 +126,7 @@ class SqsEvaluationIT {
         Queue queue = new Queue();
         var pipeline = new BatchPipelineService(registry, discovery, outbox,
                 new SqsProducerService(outbox, queue, json, mapper), consumer(queue), queue,
-                evaluations, himalayas, clock);
+                evaluations, himalayas, mock(EmployerMonitoringService.class), clock);
         var reports = mock(ReportGateway.class);
         when(reports.publish(any(), any())).thenReturn("synthetic-report");
         var repository = new ScheduledBatchRepository(jdbc);

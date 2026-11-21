@@ -14,6 +14,7 @@ import com.alexs.jobagent.outbox.service.SqsGateway;
 import com.alexs.jobagent.outbox.service.SqsProducerService;
 import com.alexs.jobagent.source.dto.ActiveSourceImportResultDTO;
 import com.alexs.jobagent.source.dto.HimalayasImportResultDTO;
+import com.alexs.jobagent.source.service.EmployerMonitoringService;
 import com.alexs.jobagent.source.service.HimalayasIntakeService;
 import com.alexs.jobagent.source.service.SourceRegistryService;
 import java.time.Clock;
@@ -31,6 +32,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
@@ -43,6 +45,7 @@ class BatchPipelineServiceTest {
             mock(com.alexs.jobagent.source.service.SourceDiscoveryService.class);
     private final OutboxService outbox = mock(OutboxService.class);
     private final HimalayasIntakeService himalayas = mock(HimalayasIntakeService.class);
+    private final EmployerMonitoringService employers = mock(EmployerMonitoringService.class);
     private final SqsProducerService producer = mock(SqsProducerService.class);
     private final SqsEvaluationConsumerService consumer = mock(SqsEvaluationConsumerService.class);
     private final SqsGateway queue = mock(SqsGateway.class);
@@ -52,7 +55,7 @@ class BatchPipelineServiceTest {
 
     @BeforeEach
     void setup() {
-        pipeline = new BatchPipelineService(sources, discovery, outbox, producer, consumer, queue, evaluations, himalayas,
+        pipeline = new BatchPipelineService(sources, discovery, outbox, producer, consumer, queue, evaluations, himalayas, employers,
                 Clock.fixed(Instant.parse("2026-01-01T00:00:00Z"), ZoneOffset.UTC));
         when(himalayas.runUntil(any())).thenReturn(new HimalayasImportResultDTO(3, 0, 0, 0, 0, 0, 0, 0, Map.of()));
         when(discovery.run()).thenReturn(new com.alexs.jobagent.source.dto.DiscoveryBatchDTO(
@@ -117,11 +120,12 @@ class BatchPipelineServiceTest {
         assertEquals(1, result.imported().created());
         assertEquals(1, result.published());
         assertEquals(1, result.evaluated());
-        var order = inOrder(sources, himalayas, producer, consumer);
+        var order = inOrder(sources, himalayas, producer, consumer, employers);
         order.verify(sources).importActive();
         order.verify(himalayas).runUntil(deadline);
         order.verify(producer).publish(1);
         order.verify(consumer).consume(1, profile);
+        order.verify(employers).runUntil(eq(deadline), any());
     }
 
     @Test
@@ -150,6 +154,18 @@ class BatchPipelineServiceTest {
         assertEquals(1, result.stale());
         assertEquals(2, result.published());
         assertEquals(1, result.queue().inFlight());
+    }
+
+    @Test
+    void unavailableBoardDoesNotBlockDeliveryOfHealthyImports() {
+        when(sources.importActive()).thenReturn(new ActiveSourceImportResultDTO(2, 1, 1, 0, 0, 1));
+        when(producer.publish(1)).thenReturn(new SqsBatchResultDTO(1, 0, 0, 0));
+        when(consumer.consume(1, profile)).thenReturn(new SqsEvaluationBatchDTO(1, 0, 0, 0));
+        var result = pipeline.run(profile, 1, Duration.ofMinutes(10), 5);
+        assertEquals("QUIESCENT_SNAPSHOT", result.outcome());
+        assertEquals(1, result.imported().failures());
+        assertEquals(1, result.published());
+        assertEquals(1, result.evaluated());
     }
 
     @Test
@@ -214,7 +230,7 @@ class BatchPipelineServiceTest {
         Instant start = Instant.parse("2026-01-01T00:00:00Z");
         when(advancing.instant()).thenReturn(start, start.plusSeconds(901), start.plusSeconds(901));
         var bounded = new BatchPipelineService(sources, discovery, outbox, producer, consumer, queue,
-                evaluations, himalayas, advancing);
+                evaluations, himalayas, employers, advancing);
         when(sources.importActive()).thenReturn(new ActiveSourceImportResultDTO(1, 0, 1, 0, 0));
         var result = bounded.run(profile, 10, Duration.ofMinutes(10), 5);
         assertEquals("TIME_LIMIT", result.outcome());

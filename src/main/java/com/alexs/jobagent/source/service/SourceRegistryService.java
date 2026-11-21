@@ -68,6 +68,7 @@ public class SourceRegistryService {
         requireNoAmbientTransaction();
         int sources = 0;
         int failures = 0;
+        int unavailable = 0;
         int created = 0;
         int updated = 0;
         int unchanged = 0;
@@ -78,11 +79,13 @@ public class SourceRegistryService {
                 Optional<VerifiedSourceEntity> source = eligibleSource(claim.source().id());
                 if (source.isEmpty()) {
                     failures++;
+                    unavailable++;
                     continue;
                 }
                 sources++;
                 var result = importSource(source.orElseThrow());
                 failures += result.failures();
+                unavailable += result.unavailableSources();
                 created += result.created();
                 updated += result.updated();
                 unchanged += result.unchanged();
@@ -94,7 +97,7 @@ public class SourceRegistryService {
         LOGGER.info("Candidate assessment: observed_listings={}, role_candidates={}, review={}, other_roles={}, policy={}",
                 assessed.observed(), assessed.candidates(), assessed.review(), assessed.notCandidates(),
                 com.alexs.jobagent.vacancy.service.CandidateAssessmentPolicy.VERSION);
-        return new ActiveSourceImportResultDTO(sources, failures, created, updated, unchanged);
+        return new ActiveSourceImportResultDTO(sources, failures, created, updated, unchanged, unavailable);
     }
 
     private Optional<VerifiedSourceEntity> eligibleSource(long id) {
@@ -113,16 +116,17 @@ public class SourceRegistryService {
         });
     }
 
+    // Each call imports exactly one board. With no fetched listings, a failure precedes persistence.
     private ActiveSourceImportResultDTO importSource(VerifiedSourceEntity source) {
         if ("GREENHOUSE".equals(source.platform())) {
             var result = greenhouse.run(source.sourceId() + "|" + source.employerName());
             return new ActiveSourceImportResultDTO(0, result.failed() + result.rejected(),
-                    result.created(), result.updated(), result.unchanged());
+                    result.created(), result.updated(), result.unchanged(), result.fetched() == 0 ? result.failed() : 0);
         }
         if ("LEVER".equals(source.platform())) {
             var result = lever.run(source.region() + "|" + source.sourceId() + "|" + source.employerName());
             return new ActiveSourceImportResultDTO(0, result.failed() + result.rejected(),
-                    result.created(), result.updated(), result.unchanged());
+                    result.created(), result.updated(), result.unchanged(), result.fetched() == 0 ? result.failed() : 0);
         }
         return new ActiveSourceImportResultDTO(0, 1, 0, 0, 0);
     }

@@ -76,6 +76,7 @@ class LinkedInIntakeIT {
     @Autowired GmailCutoverService cutover;
     @Autowired LinkedInIntakeService intake;
     @Autowired LinkedInRepairService repair;
+    @Autowired com.alexs.jobagent.source.service.EmployerMonitoringService monitoring;
     @Autowired SyntheticMailbox mailbox;
     @Autowired JdbcTemplate jdbc;
     @Autowired JsonMapper json;
@@ -463,6 +464,12 @@ class LinkedInIntakeIT {
                 AND advertised_location='Belgium (Hybrid)' AND parsed_direction='UNKNOWN'
                 """));
 
+        // The named, repaired card can seed monitoring independently of mailbox writes or a company URL.
+        var disabled = new com.alexs.jobagent.source.dto.DiscoveryBatchDTO(false, 0, 0, 0, 0, 0, 0, 0, 0, false);
+        monitoring.runUntil(java.time.Instant.MAX, disabled);
+        monitoring.runUntil(java.time.Instant.MAX, disabled);
+        assertEquals(1, count("vacancy_employer_leads WHERE advertised_name='Example Works'"
+                + " AND status='WAITING_FOR_SEARCH' AND attempts=0 AND registry_id IS NULL"));
         mailbox.failingId = "legacy";  // Replay must skip the Gmail fetch.
         assertEquals(1, repair.repair(List.of("legacy")).skipped());
         assertEquals(original, jdbc.queryForMap("SELECT id,source_item_id,fetched_at,raw_payload::text FROM source_items"));

@@ -17,6 +17,7 @@ import com.alexs.jobagent.evaluation.dto.ShortlistDTO;
 import com.alexs.jobagent.source.service.SourceRegistryService;
 import com.alexs.jobagent.source.service.SourceDiscoveryService;
 import com.alexs.jobagent.source.service.HimalayasIntakeService;
+import com.alexs.jobagent.source.service.EmployerMonitoringService;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -37,12 +38,13 @@ public class BatchPipelineService {
     private final SqsEvaluationConsumerService consumer;
     private final SqsGateway queue;
     private final EvaluationService evaluations;
+    private final EmployerMonitoringService employers;
     private final Clock clock;
 
     public BatchPipelineService(SourceRegistryService sources, SourceDiscoveryService discovery, OutboxService outbox,
                                 SqsProducerService producer, SqsEvaluationConsumerService consumer,
                                 SqsGateway queue, EvaluationService evaluations, HimalayasIntakeService himalayas,
-                                Clock clock) {
+                                EmployerMonitoringService employers, Clock clock) {
         this.sources = sources;
         this.discovery = discovery;
         this.outbox = outbox;
@@ -52,6 +54,7 @@ public class BatchPipelineService {
         this.evaluations = evaluations;
         this.himalayas = himalayas;
         this.clock = clock;
+        this.employers = employers;
     }
 
     public BatchPipelineResultDTO run(LoadedProfileDTO profile, int maxEvents, Duration duration, int shortlistLimit) {
@@ -71,9 +74,10 @@ public class BatchPipelineService {
         var imported = sources.importActive();
         LOGGER.info(
                 "Source coverage: searches={}, requests={}, leads={}, confirmed={}, activated={}, "
-                        + "review={}, retryable={}, listings_created={}, listings_updated={}, discovery_failures={}",
+                        + "review={}, retryable={}, listings_created={}, listings_updated={}, discovery_failures={}, unavailable_boards={}",
                 found.queries(), found.attempts(), found.leads(), found.confirmed(), found.activated(),
-                found.review(), found.retryable(), imported.created(), imported.updated(), found.failures());
+                found.review(), found.retryable(), imported.created(), imported.updated(), found.failures(),
+                imported.unavailableSources());
         var direct = himalayas.runUntil(deadline);
         LOGGER.info("Batch Himalayas intake: requests={}, fetched={}, distinct={}, role_relevant={}, created={}, "
                         + "updated={}, unchanged={}, failed_rows={}, failed_filters={}",
@@ -81,15 +85,16 @@ public class BatchPipelineService {
                 direct.updated(), direct.unchanged(), direct.failed(), direct.failedFilters());
         SqsBatchResultDTO publication = new SqsBatchResultDTO(0, 0, 0, 0);
         SqsEvaluationBatchDTO consumption = new SqsEvaluationBatchDTO(0, 0, 0, 0);
-        if (imported.failures() == 0 && found.failures() == 0) {
+        if (imported.blockingFailures() == 0 && found.failures() == 0) {
             publication = publishBatches(maxEvents, deadline);
             if (publication.failed() == 0 && publication.deferred() == 0) {
                 consumption = consumeBatches(profile, maxEvents, deadline);
             }
         }
+        employers.runUntil(deadline, found);
         var pending = outbox.backlog();
         var queued = queue.backlog();
-        int failures = found.failures() + imported.failures() + publication.failed() + publication.deferred()
+        int failures = found.failures() + imported.blockingFailures() + publication.failed() + publication.deferred()
                 + consumption.failed();
         boolean vacanciesChanged = imported.created() + imported.updated() + direct.created() + direct.updated() > 0;
         String outcome = outcome(vacanciesChanged, publication, consumption, failures, pending, queued, deadline);

@@ -9,6 +9,8 @@ import com.alexs.jobagent.source.entity.VerificationDecisionEntity;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
+import java.time.Instant;
+import java.time.Duration;
 import java.util.List;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
@@ -100,10 +102,12 @@ public class SourceRegistryRepository {
 
     public void refreshVerified(long id, SourceVerificationDTO result, boolean active) {
         jdbc.update("""
-                UPDATE verified_source_registry SET employer_name = ?, official_page_url = ?, evidence_url = ?,
-                evidence_hash = ?, verified_at = ?, status = 'VERIFIED', active = ? WHERE id = ?
-                """, result.employerName(), result.officialPageUrl(), result.observedUrl(), result.evidenceHash(),
-                Timestamp.from(result.observedAt()), active, id);
+                UPDATE verified_source_registry SET employer_name =
+                    CASE WHEN ?='automated-official-page' THEN employer_name ELSE ? END, official_page_url = ?, evidence_url = ?,
+                evidence_hash = ?, verified_at = ?, status = 'VERIFIED', active = ?,
+                    renew_after = CASE WHEN renew_after IS NOT NULL THEN ?::timestamptz END WHERE id = ?
+                """, result.origin(), result.employerName(), result.officialPageUrl(), result.observedUrl(), result.evidenceHash(),
+                Timestamp.from(result.observedAt()), active, Timestamp.from(result.observedAt().plus(Duration.ofDays(21))), id);
     }
 
     public void markReview(long id) {
@@ -185,6 +189,35 @@ public class SourceRegistryRepository {
     }
 
     public record SourceClaim(VerifiedSourceEntity source, java.util.UUID token) { }
+
+    public record RenewalClaim(VerifiedSourceEntity source, Instant retryAfter) { }
+
+    public void activateAutomatically(long id, Instant observed) {
+        jdbc.update("UPDATE verified_source_registry SET active=TRUE, renew_after=? WHERE id=?",
+                Timestamp.from(observed.plus(Duration.ofDays(21))), id);
+    }
+
+    /** The retry time also fences this attempt if a worker stops during the HTTP request. */
+    public RenewalClaim claimRenewal(Instant now, Instant oldestValid) {
+        Instant retryAfter = now.plus(Duration.ofDays(1)).truncatedTo(java.time.temporal.ChronoUnit.MICROS);
+        return jdbc.query("""
+                WITH due AS (
+                    SELECT id FROM verified_source_registry
+                    WHERE active AND status='VERIFIED' AND renew_after <= ? AND verified_at >= ?
+                    ORDER BY renew_after,id LIMIT 1 FOR UPDATE SKIP LOCKED
+                )
+                UPDATE verified_source_registry s SET renew_after=? FROM due WHERE s.id=due.id RETURNING s.*
+                """, rs -> rs.next() ? new RenewalClaim(map(rs), retryAfter) : null,
+                Timestamp.from(now), Timestamp.from(oldestValid), Timestamp.from(retryAfter));
+    }
+
+    public boolean lockCurrentRenewal(RenewalClaim claim) {
+        return !jdbc.queryForList("""
+                SELECT id FROM verified_source_registry WHERE id=? AND active AND status='VERIFIED'
+                  AND verified_at=? AND renew_after=? FOR UPDATE
+                """, Long.class, claim.source().id(), Timestamp.from(claim.source().verifiedAt()),
+                Timestamp.from(claim.retryAfter())).isEmpty();
+    }
 
     public void setActive(long id, boolean active) {
         jdbc.update("UPDATE verified_source_registry SET active = ? WHERE id = ?", active, id);

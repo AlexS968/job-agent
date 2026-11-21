@@ -89,6 +89,12 @@ public class SearchPilotService {
                 remainingAttempts, false);
     }
 
+    /** One Basic request, with no inline retries. The employer lead owns deferred retry. */
+    SearchPilotResultDTO searchMonthlyEmployer(String name) {
+        var query = new SearchQueryDTO(name + " official company careers", null, "en", 3);
+        return runQueries(List.of(query), "source-coverage-employer-v1", currentPeriod(), 1, false);
+    }
+
     private java.time.LocalDate currentPeriod() {
         return java.time.LocalDate.now(clock.withZone(java.time.ZoneOffset.UTC)).withDayOfMonth(1);
     }
@@ -133,7 +139,7 @@ public class SearchPilotService {
             if (failure == null) {
                 return QueryOutcome.NEXT;
             }
-            QueryOutcome decision = handleFailure(failure, retry, state);
+            QueryOutcome decision = handleFailure(failure, state.attempts == attemptLimit ? 3 : retry, state);
             if (decision != QueryOutcome.RETRY) {
                 return decision;
             }
