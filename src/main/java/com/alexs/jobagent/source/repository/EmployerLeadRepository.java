@@ -46,7 +46,7 @@ public class EmployerLeadRepository {
                 r.getString("description")));
     }
 
-    public void record(Observation row, boolean relevant, String reason) {
+    public void saveObservation(Observation row, boolean relevant, String reason) {
         jdbc.update("""
                 INSERT INTO vacancy_employer_leads
                 (vacancy_id, source_item_id, advertised_name, posting_url, site_hint, apply_hint, status, reason)

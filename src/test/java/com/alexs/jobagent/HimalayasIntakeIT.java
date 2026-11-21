@@ -19,6 +19,8 @@ import com.alexs.jobagent.source.dto.HimalayasImportResultDTO;
 import com.alexs.jobagent.source.dto.DiscoveryBatchDTO;
 import com.alexs.jobagent.source.dto.SearchResponseDTO;
 import com.alexs.jobagent.source.dto.SearchResultDTO;
+import com.alexs.jobagent.source.exception.SearchFailureException;
+import com.alexs.jobagent.source.exception.VerificationFetchException;
 import com.alexs.jobagent.source.service.EmployerMonitoringService;
 import com.alexs.jobagent.source.service.SafeHtmlFetcher;
 import com.alexs.jobagent.source.service.SearchGateway;
@@ -274,7 +276,7 @@ class HimalayasIntakeIT {
         namedSite("publisher.example", "<a href='https://jobs.lever.co/exampleboard'>Jobs</a>");
         discover(false, 0);
         when(clock.instant()).thenReturn(OBSERVED.plus(Duration.ofDays(29)));
-        when(pages.fetch(careers)).thenThrow(new com.alexs.jobagent.source.exception.VerificationFetchException(
+        when(pages.fetch(careers)).thenThrow(new VerificationFetchException(
                 "HTTP_SERVER_ERROR", 1, 503, 0));
         discover(false, 0);
         discover(false, 0);
@@ -323,7 +325,7 @@ class HimalayasIntakeIT {
         storeNamedPosting(null);
         searchHosts("unrelated.example", "publisher.example");
         when(pages.fetch("https://unrelated.example/")).thenThrow(
-                new com.alexs.jobagent.source.exception.VerificationFetchException("HTTP_PERMANENT", 1, 403, 0));
+                new VerificationFetchException("HTTP_PERMANENT", 1, 403, 0));
         namedSite("publisher.example", "<a href='https://jobs.lever.co/exampleboard'>Jobs</a>");
         discover(true, 4);
         var order = org.mockito.Mockito.inOrder(pages);
@@ -366,7 +368,7 @@ class HimalayasIntakeIT {
         storeNamedPosting("https://publisher.example/apply");
         String careers = "https://publisher.example/careers";
         namedSite("publisher.example", "<p>Send an application by post.</p>");
-        when(pages.fetch(careers)).thenThrow(new com.alexs.jobagent.source.exception.VerificationFetchException(
+        when(pages.fetch(careers)).thenThrow(new VerificationFetchException(
                 "HTTP_SERVER_ERROR", 1, 503, 0)).thenReturn(html(careers, "<p>Send an application by post.</p>"));
         discover(false, 0);
         discover(false, 0);
@@ -377,6 +379,113 @@ class HimalayasIntakeIT {
                 + " AND reason='NO_SUPPORTED_LINK' AND official_page_url=?", careers));
         assertEquals(0, count("verified_source_registry"));
         assertEquals(1, count("vacancies"));
+    }
+
+    @Test
+    void unconfirmedWebsiteHintFallsBackToSearchForTheSameLead() throws Exception {
+        storeNamedPosting("https://unrelated.example/apply");
+        when(pages.fetch("https://unrelated.example/")).thenReturn(html(
+                "https://unrelated.example/", "<title>Unrelated</title><a href='/careers'>Careers</a>"));
+        discover(false, 0);
+        assertEquals(1, count("vacancy_employer_leads WHERE status='WAITING_FOR_SEARCH'"
+                + " AND reason='SITE_HINT_UNCONFIRMED' AND needs_search AND attempts=0"));
+        verify(pages, org.mockito.Mockito.never()).fetch("https://unrelated.example/careers");
+        org.mockito.Mockito.verifyNoInteractions(gateway);
+
+        jdbc.update("UPDATE vacancy_employer_leads SET due_at=now()");
+        searchHosts("linkedin.com", "publisher.example");
+        when(pages.fetch("https://publisher.example/")).thenReturn(html("https://publisher.example/",
+                "<title>Example</title><a href='https://jobs.lever.co/exampleboard'>Careers</a>"));
+        discover(true, 4);
+        assertEquals(1, count("vacancy_employer_leads WHERE status='VERIFIED' AND attempts=1"));
+        assertEquals(1, count("verified_source_registry WHERE active AND official_page_url='https://publisher.example/'"));
+        verify(pages, org.mockito.Mockito.never()).fetch("https://linkedin.com/");
+    }
+
+    @Test
+    void exhaustedMonthlyBudgetLeavesEmployerWaitingWithoutProviderRequest() throws Exception {
+        storeNamedPosting(null);
+        searchHosts("publisher.example");
+        jdbc.update("INSERT INTO search_monthly_budget(period_start,reserved_attempts) VALUES (DATE '2026-11-01',120)");
+        discover(true, 4);
+        assertEquals(1, count("vacancy_employer_leads WHERE status='WAITING_FOR_SEARCH'"
+                + " AND reason='MONTHLY_SEARCH_LIMIT' AND attempts=0"));
+        assertEquals(0, count("search_pilot_attempts"));
+        org.mockito.Mockito.verifyNoInteractions(gateway, pages);
+    }
+
+    @Test
+    void failedEmployerSearchIsChargedOnceAndRetryRemainsDeferred() throws Exception {
+        storeNamedPosting(null);
+        when(clock.withZone(java.time.ZoneOffset.UTC)).thenReturn(Clock.fixed(OBSERVED, java.time.ZoneOffset.UTC));
+        when(gateway.search(any())).thenThrow(new SearchFailureException(SearchFailureException.Kind.TRANSIENT, null, null));
+        discover(true, 4);
+        discover(true, 4);
+        assertEquals(1, count("vacancy_employer_leads WHERE status='RETRYABLE_FAILURE'"
+                + " AND reason='EMPLOYER_SEARCH_FAILED' AND attempts=1"));
+        assertEquals(1, count("search_monthly_budget WHERE reserved_attempts=1"));
+        verify(gateway, times(1)).search(any());
+        org.mockito.Mockito.verifyNoInteractions(pages);
+    }
+
+    @Test
+    void conflictingPostingBoardHintsGoToReviewBeforeNetworkWork() throws Exception {
+        var posting = new HashMap<>(job(POSTING_URL, "Software Engineer", "Develop Java backend services.", List.of()));
+        posting.put("companyWebsite", "https://jobs.lever.co/first");
+        posting.put("applicationLink", "https://jobs.lever.co/second");
+        respond(page(posting), page(), page());
+        assertEquals(1, intake.run().created());
+        discover(true, 4);
+        assertEquals(1, count("vacancy_employer_leads WHERE status='MANUAL_REVIEW'"
+                + " AND reason='CONFLICTING_BOARD_HINTS'"));
+        org.mockito.Mockito.verifyNoInteractions(gateway, pages);
+    }
+
+    @Test
+    void conflictingCareersEvidenceOverridesAnEarlierConfirmedHost() throws Exception {
+        storeNamedPosting(null);
+        searchHosts("first.example", "second.example");
+        namedSite("first.example", "<a href='https://jobs.lever.co/first'>Jobs</a>");
+        namedSite("second.example", "<a href='https://jobs.lever.co/second'>Jobs</a>"
+                + "<a href='https://jobs.ashbyhq.com/second'>Other jobs</a>");
+        discover(true, 4);
+        assertEquals(1, count("vacancy_employer_leads WHERE status='MANUAL_REVIEW' AND reason='MIXED_PLATFORM_LINKS'"));
+        assertEquals(0, count("verified_source_registry"));
+    }
+
+    @Test
+    void matchingCareersRedirectRefreshesTheVerifiedBoard() throws Exception {
+        storeNamedPosting("https://publisher.example/apply");
+        String careers = "https://publisher.example/careers";
+        URI board = URI.create("https://jobs.lever.co/exampleboard");
+        namedSite("publisher.example", "");
+        when(pages.fetch(careers)).thenReturn(new SafeHtmlFetcher.FetchResult(URI.create(careers), board, null, 1, 302, 1));
+        discover(false, 0);
+
+        Instant renewedAt = OBSERVED.plus(Duration.ofDays(24));
+        when(clock.instant()).thenReturn(renewedAt);
+        discover(false, 0);
+        assertEquals(1, count("verified_source_registry WHERE active AND verified_at=?",
+                java.sql.Timestamp.from(renewedAt)));
+        verify(pages, times(2)).fetch(careers);
+        verify(pages, times(1)).fetch("https://publisher.example/");
+    }
+
+    @Test
+    void renewalWithMixedPlatformsRequiresReviewEvenWhenTheOriginalBoardIsPresent() throws Exception {
+        storeNamedPosting("https://publisher.example/apply");
+        String careers = "https://publisher.example/careers";
+        String original = "<a href='https://jobs.lever.co/exampleboard'>Jobs</a>";
+        namedSite("publisher.example", original);
+        discover(false, 0);
+
+        when(clock.instant()).thenReturn(OBSERVED.plus(Duration.ofDays(24)));
+        when(pages.fetch(careers)).thenReturn(html(careers,
+                original + "<a href='https://jobs.ashbyhq.com/exampleboard'>Other jobs</a>"));
+        discover(false, 0);
+        assertEquals(1, count("verified_source_registry WHERE NOT active AND status='MANUAL_REVIEW'"));
+        assertEquals(1, count("source_verification_attempts WHERE origin='automatic-board-renewal'"
+                + " AND reason='MIXED_PLATFORM_LINKS'"));
     }
 
     private void discover(boolean searchEnabled, int previousAttempts) {

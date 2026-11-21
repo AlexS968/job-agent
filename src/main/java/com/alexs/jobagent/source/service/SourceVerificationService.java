@@ -26,6 +26,7 @@ import java.util.Locale;
 import java.util.Set;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Element;
+import org.jsoup.nodes.Document;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -44,6 +45,25 @@ public class SourceVerificationService {
     private static final String MANUAL_REVIEW_OUTCOME = "MANUAL_REVIEW";
     private static final String CONFLICT_DECISION = "CONFLICT";
     private static final String SUPERSEDED_OBSERVATION = "SUPERSEDED_OBSERVATION";
+    private static final String AUTOMATED_OFFICIAL_PAGE = "automated-official-page";
+    private static final String BOARD_RENEWAL = "automatic-board-renewal";
+    private static final String RETRYABLE_FAILURE = "RETRYABLE_FAILURE";
+    private static final String REJECTED = "REJECTED";
+    private static final String AMBIGUOUS_LINKS = "AMBIGUOUS_LINKS";
+    private static final String MIXED_PLATFORM_LINKS = "MIXED_PLATFORM_LINKS";
+    private static final String BATCH_DEADLINE = "BATCH_DEADLINE";
+    static final String EMPLOYER_NAME_UNCONFIRMED = "EMPLOYER_NAME_UNCONFIRMED";
+    private static final String CONFLICTING_EMPLOYER_EVIDENCE = "CONFLICTING_EMPLOYER_EVIDENCE";
+    private static final String HOMEPAGE_EXTERNAL_REDIRECT = "HOMEPAGE_EXTERNAL_REDIRECT";
+    private static final String EXTERNAL_REDIRECT = "EXTERNAL_REDIRECT";
+    private static final String TOO_MANY_LINKS = "TOO_MANY_LINKS";
+    private static final String NO_SUPPORTED_LINK = "NO_SUPPORTED_LINK";
+    private static final String UNSUPPORTED_PLATFORM = "UNSUPPORTED_PLATFORM";
+    private static final String UNSUPPORTED = "UNSUPPORTED";
+    private static final String UNSAFE_OFFICIAL_PAGE = "UNSAFE_OFFICIAL_PAGE";
+    private static final String REQUIRES_REVIEW = "REQUIRES_REVIEW";
+    private static final String EQUAL_TIME_CONFLICT = "EQUAL_TIME_CONFLICT";
+    private static final String BOARD_LINK_SELECTOR = "a[href],iframe[src],script[src]";
     private final SafeHtmlFetcher fetcher;
     private final SourceRegistryRepository repository;
     private final Clock clock;
@@ -121,13 +141,13 @@ public class SourceVerificationService {
             return new AutomaticVerificationDTO(persisted, leadOutcome,
                     !wasActive && repository.activeIdentity(persisted.identity()));
         });
-        String reason = "MANUAL_REVIEW".equals(completed.leadOutcome())
-                && "RETRYABLE_FAILURE".equals(result.outcome()) ? "RETRY_EXHAUSTED" : result.reason();
+        String reason = MANUAL_REVIEW_OUTCOME.equals(completed.leadOutcome())
+                && RETRYABLE_FAILURE.equals(result.outcome()) ? "RETRY_EXHAUSTED" : result.reason();
         LOGGER.info("Discovery verification: lead_id={}, stage={}, host={}, http_status={}, redirects={}, "
                         + "elapsed_ms={}, requests={}, retryable={}, links={}, link_limit={}, outcome={}, reason={}",
                 claim.id(), trace.stage, trace.host, trace.httpStatus, trace.redirects,
                 java.time.Duration.ofNanos(System.nanoTime() - started).toMillis(), result.requests(),
-                "RETRYABLE_FAILURE".equals(completed.leadOutcome()), trace.linkCount, trace.linkLimit,
+                RETRYABLE_FAILURE.equals(completed.leadOutcome()), trace.linkCount, trace.linkLimit,
                 completed.leadOutcome(), reason);
         return completed;
     }
@@ -188,26 +208,26 @@ public class SourceVerificationService {
                 } else if (!matching.domain().equals(evidence.domain())) {
                     conflict = true;
                 }
-            } else if ("RETRYABLE_FAILURE".equals(evidence.outcome())) {
+            } else if (RETRYABLE_FAILURE.equals(evidence.outcome())) {
                 retryable = true;
-            } else if ("AMBIGUOUS_LINKS".equals(evidence.reason())
-                    || "MIXED_PLATFORM_LINKS".equals(evidence.reason())) {
+            } else if (AMBIGUOUS_LINKS.equals(evidence.reason())
+                    || MIXED_PLATFORM_LINKS.equals(evidence.reason())) {
                 conflict = true;
             }
         }
         if (conflict) {
             return automaticFailure(url, observed, MANUAL_REVIEW_OUTCOME,
-                    "CONFLICTING_EMPLOYER_EVIDENCE", evidenceRequests);
+                    CONFLICTING_EMPLOYER_EVIDENCE, evidenceRequests);
         }
         if (retryable) {
-            return automaticFailure(url, observed, "RETRYABLE_FAILURE", "EVIDENCE_FETCH_INCOMPLETE",
+            return automaticFailure(url, observed, RETRYABLE_FAILURE, "EVIDENCE_FETCH_INCOMPLETE",
                     evidenceRequests);
         }
         if (matching != null) {
             return automaticResult(url, observed, matching);
         }
         if (lookupLimit != null) {
-            return automaticFailure(url, observed, "RETRYABLE_FAILURE", lookupLimit, evidenceRequests);
+            return automaticFailure(url, observed, RETRYABLE_FAILURE, lookupLimit, evidenceRequests);
         }
         return automaticFailure(url, observed, MANUAL_REVIEW_OUTCOME,
                 hosts.isEmpty() ? "NO_INDEPENDENT_EMPLOYER_EVIDENCE" : "ATS_ASSOCIATION_NOT_FOUND",
@@ -216,12 +236,12 @@ public class SourceVerificationService {
 
     private SourceVerificationDTO automaticFailure(String url, Instant observed, String outcome,
                                                     String reason, int requests) {
-        return result(new SourceCandidateDTO(url, "automated-official-page", null, null, null),
+        return result(new SourceCandidateDTO(url, AUTOMATED_OFFICIAL_PAGE, null, null, null),
                 observed, outcome, reason, null, null, requests);
     }
 
     private SourceVerificationDTO automaticResult(String url, Instant observed, HostEvidence evidence) {
-        return result(new SourceCandidateDTO(url, "automated-official-page", evidence.domain(),
+        return result(new SourceCandidateDTO(url, AUTOMATED_OFFICIAL_PAGE, evidence.domain(),
                 evidence.pageUrl(), evidence.domain()), observed, evidence.outcome(), evidence.reason(),
                 evidence.identity(), evidence.observedUrl(), evidence.requests());
     }
@@ -230,48 +250,53 @@ public class SourceVerificationService {
     SourceVerificationDTO inspectEmployer(String posting, String name, Set<String> hosts, AtsSourceIdentityDTO expected,
                                          Instant deadline) {
         Instant observed = clock.instant().truncatedTo(ChronoUnit.MICROS);
+        var trace = new VerificationTrace();
+        trace.deadline = deadline;
         HostEvidence match = null;
         HostEvidence failure = null;
         int requests = 0;
-        for (String host : hosts) {
-            if (isNonEmployerHost(host)) {
-                continue;
-            }
-            var trace = new VerificationTrace();
-            trace.deadline = deadline;
+        for (String host : hosts.stream().filter(candidate -> !isNonEmployerHost(candidate)).toList()) {
             var evidence = inspectHost(host, trace, name);
             requests += evidence.requests();
-            if ("EMPLOYER_NAME_UNCONFIRMED".equals(evidence.reason())) {
-                continue;
+            if (blocksEmployerMatch(evidence)) {
+                return employerResult(posting, name, observed, evidence, requests);
             }
-            if (!VERIFIED_OUTCOME.equals(evidence.outcome())) {
-                if ("AMBIGUOUS_LINKS".equals(evidence.reason()) || "MIXED_PLATFORM_LINKS".equals(evidence.reason())
-                        || "BATCH_DEADLINE".equals(evidence.reason())) {
-                    failure = evidence;
-                    match = null;
-                    break;
+            if (VERIFIED_OUTCOME.equals(evidence.outcome())) {
+                if (conflictsWithMatch(expected, match, evidence)) {
+                    return automaticFailure(posting, observed, MANUAL_REVIEW_OUTCOME,
+                            CONFLICTING_EMPLOYER_EVIDENCE, requests);
                 }
-                if (failure == null || "RETRYABLE_FAILURE".equals(evidence.outcome())) {
-                    failure = evidence;
-                }
-                continue;
+                match = evidence;
+            } else if (preferFailure(failure, evidence)) {
+                failure = evidence;
             }
-            if ((expected != null && !expected.equals(evidence.identity()))
-                    || (match != null && !match.domain().equals(evidence.domain()))) {
-                return automaticFailure(posting, observed, MANUAL_REVIEW_OUTCOME,
-                        "CONFLICTING_EMPLOYER_EVIDENCE", requests);
-            }
-            match = evidence;
         }
-        if (match == null && failure != null) {
-            return result(new SourceCandidateDTO(posting, "automated-official-page", failure.domain(),
-                    failure.pageUrl(), name), observed, failure.outcome(), failure.reason(), null, null, requests);
-        }
-        if (match == null) {
-            return automaticFailure(posting, observed, MANUAL_REVIEW_OUTCOME, "EMPLOYER_NAME_UNCONFIRMED", requests);
-        }
-        return result(new SourceCandidateDTO(posting, "automated-official-page", match.domain(), match.pageUrl(),
-                name), observed, VERIFIED_OUTCOME, null, match.identity(), match.observedUrl(), requests);
+        HostEvidence selected = match == null ? failure : match;
+        return selected == null
+                ? automaticFailure(posting, observed, MANUAL_REVIEW_OUTCOME, EMPLOYER_NAME_UNCONFIRMED, requests)
+                : employerResult(posting, name, observed, selected, requests);
+    }
+
+    private static boolean blocksEmployerMatch(HostEvidence evidence) {
+        return AMBIGUOUS_LINKS.equals(evidence.reason()) || MIXED_PLATFORM_LINKS.equals(evidence.reason())
+                || BATCH_DEADLINE.equals(evidence.reason());
+    }
+
+    private static boolean conflictsWithMatch(AtsSourceIdentityDTO expected, HostEvidence match, HostEvidence next) {
+        return (expected != null && !expected.equals(next.identity()))
+                || (match != null && !match.domain().equals(next.domain()));
+    }
+
+    private static boolean preferFailure(HostEvidence previous, HostEvidence next) {
+        return !EMPLOYER_NAME_UNCONFIRMED.equals(next.reason())
+                && (previous == null || RETRYABLE_FAILURE.equals(next.outcome()));
+    }
+
+    private SourceVerificationDTO employerResult(String posting, String name, Instant observed,
+                                                 HostEvidence evidence, int requests) {
+        return result(new SourceCandidateDTO(posting, AUTOMATED_OFFICIAL_PAGE, evidence.domain(),
+                evidence.pageUrl(), name), observed, evidence.outcome(), evidence.reason(),
+                evidence.identity(), evidence.observedUrl(), requests);
     }
 
     boolean renewOne(Instant deadline) {
@@ -296,7 +321,7 @@ public class SourceVerificationService {
     }
 
     private SourceVerificationDTO inspectRenewal(VerifiedSourceEntity source, Instant now, Instant deadline) {
-        var candidate = new SourceCandidateDTO(source.evidenceUrl(), "automatic-board-renewal",
+        var candidate = new SourceCandidateDTO(source.evidenceUrl(), BOARD_RENEWAL,
                 source.employerDomain(), source.officialPageUrl(), source.employerName());
         var expected = new AtsSourceIdentityDTO(source.platform(), source.region(), source.sourceId());
         var trace = new VerificationTrace();
@@ -304,12 +329,12 @@ public class SourceVerificationService {
         try {
             URI uri = PublicDestinationPolicy.requirePublicHttpsUri(source.officialPageUrl());
             if (!uri.getHost().equalsIgnoreCase(source.employerDomain()) || isNonEmployerHost(uri.getHost())) {
-                return result(candidate, now, MANUAL_REVIEW_OUTCOME, "UNSAFE_OFFICIAL_PAGE", null, null, 0);
+                return result(candidate, now, MANUAL_REVIEW_OUTCOME, UNSAFE_OFFICIAL_PAGE, null, null, 0);
             }
             var page = fetchPage(uri.toString(), trace);
             return evaluate(candidate, expected, now, page);
         } catch (VerificationFetchException failure) {
-            return result(candidate, now, failure.retryable() ? "RETRYABLE_FAILURE" : "REJECTED",
+            return result(candidate, now, failure.retryable() ? RETRYABLE_FAILURE : REJECTED,
                     failure.reason(), null, null, failure.requests());
         }
     }
@@ -322,101 +347,145 @@ public class SourceVerificationService {
     }
 
     private HostEvidence inspectHost(String host, VerificationTrace trace, String advertisedName) {
-        int requests = 0;
+        trace.stage = "HOMEPAGE";
+        trace.host = host;
+        trace.requests = 0;
+        String domain = host;
         try {
-            trace.stage = "HOMEPAGE";
-            trace.host = host;
-            SafeHtmlFetcher.FetchResult home = fetchPage("https://" + host + "/", trace);
-            requests += home.requests();
-            if (home.externalRedirect() != null) {
-                if (!wwwVariant(host, home.externalRedirect().getHost())) {
-                    return hostFailure(host, MANUAL_REVIEW_OUTCOME, "HOMEPAGE_EXTERNAL_REDIRECT", requests);
-                }
-                home = fetchPage(home.externalRedirect().toString(), trace);
-                requests += home.requests();
-                if (home.externalRedirect() != null) {
-                    return hostFailure(host, MANUAL_REVIEW_OUTCOME, "HOMEPAGE_EXTERNAL_REDIRECT", requests);
-                }
-            }
-            String domain = home.pageUrl().getHost().toLowerCase(Locale.ROOT);
+            var home = fetchHomepage(host, trace);
+            domain = home.pageUrl().getHost().toLowerCase(Locale.ROOT);
             var homepage = Jsoup.parse(home.html());
-            if (advertisedName != null && !advertisedName.equalsIgnoreCase(homepage.title().strip())
-                    && homepage.select("meta[property=og:site_name]").stream()
-                    .noneMatch(meta -> advertisedName.equalsIgnoreCase(meta.attr("content").strip()))) {
-                return hostFailure(domain, MANUAL_REVIEW_OUTCOME, "EMPLOYER_NAME_UNCONFIRMED", requests);
+            if (!matchesAdvertisedName(homepage, advertisedName)) {
+                return hostFailure(domain, MANUAL_REVIEW_OUTCOME, EMPLOYER_NAME_UNCONFIRMED, trace.requests);
             }
-            var anchors = homepage.select("a[href]");
-            if (anchors.size() > MAX_LINKS) {
-                trace.tooManyLinks(anchors.size(), MAX_LINKS);
-                return hostFailure(domain, MANUAL_REVIEW_OUTCOME, "TOO_MANY_LINKS", requests);
-            }
-            Set<URI> careers = new LinkedHashSet<>();
-            Map<AtsSourceIdentityDTO, URI> boards = new LinkedHashMap<>();
-            String officialPage = null;
-            boolean unsupported = false;
-            for (Element anchor : anchors) {
-                try {
-                    URI link = PublicDestinationPolicy.requirePublicHttpsUri(
-                            home.pageUrl().resolve(anchor.attr("href")).toString());
-                    if (link.getHost().equalsIgnoreCase(domain) && isCareersLink(link, anchor.text())) {
-                        careers.add(link);
-                    } else if (advertisedName != null && isCareersLink(link, anchor.text())) {
-                        AtsSourceIdentityParser.parse(link).ifPresent(id -> boards.putIfAbsent(id, link));
-                        unsupported |= isKnownUnsupportedPlatform(link);
-                        if (!boards.isEmpty()) {
-                            officialPage = home.pageUrl().toString();
-                        }
-                    }
-                } catch (IllegalArgumentException ignored) {
-                    // Unsafe links cannot establish careers-page evidence.
-                }
-            }
-            if (careers.isEmpty() && boards.isEmpty()) {
-                return hostFailure(domain, MANUAL_REVIEW_OUTCOME, "NO_HOMEPAGE_CAREERS_LINK", requests);
-            }
-            if (careers.size() > MAX_CAREERS_PAGES) {
-                return hostFailure(domain, MANUAL_REVIEW_OUTCOME, "TOO_MANY_CAREERS_LINKS", requests);
-            }
-            String inspectedPage = null;
-            for (URI careersUrl : careers) {
-                trace.stage = "CAREERS";
-                SafeHtmlFetcher.FetchResult page = fetchPage(careersUrl.toString(), trace);
-                requests += page.requests();
-                inspectedPage = page.pageUrl().toString();
-                if (page.externalRedirect() != null) {
-                    var redirected = AtsSourceIdentityParser.parse(page.externalRedirect());
-                    if (redirected.isEmpty()) {
-                        return hostFailure(domain, MANUAL_REVIEW_OUTCOME, "EXTERNAL_REDIRECT", requests);
-                    }
-                    boards.putIfAbsent(redirected.get(), page.externalRedirect());
-                    if (officialPage == null) {
-                        officialPage = careersUrl.toString();
-                    }
-                } else {
-                    var pageAnchors = Jsoup.parse(page.html()).select("a[href],iframe[src],script[src]");
-                    if (pageAnchors.size() > MAX_LINKS) {
-                        trace.tooManyLinks(pageAnchors.size(), MAX_LINKS);
-                        return hostFailure(domain, MANUAL_REVIEW_OUTCOME, "TOO_MANY_LINKS", requests);
-                    }
-                    LinkEvidenceDTO links = scanLinks(page.pageUrl(), pageAnchors);
-                    links.links().forEach(boards::putIfAbsent);
-                    unsupported |= links.unsupported();
-                    if (officialPage == null && !links.links().isEmpty()) {
-                        officialPage = page.pageUrl().toString();
-                    }
-                }
-            }
-            if (boards.size() != 1 || unsupported) {
-                String reason = boards.size() > 1 ? "AMBIGUOUS_LINKS"
-                        : unsupported ? "MIXED_PLATFORM_LINKS" : "NO_SUPPORTED_LINK";
-                return new HostEvidence(domain, inspectedPage, null, MANUAL_REVIEW_OUTCOME, reason, null, requests);
-            }
-            var board = boards.entrySet().iterator().next();
-            return new HostEvidence(domain, officialPage, board.getValue().toString(),
-                    VERIFIED_OUTCOME, null, board.getKey(), requests);
+            var links = homepageCareers(home.pageUrl(), homepage, advertisedName != null, trace);
+            return inspectCareers(domain, home.pageUrl(), links, trace);
+        } catch (PageEvidenceException rejected) {
+            return hostFailure(domain, MANUAL_REVIEW_OUTCOME, rejected.getMessage(), trace.requests);
         } catch (VerificationFetchException failure) {
-            return hostFailure(host, failure.retryable() ? "RETRYABLE_FAILURE" : MANUAL_REVIEW_OUTCOME,
-                    failure.reason(), requests + failure.requests());
+            return hostFailure(host, failure.retryable() ? RETRYABLE_FAILURE : MANUAL_REVIEW_OUTCOME,
+                    failure.reason(), trace.requests);
+        }
+    }
+
+    private SafeHtmlFetcher.FetchResult fetchHomepage(String host, VerificationTrace trace)
+            throws VerificationFetchException, PageEvidenceException {
+        var home = fetchPage("https://" + host + "/", trace);
+        if (home.externalRedirect() == null) {
+            return home;
+        }
+        if (!wwwVariant(host, home.externalRedirect().getHost())) {
+            throw new PageEvidenceException(HOMEPAGE_EXTERNAL_REDIRECT);
+        }
+        var redirected = fetchPage(home.externalRedirect().toString(), trace);
+        if (redirected.externalRedirect() != null) {
+            throw new PageEvidenceException(HOMEPAGE_EXTERNAL_REDIRECT);
+        }
+        return redirected;
+    }
+
+    private static boolean matchesAdvertisedName(Document homepage, String name) {
+        return name == null || name.equalsIgnoreCase(homepage.title().strip())
+                || homepage.select("meta[property=og:site_name]").stream()
+                .anyMatch(meta -> name.equalsIgnoreCase(meta.attr("content").strip()));
+    }
+
+    private HomepageCareers homepageCareers(URI page, Document homepage, boolean allowDirectBoard,
+                                            VerificationTrace trace) throws PageEvidenceException {
+        var anchors = homepage.select("a[href]");
+        checkLinkLimit(anchors.size(), trace);
+        Set<URI> pages = new LinkedHashSet<>();
+        Map<AtsSourceIdentityDTO, URI> boards = new LinkedHashMap<>();
+        boolean unsupported = false;
+        for (Element anchor : anchors) {
+            URI link = safeLink(page, anchor.attr("href"));
+            if (link == null || !isCareersLink(link, anchor.text())) {
+                continue;
+            }
+            if (link.getHost().equalsIgnoreCase(page.getHost())) {
+                pages.add(link);
+            } else if (allowDirectBoard) {
+                AtsSourceIdentityParser.parse(link).ifPresent(id -> boards.putIfAbsent(id, link));
+                unsupported |= isKnownUnsupportedPlatform(link);
+            }
+        }
+        return new HomepageCareers(pages, new LinkEvidenceDTO(boards, unsupported));
+    }
+
+    private HostEvidence inspectCareers(String domain, URI homepage, HomepageCareers careers, VerificationTrace trace)
+            throws VerificationFetchException, PageEvidenceException {
+        var boards = careers.direct().links();
+        if (careers.pages().isEmpty() && boards.isEmpty()) {
+            return hostFailure(domain, MANUAL_REVIEW_OUTCOME, "NO_HOMEPAGE_CAREERS_LINK", trace.requests);
+        }
+        if (careers.pages().size() > MAX_CAREERS_PAGES) {
+            return hostFailure(domain, MANUAL_REVIEW_OUTCOME, "TOO_MANY_CAREERS_LINKS", trace.requests);
+        }
+        String officialPage = boards.isEmpty() ? null : homepage.toString();
+        String inspectedPage = null;
+        boolean unsupported = careers.direct().unsupported();
+        for (URI url : careers.pages()) {
+            trace.stage = "CAREERS";
+            var page = fetchPage(url.toString(), trace);
+            inspectedPage = page.pageUrl().toString();
+            var evidence = careersPageEvidence(page, trace);
+            evidence.links().forEach(boards::putIfAbsent);
+            unsupported |= evidence.unsupported();
+            if (officialPage == null && !evidence.links().isEmpty()) {
+                officialPage = (page.externalRedirect() == null ? page.pageUrl() : url).toString();
+            }
+        }
+        return careerAssociation(domain, boards, unsupported, inspectedPage, officialPage, trace.requests);
+    }
+
+    private LinkEvidenceDTO careersPageEvidence(SafeHtmlFetcher.FetchResult page, VerificationTrace trace)
+            throws PageEvidenceException {
+        URI redirect = page.externalRedirect();
+        if (redirect != null) {
+            var board = AtsSourceIdentityParser.parse(redirect)
+                    .orElseThrow(() -> new PageEvidenceException(EXTERNAL_REDIRECT));
+            return new LinkEvidenceDTO(Map.of(board, redirect), false);
+        }
+        var links = Jsoup.parse(page.html()).select(BOARD_LINK_SELECTOR);
+        checkLinkLimit(links.size(), trace);
+        return scanLinks(page.pageUrl(), links);
+    }
+
+    private static void checkLinkLimit(int count, VerificationTrace trace) throws PageEvidenceException {
+        if (count > MAX_LINKS) {
+            trace.tooManyLinks(count, MAX_LINKS);
+            throw new PageEvidenceException(TOO_MANY_LINKS);
+        }
+    }
+
+    private static HostEvidence careerAssociation(String domain, Map<AtsSourceIdentityDTO, URI> boards,
+                                                  boolean unsupported, String inspectedPage, String officialPage,
+                                                  int requests) {
+        if (boards.size() > 1) {
+            return new HostEvidence(domain, inspectedPage, null, MANUAL_REVIEW_OUTCOME, AMBIGUOUS_LINKS, null, requests);
+        }
+        if (unsupported || boards.isEmpty()) {
+            String reason = unsupported ? MIXED_PLATFORM_LINKS : NO_SUPPORTED_LINK;
+            return new HostEvidence(domain, inspectedPage, null, MANUAL_REVIEW_OUTCOME, reason, null, requests);
+        }
+        var board = boards.entrySet().iterator().next();
+        return new HostEvidence(domain, officialPage, board.getValue().toString(),
+                VERIFIED_OUTCOME, null, board.getKey(), requests);
+    }
+
+    private record HomepageCareers(Set<URI> pages, LinkEvidenceDTO direct) { }
+
+    private static final class PageEvidenceException extends Exception {
+        private PageEvidenceException(String reason) {
+            super(reason);
+        }
+    }
+
+    private static URI safeLink(URI page, String link) {
+        try {
+            return PublicDestinationPolicy.requirePublicHttpsUri(page.resolve(link).toString());
+        } catch (IllegalArgumentException unsafe) {
+            return null;
         }
     }
 
@@ -427,13 +496,15 @@ public class SourceVerificationService {
                 throw new IllegalStateException("Source verification interrupted");
             }
             if (clock.instant().plusSeconds(5).isAfter(trace.deadline)) {
-                throw new VerificationFetchException("BATCH_DEADLINE", 0);
+                throw new VerificationFetchException(BATCH_DEADLINE, 0);
             }
             SafeHtmlFetcher.FetchResult result = fetcher.fetch(url);
+            trace.requests += result.requests();
             trace.httpStatus = result.httpStatus();
             trace.redirects += result.redirects();
             return result;
         } catch (VerificationFetchException failure) {
+            trace.requests += failure.requests();
             trace.httpStatus = failure.httpStatus();
             trace.redirects += failure.redirects();
             throw failure;
@@ -491,6 +562,7 @@ public class SourceVerificationService {
         private String host = "unavailable";
         private Integer httpStatus;
         private int redirects;
+        private int requests;
         private Integer linkCount;
         private Integer linkLimit;
 
@@ -511,9 +583,9 @@ public class SourceVerificationService {
         try {
             input = PublicDestinationPolicy.requirePublicHttpsUri(candidate.inputUrl());
         } catch (IllegalArgumentException unsafe) {
-            return result(candidate, observed, "REJECTED", "UNSAFE_URL", null, null, 0);
+            return result(candidate, observed, REJECTED, "UNSAFE_URL", null, null, 0);
         }
-        if (!Set.of("owner-confirmed", "independently-reviewed", "automated-official-page")
+        if (!Set.of("owner-confirmed", "independently-reviewed", AUTOMATED_OFFICIAL_PAGE)
                 .contains(candidate.origin())) {
             return result(candidate, observed, MANUAL_REVIEW_OUTCOME, "NO_TRUST_ROOT", null, null, 0);
         }
@@ -521,7 +593,7 @@ public class SourceVerificationService {
         try {
             official = PublicDestinationPolicy.requirePublicHttpsUri(candidate.officialPageUrl());
         } catch (RuntimeException unsafe) {
-            return result(candidate, observed, "REJECTED", "UNSAFE_OFFICIAL_PAGE", null, null, 0);
+            return result(candidate, observed, REJECTED, UNSAFE_OFFICIAL_PAGE, null, null, 0);
         }
         if (candidate.officialDomain() == null || !official.getHost().equalsIgnoreCase(candidate.officialDomain())
                 || DiscoveryLeadPolicy.isExcludedEmployerHost(official.getHost())
@@ -538,36 +610,36 @@ public class SourceVerificationService {
             SafeHtmlFetcher.FetchResult page = fetcher.fetch(official.toString());
             return evaluate(candidate, AtsSourceIdentityParser.parse(input).orElse(null), observed, page);
         } catch (VerificationFetchException failure) {
-            return result(candidate, observed, "RETRYABLE_FAILURE", failure.reason(), null, null, failure.requests());
+            return result(candidate, observed, RETRYABLE_FAILURE, failure.reason(), null, null, failure.requests());
         }
     }
 
     private SourceVerificationDTO evaluate(SourceCandidateDTO candidate, AtsSourceIdentityDTO expected, Instant observed,
                                            SafeHtmlFetcher.FetchResult page) {
-        boolean renewal = "automatic-board-renewal".equals(candidate.origin());
+        boolean renewal = BOARD_RENEWAL.equals(candidate.origin());
         if (page.externalRedirect() != null) {
             if (renewal && AtsSourceIdentityParser.parse(page.externalRedirect()).filter(expected::equals).isPresent()) {
                 return result(candidate, observed, VERIFIED_OUTCOME, null, expected,
                         page.externalRedirect().toString(), page.requests());
             }
-            return result(candidate, observed, MANUAL_REVIEW_OUTCOME, "EXTERNAL_REDIRECT", null,
+            return result(candidate, observed, MANUAL_REVIEW_OUTCOME, EXTERNAL_REDIRECT, null,
                     page.externalRedirect().toString(), page.requests());
         }
-        var anchors = Jsoup.parse(page.html()).select("a[href],iframe[src],script[src]");
+        var anchors = Jsoup.parse(page.html()).select(BOARD_LINK_SELECTOR);
         if (anchors.size() > MAX_LINKS) {
-            return result(candidate, observed, MANUAL_REVIEW_OUTCOME, "TOO_MANY_LINKS", null, null, page.requests());
+            return result(candidate, observed, MANUAL_REVIEW_OUTCOME, TOO_MANY_LINKS, null, null, page.requests());
         }
         LinkEvidenceDTO evidence = scanLinks(page.pageUrl(), anchors);
         Map<AtsSourceIdentityDTO, URI> links = evidence.links();
         if (links.isEmpty() && evidence.unsupported()) {
-            return result(candidate, observed, "UNSUPPORTED", "UNSUPPORTED_PLATFORM", null, null, page.requests());
+            return result(candidate, observed, UNSUPPORTED, UNSUPPORTED_PLATFORM, null, null, page.requests());
         }
         if (renewal && evidence.unsupported()) {
-            return result(candidate, observed, MANUAL_REVIEW_OUTCOME, "MIXED_PLATFORM_LINKS", null, null, page.requests());
+            return result(candidate, observed, MANUAL_REVIEW_OUTCOME, MIXED_PLATFORM_LINKS, null, null, page.requests());
         }
         if (links.size() != 1) {
             return result(candidate, observed, MANUAL_REVIEW_OUTCOME,
-                    links.isEmpty() ? "NO_SUPPORTED_LINK" : "AMBIGUOUS_LINKS",
+                    links.isEmpty() ? NO_SUPPORTED_LINK : AMBIGUOUS_LINKS,
                     null, null, page.requests());
         }
         var link = links.entrySet().iterator().next();
@@ -611,7 +683,7 @@ public class SourceVerificationService {
                                          String reason, AtsSourceIdentityDTO identity, String observedUrl, int requests) {
         String domain = candidate.officialDomain() == null ? null
                 : candidate.officialDomain().toLowerCase(Locale.ROOT);
-        String evidence = ("automated-official-page".equals(candidate.origin()) ? "" : candidate.inputUrl())
+        String evidence = (AUTOMATED_OFFICIAL_PAGE.equals(candidate.origin()) ? "" : candidate.inputUrl())
                 + "|" + candidate.origin() + "|" + candidate.officialDomain()
                 + "|" + candidate.officialPageUrl() + "|" + outcome + "|" + reason + "|" + observedUrl
                 + "|" + identity;
@@ -658,13 +730,13 @@ public class SourceVerificationService {
             if (result.observedAt().isAfter(previous.observedAt())) {
                 repository.updateDecision(result, CONFLICT_DECISION);
             }
-            return reclassify(result, "REQUIRES_REVIEW");
+            return reclassify(result, REQUIRES_REVIEW);
         }
         if (result.observedAt().equals(previous.observedAt())) {
             if (!result.evidenceHash().equals(previous.evidenceHash())) {
                 repository.updateDecision(result, CONFLICT_DECISION);
                 repository.deactivateDomain(result.officialDomain(), result.observedAt(), true);
-                return reclassify(result, "EQUAL_TIME_CONFLICT");
+                return reclassify(result, EQUAL_TIME_CONFLICT);
             }
         } else {
             if (VERIFIED_OUTCOME.equals(decision) && previous.associatedPlatform() != null
@@ -699,12 +771,12 @@ public class SourceVerificationService {
             result = reclassify(result, "IDENTITY_CLAIM_CONFLICT");
         } else if (MANUAL_REVIEW_OUTCOME.equals(current.status())) {
             repository.updateDecision(result, CONFLICT_DECISION);
-            result = reclassify(result, "REQUIRES_REVIEW");
+            result = reclassify(result, REQUIRES_REVIEW);
         } else if (result.observedAt().equals(current.verifiedAt())
                 && !result.evidenceHash().equals(current.evidenceHash())) {
             repository.markReview(current.id());
             repository.updateDecision(result, CONFLICT_DECISION);
-            result = reclassify(result, "EQUAL_TIME_CONFLICT");
+            result = reclassify(result, EQUAL_TIME_CONFLICT);
         } else if (result.observedAt().isAfter(current.verifiedAt())) {
             boolean stillActive = VERIFIED_OUTCOME.equals(current.status()) && current.active()
                     && !current.verifiedAt().isBefore(result.observedAt().minus(SourceRegistryService.EVIDENCE_MAX_AGE));
@@ -712,7 +784,7 @@ public class SourceVerificationService {
         } else if (!VERIFIED_OUTCOME.equals(current.status())) {
             result = reclassify(result, SUPERSEDED_OBSERVATION);
         }
-        if (inserted && "automated-official-page".equals(result.origin())
+        if (inserted && AUTOMATED_OFFICIAL_PAGE.equals(result.origin())
                 && VERIFIED_OUTCOME.equals(result.outcome())) {
             repository.activateAutomatically(current.id(), result.observedAt());
         }
@@ -720,19 +792,19 @@ public class SourceVerificationService {
     }
 
     private boolean hasTrustedObservation(SourceVerificationDTO result) {
-        if ("automated-official-page".equals(result.origin()) && !VERIFIED_OUTCOME.equals(result.outcome())) {
+        if (AUTOMATED_OFFICIAL_PAGE.equals(result.origin()) && !VERIFIED_OUTCOME.equals(result.outcome())) {
             return false;
         }
         return result.officialDomain() != null && result.requests() > 0
                 && (VERIFIED_OUTCOME.equals(result.outcome()) || MANUAL_REVIEW_OUTCOME.equals(result.outcome())
-                || "UNSUPPORTED".equals(result.outcome()));
+                || UNSUPPORTED.equals(result.outcome()));
     }
 
     private String decisionFor(SourceVerificationDTO result) {
         if (VERIFIED_OUTCOME.equals(result.outcome())) {
             return VERIFIED_OUTCOME;
         }
-        if ("NO_SUPPORTED_LINK".equals(result.reason()) || "UNSUPPORTED_PLATFORM".equals(result.reason())) {
+        if (NO_SUPPORTED_LINK.equals(result.reason()) || UNSUPPORTED_PLATFORM.equals(result.reason())) {
             return "UNVERIFIED";
         }
         return CONFLICT_DECISION;
