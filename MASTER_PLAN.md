@@ -113,6 +113,8 @@ Phase 7 closed operationally on 2026-11-19. The owner-approved transfer copied 1
 
 The Tavily-only rollout above records the historical 9A.1 experiment. Next deliver 9A.1 as multi-channel coverage and employer registry, followed by 9A.2's protected report. Use the [retirement register](docs/SOURCE_ARCHITECTURE_RETIREMENT_REGISTER.md) to remove the Tavily-to-Greenhouse/Lever resolution loop if its replacement makes it unused. Phase 8 remains optional and does not block this order.
 
+The first [9A.1 direct-channel increment](docs/PHASE_9A_SOURCE_COVERAGE.md#first-direct-channel-increment) prepares manual, bounded Himalayas intake and reuses the existing stored candidate and review workflow. Cloud acceptance, recurring intake and additional employer-registry work are separate steps.
+
 ## 7. Small PRs
 
 The original sequence covered contract/source/cost design, application foundation, safe persistence, the first source, the second source/deduplication, LLM/shortlist and AWS monitoring/restore. Phase 1 has now landed in PR #2. Insert the separate JaCoCo/Sonar quality increment before Phase 2 business logic; PR numbering is assigned by GitHub, not fixed by this illustrative sequence.

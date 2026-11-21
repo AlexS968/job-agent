@@ -13,6 +13,7 @@ import com.alexs.jobagent.source.service.SourceRegistryService;
 import com.alexs.jobagent.source.service.SourceDiscoveryService;
 import com.alexs.jobagent.source.service.LinkedInIntakeService;
 import com.alexs.jobagent.source.service.LinkedInRepairService;
+import com.alexs.jobagent.source.service.HimalayasIntakeService;
 import com.alexs.jobagent.source.service.GmailCutoverService;
 import com.alexs.jobagent.source.dto.SourceCandidateDTO;
 import com.alexs.jobagent.source.dto.SearchPilotResultDTO;
@@ -193,6 +194,7 @@ public class JobAgentApplication {
             }
             case "--mode=linkedin-repair" -> runLinkedInRepair(args, context);
             case "--mode=linkedin-intake" -> runLinkedInIntake(args, context);
+            case "--mode=himalayas-intake" -> runHimalayasIntake(args, context);
             case "--mode=evaluate-rules" -> runEvaluateRules(args, profiles, evaluations);
             case "--mode=shortlist" -> runShortlist(args, profiles, evaluations);
             case "--mode=evaluate-extraction" -> runEvaluateExtraction(args, profiles, evaluations);
@@ -217,6 +219,18 @@ public class JobAgentApplication {
         LOGGER.info("LinkedIn repair: {}", result);
         if (result.reviewRequired() > 0) {
             throw new IllegalStateException("LinkedIn repair has messages requiring review");
+        }
+    }
+
+    private void runHimalayasIntake(String[] args, ApplicationContext context) {
+        requireOnlyOptions(args, "--mode=himalayas-intake");
+        var result = context.getBean(HimalayasIntakeService.class).run();
+        LOGGER.info("Himalayas intake: requests={}, fetched={}, distinct={}, role_relevant={}, created={}, updated={}, "
+                        + "unchanged={}, failed_rows={}, failed_filters={}",
+                result.requests(), result.fetched(), result.distinct(), result.roleRelevant(), result.created(),
+                result.updated(), result.unchanged(), result.failed(), result.failedFilters());
+        if (result.failed() > 0 || !result.failedFilters().isEmpty()) {
+            throw new IllegalStateException("Himalayas intake completed with failures");
         }
     }
 
@@ -539,9 +553,11 @@ public class JobAgentApplication {
 
     private void logEvaluation(String group, VacancyEvaluationDTO item) {
         if (LOGGER.isInfoEnabled()) {
-            LOGGER.info("{} vacancy: id={}, title={}, rank={}, role={}, url={}, extraction={}, work={}, rejected={}, reasons={}, unknowns={}, evidence={}",
+            String sourceLinks = item.sourceAttribution() == null ? "" : ", source=" + item.sourceAttribution()
+                    + (item.applicationLink() == null ? "" : ", apply_url=" + item.applicationLink());
+            LOGGER.info("{} vacancy: id={}, title={}, rank={}, role={}, url={}{}, extraction={}, work={}, rejected={}, reasons={}, unknowns={}, evidence={}",
                     group, item.vacancyId(), safeSourceUrl(item.title()), item.preferenceRank(), item.roleClassification(),
-                    safeSourceUrl(item.originalUrl()), item.extractionStatus(), item.extractionWorkId(),
+                    safeSourceUrl(item.originalUrl()), sourceLinks, item.extractionStatus(), item.extractionWorkId(),
                     item.rejectedCount(),
                     item.reasons(), item.unknowns(), item.evidence());
         }
