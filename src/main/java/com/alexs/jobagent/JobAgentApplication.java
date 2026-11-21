@@ -553,8 +553,13 @@ public class JobAgentApplication {
 
     private void logEvaluation(String group, VacancyEvaluationDTO item) {
         if (LOGGER.isInfoEnabled()) {
-            String sourceLinks = item.sourceAttribution() == null ? "" : ", source=" + item.sourceAttribution()
-                    + (item.applicationLink() == null ? "" : ", apply_url=" + item.applicationLink());
+            String sourceLinks = "";
+            if (item.sourceAttribution() != null) {
+                sourceLinks = ", source=" + item.sourceAttribution();
+                if (item.applicationLink() != null) {
+                    sourceLinks += ", apply_url=" + item.applicationLink();
+                }
+            }
             LOGGER.info("{} vacancy: id={}, title={}, rank={}, role={}, url={}{}, extraction={}, work={}, rejected={}, reasons={}, unknowns={}, evidence={}",
                     group, item.vacancyId(), safeSourceUrl(item.title()), item.preferenceRank(), item.roleClassification(),
                     safeSourceUrl(item.originalUrl()), sourceLinks, item.extractionStatus(), item.extractionWorkId(),

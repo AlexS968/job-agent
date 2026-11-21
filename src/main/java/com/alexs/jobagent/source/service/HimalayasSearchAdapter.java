@@ -93,8 +93,11 @@ public class HimalayasSearchAdapter {
         String canonicalPath = path.endsWith("/") ? path.substring(0, path.length() - 1) : path;
         String postingId = UUID.nameUUIDFromBytes(canonicalPath.getBytes(StandardCharsets.UTF_8)).toString();
         JsonNode description = row.path("description");
-        String body = description.isMissingNode() || description.isNull() ? null : description.asText();
-        if (body != null && (!description.isTextual() || body.length() > 1_000_000)) {
+        if (!description.isTextual() && !description.isMissingNode() && !description.isNull()) {
+            throw new IllegalArgumentException("Invalid Himalayas description");
+        }
+        String body = description.isTextual() ? description.asText() : null;
+        if (body != null && body.length() > 1_000_000) {
             throw new IllegalArgumentException("Invalid Himalayas description");
         }
         return new HimalayasListingDTO(postingId, guid, HimalayasPostingEvidence.applicationLink(row), title,
