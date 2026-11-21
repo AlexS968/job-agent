@@ -42,8 +42,12 @@ class BatchPipelineCommandTest {
         var vacancy = new VacancyEvaluationDTO(34, 34, "revision", "NEEDS_REVIEW", 1, "PREFERRED",
                 List.of(), List.of("SALARY_UNKNOWN"), List.of("Public source"),
                 "https://example.org/jobs/34", null, "NONE", 0, "Backend Engineer");
+        var himalayas = new VacancyEvaluationDTO(35, 35, "revision", "NEEDS_REVIEW", 1, "PREFERRED",
+                List.of(), List.of("SALARY_UNKNOWN"), List.of("Public source"),
+                "https://himalayas.app/companies/example/jobs/backend", null, "NONE", 0, "Java Engineer")
+                .withSourceAttribution("Himalayas", "https://himalayas.app/companies/example/jobs/backend?apply=true");
         when(service.run(profile, 50, Duration.ofSeconds(900), 20)).thenReturn(result("BACKLOG_REMAINS",
-                new ShortlistDTO(List.of(), List.of(vacancy))));
+                new ShortlistDTO(List.of(), List.of(vacancy, himalayas))));
         Logger logger = (Logger) LoggerFactory.getLogger(JobAgentApplication.class);
         ListAppender<ILoggingEvent> output = new ListAppender<>();
         output.start();
@@ -58,7 +62,9 @@ class BatchPipelineCommandTest {
                 .reduce("", (left, right) -> left + "\n" + right);
         assertTrue(messages.contains("Batch pipeline: outcome=BACKLOG_REMAINS"));
         assertTrue(messages.contains("NEEDS_REVIEW vacancy: id=34"));
-        assertTrue(messages.contains("https://example.org/jobs/34"));
+        assertTrue(messages.contains("url=https://example.org/jobs/34, extraction=NONE"));
+        assertTrue(messages.contains("url=https://himalayas.app/companies/example/jobs/backend, source=Himalayas, "
+                + "apply_url=https://himalayas.app/companies/example/jobs/backend?apply=true, extraction=NONE"));
         assertTrue(messages.contains("SALARY_UNKNOWN"));
         assertFalse(messages.contains("private-profile-json"));
         verify(service).run(profile, 50, Duration.ofSeconds(900), 20);

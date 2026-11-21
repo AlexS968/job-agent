@@ -37,6 +37,8 @@ The channel-to-observation path does **not** depend on finding a career page. An
 
 The initial search directions are Germany, Austria, Remote Europe and Remote Worldwide. They are overlapping views of one vacancy corpus, not separate copies. A remote label does not establish permanent employment eligibility from the owner's private work country. Missing or contradictory evidence is displayed as unknown. The role screen accepts generic backend/software-engineer titles when the description establishes relevant Java/Spring work; it does not require Java in the title.
 
+Domain-scoped searches of public hiring-platform postings can also seed the employer registry. A posting yields a candidate board identity for direct verification and later monitoring. The [Phase 9A.1 sample](PHASE_9A_SOURCE_COVERAGE.md#domain-scoped-vacancy-search-evidence-2026-11-19) verified the path on Greenhouse, Lever and one Ashby board. Recurring use depends on measured incremental yield, reliable access and reviewed terms and costs.
+
 Channel candidates for measurement are LinkedIn job-alert email, Adzuna, Himalayas and Arbeitnow. LinkedIn is the **first implementation/cutover channel** because the existing owner pipeline already receives a substantial alert stream. The Java application still needs separate Gmail OAuth. Adzuna's trial calls do not authorize a paid recurring plan; Himalayas and Arbeitnow require yield, duplication, terms and operational checks before adoption. A channel may be replaced without losing its retained employer identities or vacancy provenance. Greenhouse and Lever remain career-page adapters, not the mandatory discovery funnel.
 
 ## 2. Target AWS infrastructure diagram

@@ -6,7 +6,17 @@ public record VacancyEvaluationDTO(long vacancyId, long sourceItemId, String vac
                                    String decision, int preferenceRank, String roleClassification,
                                    List<String> reasons, List<String> unknowns, List<String> evidence,
                                    String originalUrl, Long extractionWorkId, String extractionStatus,
-                                   int rejectedCount, String title) {
+                                   int rejectedCount, String title, String sourceAttribution, String applicationLink) {
+    public VacancyEvaluationDTO(long vacancyId, long sourceItemId, String vacancyRevision,
+                                String decision, int preferenceRank, String roleClassification,
+                                List<String> reasons, List<String> unknowns, List<String> evidence,
+                                String originalUrl, Long extractionWorkId, String extractionStatus,
+                                int rejectedCount, String title) {
+        this(vacancyId, sourceItemId, vacancyRevision, decision, preferenceRank, roleClassification,
+                reasons, unknowns, evidence, originalUrl, extractionWorkId, extractionStatus, rejectedCount,
+                title, null, null);
+    }
+
     public VacancyEvaluationDTO(long vacancyId, long sourceItemId, String vacancyRevision,
                                 String decision, int preferenceRank, String roleClassification,
                                 List<String> reasons, List<String> unknowns, List<String> evidence,
@@ -20,6 +30,13 @@ public record VacancyEvaluationDTO(long vacancyId, long sourceItemId, String vac
                                              int rejected) {
         return new VacancyEvaluationDTO(vacancyId, sourceItemId, vacancyRevision, decision, preferenceRank,
                 roleClassification, List.copyOf(newReasons), List.copyOf(newUnknowns),
-                List.copyOf(newEvidence), originalUrl, workId, status, rejected, title);
+                List.copyOf(newEvidence), originalUrl, workId, status, rejected, title,
+                sourceAttribution, applicationLink);
+    }
+
+    public VacancyEvaluationDTO withSourceAttribution(String attribution, String applyLink) {
+        return new VacancyEvaluationDTO(vacancyId, sourceItemId, vacancyRevision, decision, preferenceRank,
+                roleClassification, reasons, unknowns, evidence, originalUrl, extractionWorkId, extractionStatus,
+                rejectedCount, title, attribution, applyLink);
     }
 }

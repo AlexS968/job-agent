@@ -49,15 +49,23 @@ public class CandidateAssessmentService {
 
     /** Joins the evaluation transaction so the first-stage evidence and evaluation commit together. */
     public CandidateAssessmentDTO forEvaluation(long sourceItemId, VacancyReadDTO vacancy) {
-        if (!TransactionSynchronizationManager.isActualTransactionActive() || vacancy == null) {
+        if (vacancy == null) {
             throw new IllegalStateException("Candidate assessment requires the evaluation transaction");
+        }
+        return assessObservation(sourceItemId, vacancy.id(), vacancy.title(), vacancy.description());
+    }
+
+    /** Records the first-stage assessment alongside the source observation that supplied it. */
+    public CandidateAssessmentDTO assessObservation(long sourceItemId, long vacancyId, String title, String description) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive()) {
+            throw new IllegalStateException("Candidate assessment requires an active transaction");
         }
         CandidateAssessmentDTO existing = repository.find(sourceItemId, CandidateAssessmentPolicy.VERSION);
         if (existing != null) {
             return existing;
         }
-        CandidateAssessmentDTO assessed = policy.assess(vacancy.title(), vacancy.description());
-        repository.record(sourceItemId, vacancy.id(), CandidateAssessmentPolicy.VERSION, assessed);
+        CandidateAssessmentDTO assessed = policy.assess(title, description);
+        repository.record(sourceItemId, vacancyId, CandidateAssessmentPolicy.VERSION, assessed);
         return repository.find(sourceItemId, CandidateAssessmentPolicy.VERSION);
     }
 

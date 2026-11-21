@@ -8,10 +8,13 @@ import com.alexs.jobagent.evaluation.dto.SelectedExtractionDTO;
 import com.alexs.jobagent.evaluation.dto.EvaluationStatusDTO;
 import com.alexs.jobagent.evaluation.repository.EvaluationRepository;
 import com.alexs.jobagent.source.dto.SourceEvidenceDTO;
+import com.alexs.jobagent.source.service.HimalayasIntakeService;
+import com.alexs.jobagent.source.service.HimalayasPostingEvidence;
 import com.alexs.jobagent.source.service.SourceEvidenceService;
 import com.alexs.jobagent.vacancy.dto.VacancyReadDTO;
 import com.alexs.jobagent.vacancy.service.VacancyReadService;
 import com.alexs.jobagent.vacancy.service.CandidateAssessmentService;
+import java.time.Clock;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -38,13 +41,15 @@ public class EvaluationService {
     private final ExtractionEvidenceService extractionEvidence;
     private final CountryEvidencePolicy countryEvidence;
     private final CandidateAssessmentService candidates;
+    private final HimalayasPostingEvidence himalayasEvidence;
+    private final Clock clock;
     private final TransactionTemplate transaction;
 
     public EvaluationService(VacancyReadService vacancies, SourceEvidenceService sources,
                              EvaluationRepository evaluations, RuleEvaluationPolicy policy,
                              ExtractionAwareEvaluationPolicy extractionPolicy,
                              ExtractionEvidenceService extractionEvidence, CountryEvidencePolicy countryEvidence,
-                             CandidateAssessmentService candidates,
+                             CandidateAssessmentService candidates, HimalayasPostingEvidence himalayasEvidence, Clock clock,
                              PlatformTransactionManager manager) {
         this.vacancies = vacancies;
         this.sources = sources;
@@ -54,6 +59,8 @@ public class EvaluationService {
         this.extractionEvidence = extractionEvidence;
         this.countryEvidence = countryEvidence;
         this.candidates = candidates;
+        this.himalayasEvidence = himalayasEvidence;
+        this.clock = clock;
         this.transaction = new TransactionTemplate(manager);
     }
 
@@ -216,7 +223,8 @@ public class EvaluationService {
             if (ExtractionAwareEvaluationPolicy.VERSION.equals(policyVersion)) {
                 result = extractionPolicy.evaluate(vacancy, source, profile, revision, selected);
             } else if (RuleEvaluationPolicy.VERSION.equals(policyVersion)
-                    && trustedLiveSource(vacancy.sourceNamespace())) {
+                    && (trustedLiveSource(vacancy.sourceNamespace())
+                    || isHimalayas(vacancy, source))) {
                 result = policy.evaluateCandidate(vacancy, source, profile, revision,
                         candidates.forEvaluation(source.sourceItemId(), vacancy));
             } else {
@@ -246,10 +254,22 @@ public class EvaluationService {
         if (reportOnly && !trustedLiveEvidence(vacancy.sourceNamespace(), source.inputVersion())) {
             return null;
         }
+        var metadata = isHimalayas(vacancy, source)
+                ? himalayasEvidence.reviewMetadata(source.rawPayload(), clock.instant()) : null;
+        if (metadata != null && metadata.expired()) {
+            return null;
+        }
         String revision = policy.revision(vacancy, source);
         SelectedExtractionDTO selected = select(policyVersion, id, source.sourceItemId(), revision);
-        return evaluations.current(id, revision, profile, policyVersion,
+        var result = evaluations.current(id, revision, profile, policyVersion,
                 selected == null ? null : selected.workId(), selected == null ? "NONE" : selected.status());
+        return result == null || metadata == null ? result
+                : result.withSourceAttribution("Himalayas", metadata.applicationLink());
+    }
+
+    private static boolean isHimalayas(VacancyReadDTO vacancy, SourceEvidenceDTO source) {
+        return HimalayasIntakeService.NAMESPACE.equals(vacancy.sourceNamespace())
+                && HimalayasIntakeService.INPUT_VERSION.equals(source.inputVersion());
     }
 
     private static boolean trustedLiveSource(String namespace) {
