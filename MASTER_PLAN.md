@@ -113,7 +113,7 @@ Phase 7 closed operationally on 2026-11-19. The owner-approved transfer copied 1
 
 The Tavily-only rollout above records the historical 9A.1 experiment. Next deliver 9A.1 as multi-channel coverage and employer registry, followed by 9A.2's protected report. Use the [retirement register](docs/SOURCE_ARCHITECTURE_RETIREMENT_REGISTER.md) to remove the Tavily-to-Greenhouse/Lever resolution loop if its replacement makes it unused. Phase 8 remains optional and does not block this order.
 
-The first [9A.1 direct-channel increment](docs/PHASE_9A_SOURCE_COVERAGE.md#first-direct-channel-increment) prepares manual, bounded Himalayas intake and reuses the existing stored candidate and review workflow. Cloud acceptance, recurring intake and additional employer-registry work are separate steps.
+The first [9A.1 direct-channel increment](docs/PHASE_9A_SOURCE_COVERAGE.md#aws-intake-and-replay-2026-11-21) verified manual Himalayas intake in AWS on 2026-11-21. Three requests produced 52 distinct vacancies and 17 Java/backend role candidates. A replay left all 52 unchanged and added no vacancy or outbox event. The [recurring integration](docs/PHASE_9A_SOURCE_COVERAGE.md#recurring-himalayas-intake) is prepared locally for the existing Tuesday/Thursday batch, with AWS validation pending. Additional employer-registry work remains a separate step.
 
 ## 7. Small PRs
 

@@ -55,11 +55,15 @@ public class HimalayasIntakeService {
     }
 
     public HimalayasImportResultDTO run() {
+        return runUntil(Instant.MAX);
+    }
+
+    public HimalayasImportResultDTO runUntil(Instant deadline) {
         if (TransactionSynchronizationManager.isActualTransactionActive()) {
             throw new IllegalStateException("Himalayas intake requires no ambient transaction");
         }
         Instant observedAt = clock.instant().truncatedTo(ChronoUnit.MICROS);
-        var batch = search.fetch();
+        var batch = search.fetch(deadline);
         Map<String, HimalayasListingDTO> distinct = new LinkedHashMap<>();
         for (var posting : batch.listings()) {
             distinct.putIfAbsent(posting.postingId(), posting);
@@ -70,8 +74,9 @@ public class HimalayasIntakeService {
         int unchanged = 0;
         int failed = batch.invalidRows();
         for (var posting : distinct.values()) {
-            if (Thread.currentThread().isInterrupted()) {
-                throw new IllegalStateException("Himalayas intake interrupted");
+            requireNotInterrupted();
+            if (!clock.instant().isBefore(deadline)) {
+                break;
             }
             try {
                 var outcome = persist(posting, observedAt);
@@ -87,8 +92,15 @@ public class HimalayasIntakeService {
                 failed++;
             }
         }
+        requireNotInterrupted();
         return new HimalayasImportResultDTO(batch.requests(), batch.fetched(), distinct.size(), roleRelevant,
                 created, updated, unchanged, failed, batch.failedFilters());
+    }
+
+    private static void requireNotInterrupted() {
+        if (Thread.currentThread().isInterrupted()) {
+            throw new IllegalStateException("Himalayas intake interrupted");
+        }
     }
 
     private PostingOutcome persist(HimalayasListingDTO posting, Instant observedAt) {

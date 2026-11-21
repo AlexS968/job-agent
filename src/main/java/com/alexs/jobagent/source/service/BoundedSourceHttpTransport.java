@@ -21,6 +21,7 @@ import org.springframework.stereotype.Component;
 @Component
 public class BoundedSourceHttpTransport {
     private static final int MAX_BYTES = 4_000_000;
+    private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(8);
     private final RequestSender sender;
     private final Duration completionTimeout;
 
@@ -35,27 +36,36 @@ public class BoundedSourceHttpTransport {
     }
 
     public Response get(URI uri) throws IOException {
-        HttpRequest request = HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(8)).GET().build();
-        return send(request);
+        HttpRequest request = HttpRequest.newBuilder(uri).timeout(REQUEST_TIMEOUT).GET().build();
+        return send(request, completionTimeout);
+    }
+
+    public Response get(URI uri, Duration timeBudget) throws IOException {
+        HttpRequest request = HttpRequest.newBuilder(uri).timeout(shorter(REQUEST_TIMEOUT, timeBudget)).GET().build();
+        return send(request, shorter(completionTimeout, timeBudget));
     }
 
     public Response postJson(URI uri, String authorization, String json) throws IOException {
-        HttpRequest request = HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(8))
+        HttpRequest request = HttpRequest.newBuilder(uri).timeout(REQUEST_TIMEOUT)
                 .header("Authorization", "Bearer " + authorization)
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(json)).build();
-        return send(request);
+        return send(request, completionTimeout);
     }
 
-    private Response send(HttpRequest request) throws IOException {
+    private static Duration shorter(Duration limit, Duration budget) {
+        return budget.compareTo(limit) < 0 ? budget : limit;
+    }
+
+    private Response send(HttpRequest request, Duration timeout) throws IOException {
         CompletableFuture<HttpResponse<byte[]>> call = sender.send(request,
                 info -> new BoundedBodySubscriber(MAX_BYTES, ResponseTooLargeException::new));
         try {
-            HttpResponse<byte[]> response = call.get(completionTimeout.toMillis(), TimeUnit.MILLISECONDS);
+            HttpResponse<byte[]> response = call.get(timeout.toNanos(), TimeUnit.NANOSECONDS);
             return new Response(response.statusCode(), response.body(), response.headers().map());
-        } catch (TimeoutException timeout) {
+        } catch (TimeoutException timeoutFailure) {
             call.cancel(true);
-            throw new IOException("Source request timed out", timeout);
+            throw new IOException("Source request timed out", timeoutFailure);
         } catch (ExecutionException failed) {
             Throwable cause = failed.getCause();
             if (cause instanceof ResponseTooLargeException tooLarge) {

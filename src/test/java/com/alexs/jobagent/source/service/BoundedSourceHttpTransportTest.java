@@ -47,6 +47,20 @@ class BoundedSourceHttpTransportTest {
     }
 
     @Test
+    void getCapsRequestAndResponseWaitAtTheCallerBudget() {
+        CompletableFuture<HttpResponse<byte[]>> pending = new CompletableFuture<>();
+        Duration remaining = Duration.ofMillis(5);
+        var transport = new BoundedSourceHttpTransport((request, handler) -> {
+            assertEquals(remaining, request.timeout().orElseThrow());
+            return pending;
+        }, Duration.ofSeconds(9));
+
+        IOException failure = assertThrows(IOException.class, () -> transport.get(ENDPOINT, remaining));
+        assertInstanceOf(TimeoutException.class, failure.getCause());
+        assertTrue(pending.isCancelled());
+    }
+
+    @Test
     void interruptionCancelsOutstandingRequestAndRestoresFlag() throws Exception {
         CompletableFuture<HttpResponse<byte[]>> pending = new CompletableFuture<>();
         BoundedSourceHttpTransport transport = withFuture(pending, Duration.ofSeconds(9));

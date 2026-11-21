@@ -1,7 +1,18 @@
 package com.alexs.jobagent;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
+import com.alexs.jobagent.batch.repository.ScheduledBatchRepository;
+import com.alexs.jobagent.batch.service.BatchReportFormatter;
+import com.alexs.jobagent.batch.service.ReportGateway;
+import com.alexs.jobagent.batch.service.ScheduledBatchService;
+import com.alexs.jobagent.batch.service.ScheduledResultService;
 import com.alexs.jobagent.evaluation.dto.LoadedProfileDTO;
 import com.alexs.jobagent.evaluation.dto.SearchProfileDTO;
 import com.alexs.jobagent.evaluation.service.EvaluationService;
@@ -14,13 +25,18 @@ import com.alexs.jobagent.outbox.service.SqsProducerService;
 import com.alexs.jobagent.outbox.mapper.SqsEventMapper;
 import com.alexs.jobagent.outbox.repository.ConsumerDeliveryRepository;
 import com.alexs.jobagent.source.dto.SyntheticInputDTO;
+import com.alexs.jobagent.source.service.BoundedSourceHttpTransport;
+import com.alexs.jobagent.source.service.HimalayasIntakeService;
 import com.alexs.jobagent.source.service.SyntheticIngestionService;
 import com.alexs.jobagent.source.service.SourceRegistryService;
 import com.alexs.jobagent.batch.service.BatchPipelineService;
 import java.io.InputStream;
+import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
@@ -32,6 +48,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.postgresql.PostgreSQLContainer;
@@ -62,12 +79,15 @@ class SqsEvaluationIT {
     @Autowired SqsEventMapper mapper;
     @Autowired SourceRegistryService registry;
     @Autowired com.alexs.jobagent.source.service.SourceDiscoveryService discovery;
+    @Autowired HimalayasIntakeService himalayas;
+    @MockitoBean BoundedSourceHttpTransport transport;
 
     @BeforeEach
-    void clear() {
+    void clear() throws Exception {
         jdbc.execute("TRUNCATE sqs_evaluation_effects, sqs_vacancy_observations, vacancy_evaluations, "
                 + "evaluation_profiles, consumer_deliveries, outbox_events, vacancy_sources, source_items, "
                 + "vacancies, employers, agent_runs RESTART IDENTITY CASCADE");
+        when(transport.get(any(URI.class), any(Duration.class))).thenReturn(himalayasResponse(200, "{\"jobs\":[]}"));
     }
 
     @Test
@@ -79,7 +99,7 @@ class SqsEvaluationIT {
         Queue queue = new Queue();
         var pipeline = new BatchPipelineService(registry, discovery, outbox,
                 new SqsProducerService(outbox, queue, json, mapper),
-                consumer(queue), queue, evaluations, clock);
+                consumer(queue), queue, evaluations, himalayas, clock);
         var selected = profile("v1");
         var first = pipeline.run(selected, 10, Duration.ofMinutes(10), 5);
         assertEquals(1, first.published());
@@ -92,6 +112,50 @@ class SqsEvaluationIT {
         assertEquals(0, second.published());
         assertEquals(0, second.evaluated());
         assertEquals(1, count("vacancy_evaluations"));
+    }
+
+    @Test
+    void scheduledBatchImportsHimalayasOncePublishesItsEventAndEvaluatesBothProfiles() throws Exception {
+        doReturn(himalayasResponse(200, """
+                {"jobs":[{"guid":"https://himalayas.app/companies/example/jobs/java-engineer",
+                  "title":"Java Engineer","description":"Develop Java backend services",
+                  "locationRestrictions":["Germany"]}]}
+                """), himalayasResponse(503, ""), himalayasResponse(200, "{\"jobs\":[]}"))
+                .when(transport).get(any(URI.class), any(Duration.class));
+        Queue queue = new Queue();
+        var pipeline = new BatchPipelineService(registry, discovery, outbox,
+                new SqsProducerService(outbox, queue, json, mapper), consumer(queue), queue,
+                evaluations, himalayas, clock);
+        var reports = mock(ReportGateway.class);
+        when(reports.publish(any(), any())).thenReturn("synthetic-report");
+        var repository = new ScheduledBatchRepository(jdbc);
+        var formatter = new BatchReportFormatter();
+        var scheduled = new ScheduledBatchService(repository, new ScheduledResultService(repository, formatter, manager),
+                pipeline, evaluations, formatter, reports, clock, "https://page.example.test/");
+
+        scheduled.run(List.of(scheduledProfile("DE"), scheduledProfile("AT")));
+
+        verify(transport, times(3)).get(any(URI.class), any(Duration.class));
+        assertEquals(1, count("vacancies WHERE source_namespace='himalayas'"));
+        assertEquals(1, count("outbox_events WHERE state='PUBLISHED'"));
+        assertNotNull(queue.sent);
+        assertNull(queue.body);
+        assertEquals(1, count("sqs_evaluation_effects WHERE outcome='EVALUATED'"));
+        assertEquals(2, count("vacancy_evaluations WHERE profile_id IN ('alex-de','alex-at') "
+                + "AND country_eligibility='UNKNOWN'"));
+        assertEquals(0, count("scheduled_result_items"));
+        assertEquals(1, count("scheduled_result_reports WHERE status='PUBLISHED'"));
+        verify(reports).publish(any(), any());
+    }
+
+    private LoadedProfileDTO scheduledProfile(String country) {
+        return profiles.loadJson(json.writeValueAsString(new SearchProfileDTO(
+                "DE".equals(country) ? "alex-de" : "alex-at", "v1", country,
+                List.of("Java Engineer"), List.of(), List.of(), List.of(), List.of(), false, null)));
+    }
+
+    private static BoundedSourceHttpTransport.Response himalayasResponse(int status, String body) {
+        return new BoundedSourceHttpTransport.Response(status, body.getBytes(StandardCharsets.UTF_8), Map.of());
     }
 
     @Test

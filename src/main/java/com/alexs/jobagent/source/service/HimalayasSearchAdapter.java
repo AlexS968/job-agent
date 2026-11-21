@@ -4,6 +4,9 @@ import com.alexs.jobagent.source.dto.HimalayasListingDTO;
 import java.io.IOException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -23,22 +26,29 @@ public class HimalayasSearchAdapter {
     private static final Pattern POSTING_PATH = Pattern.compile("/companies/[a-zA-Z0-9-]+/jobs/[a-zA-Z0-9-]+/?");
     private final BoundedSourceHttpTransport transport;
     private final JsonMapper json;
+    private final Clock clock;
 
-    public HimalayasSearchAdapter(BoundedSourceHttpTransport transport, JsonMapper json) {
+    public HimalayasSearchAdapter(BoundedSourceHttpTransport transport, JsonMapper json, Clock clock) {
         this.transport = transport;
         this.json = json;
+        this.clock = clock;
     }
 
-    SearchBatch fetch() {
+    SearchBatch fetch(Instant deadline) {
         int requests = 0;
         int fetched = 0;
         List<HimalayasListingDTO> listings = new ArrayList<>();
         Map<String, String> failedFilters = new LinkedHashMap<>();
         for (Filter filter : Filter.values()) {
             requireNotInterrupted();
+            Duration remaining = Duration.between(clock.instant(), deadline);
+            if (remaining.isZero() || remaining.isNegative()) {
+                failedFilters.put(filter.name(), "DEADLINE_REACHED");
+                continue;
+            }
             requests++;
             try {
-                var response = transport.get(filter.uri);
+                var response = transport.get(filter.uri, remaining);
                 if (response.status() != 200) {
                     failedFilters.put(filter.name(), "HTTP_" + response.status());
                 } else {

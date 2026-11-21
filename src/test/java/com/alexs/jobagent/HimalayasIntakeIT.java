@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -20,6 +21,7 @@ import com.alexs.jobagent.source.service.HimalayasIntakeService;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
@@ -81,7 +83,7 @@ class HimalayasIntakeIT {
 
         assertEquals(new HimalayasImportResultDTO(3, 3, 2, 1, 2, 0, 0, 0, Map.of()), intake.run());
         var requests = ArgumentCaptor.forClass(URI.class);
-        verify(transport, times(3)).get(requests.capture());
+        verify(transport, times(3)).get(requests.capture(), eq(Duration.between(OBSERVED, Instant.MAX)));
         assertEquals(List.of("q=Java&sort=recent&page=1&country=DE&exclude_worldwide=true",
                 "q=Java&sort=recent&page=1&country=AT&exclude_worldwide=true",
                 "q=Java&sort=recent&page=1&worldwide=true"),
@@ -116,7 +118,7 @@ class HimalayasIntakeIT {
                 page(platform, job("https://example.test/companies/example/jobs/invalid", "Engineer", "Java", List.of())));
 
         assertEquals(new HimalayasImportResultDTO(3, 3, 1, 1, 1, 0, 0, 1, Map.of("AT", "HTTP_503")), intake.run());
-        verify(transport, times(3)).get(any());
+        verify(transport, times(3)).get(any(URI.class), any(Duration.class));
         assertEquals(1, count("source_items"));
         for (String country : List.of("DE", "AT")) {
             var profile = profiles.loadJson(json.writeValueAsString(new SearchProfileDTO("sample-" + country, "v1", country,
@@ -140,9 +142,29 @@ class HimalayasIntakeIT {
 
         assertEquals("Himalayas intake completed with failures", assertThrows(IllegalStateException.class,
                 () -> runner.run("--mode=himalayas-intake")).getMessage());
-        verify(transport, times(3)).get(any());
+        verify(transport, times(3)).get(any(URI.class), any(Duration.class));
         assertEquals(0, count("vacancies"));
         assertEquals(0, count("outbox_events"));
+    }
+
+    @Test
+    void doesNotStartPersistenceAfterTheBatchDeadline() throws Exception {
+        Instant deadline = OBSERVED.plusSeconds(2);
+        var response = page(job(POSTING_URL, "Java Engineer", "Develop backend services.", List.of()));
+        doAnswer(call -> {
+            when(clock.instant()).thenReturn(deadline);
+            return response;
+        }).when(transport).get(any(URI.class), eq(Duration.ofSeconds(2)));
+
+        var result = intake.runUntil(deadline);
+
+        assertEquals(1, result.requests());
+        assertEquals(1, result.distinct());
+        assertEquals(0, result.created());
+        assertEquals(Map.of("AT", "DEADLINE_REACHED", "WORLDWIDE", "DEADLINE_REACHED"), result.failedFilters());
+        assertEquals(0, count("agent_runs"));
+        assertEquals(0, count("outbox_events"));
+        verify(transport).get(any(URI.class), any(Duration.class));
     }
 
     @Test
@@ -172,7 +194,7 @@ class HimalayasIntakeIT {
         assertTrue(expired.suitable().isEmpty());
         assertEquals(1, count("vacancy_evaluations"));
         assertEquals(1, count("vacancies"));
-        verify(transport, times(3)).get(any());
+        verify(transport, times(3)).get(any(URI.class), any(Duration.class));
     }
 
     private void respond(BoundedSourceHttpTransport.Response de, BoundedSourceHttpTransport.Response at,
@@ -184,7 +206,7 @@ class HimalayasIntakeIT {
                 return de;
             }
             return uri.getRawQuery().contains("country=AT") ? at : worldwide;
-        }).when(transport).get(any(URI.class));
+        }).when(transport).get(any(URI.class), any(Duration.class));
     }
 
     private static Map<String, Object> job(String url, String title, String description, List<String> locations) {

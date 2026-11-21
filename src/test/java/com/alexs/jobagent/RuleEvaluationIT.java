@@ -165,8 +165,11 @@ class RuleEvaluationIT {
         when(reports.publish(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
                 .thenReturn("synthetic-message-id");
         var consumer = new SqsEvaluationConsumerService(queue, outbox, deliveries, evaluation, json, clock, manager, mapper);
+        var himalayas = mock(com.alexs.jobagent.source.service.HimalayasIntakeService.class);
+        when(himalayas.runUntil(org.mockito.ArgumentMatchers.any())).thenReturn(
+                new com.alexs.jobagent.source.dto.HimalayasImportResultDTO(3, 0, 0, 0, 0, 0, 0, 0, java.util.Map.of()));
         var pipeline = new BatchPipelineService(sources, discovery, outbox, producer, consumer, queue,
-                evaluation, clock);
+                evaluation, himalayas, clock);
         var scheduledRepository = new ScheduledBatchRepository(jdbc);
         var formatter = new BatchReportFormatter();
         var scheduled = new ScheduledBatchService(scheduledRepository,
