@@ -100,10 +100,6 @@ output "batch_schedule_name" {
   value = var.enable_scheduled_batch ? aws_scheduler_schedule.batch[0].name : null
 }
 
-output "batch_report_topic_arn" {
-  value = var.enable_scheduled_batch ? aws_sns_topic.batch_report[0].arn : null
-}
-
 output "scheduled_batch_group" {
   value = var.enable_scheduled_batch ? "${var.name_prefix}-scheduled-batch" : null
 }

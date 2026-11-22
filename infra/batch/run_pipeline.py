@@ -12,14 +12,13 @@ import time
 from datetime import datetime, timedelta, timezone
 
 ROOT = Path(__file__).resolve().parents[2]
-SCHEDULED = sys.argv[1:] == ["--scheduled-report"]
-STATE = Path("/tmp/job-agent-scheduled-batch-progress.json" if SCHEDULED
+SCHEDULED = sys.argv[1:] == ["--scheduled-collection"]
+STATE = Path("/tmp/job-agent-weekday-collection-progress.json" if SCHEDULED
              else "/tmp/job-agent-batch-pipeline-progress.json")
 PROFILE = "job-agent"
 REGION = "us-east-1"
-SCHEDULED_RESULT = re.compile(
-    r"Scheduled result: date=\d{4}-\d{2}-\d{2}, status=PUBLISHED, "
-    r"new_distinct=\d+, new_de=\d+, new_at=\d+, newly_relevant_distinct=\d+\b"
+COLLECTION_COMPLETE = re.compile(
+    r"Scheduled collection: date=\d{4}-\d{2}-\d{2}, status=COMPLETE, de_evaluated=true, at_evaluated=true\b"
 )
 
 
@@ -99,7 +98,7 @@ def wait_task(cluster, arn):
     raise RuntimeError("25-minute task bound reached; stop requested, confirm STOPPED")
 
 
-def report(arn, definition, code):
+def show_result(arn, definition, code):
     container = next(item for item in definition["containerDefinitions"] if item["name"] == "job-agent")
     options = container["logConfiguration"]["options"]
     stream = f"{options['awslogs-stream-prefix']}/job-agent/{arn.rsplit('/', 1)[-1]}"
@@ -112,14 +111,19 @@ def report(arn, definition, code):
     for attempt in range(7):
         if SCHEDULED:
             events = aws("logs", "filter-log-events", "--log-group-name", options["awslogs-group"],
-                         "--log-stream-names", stream, "--filter-pattern", '"Scheduled result"')
-            published = [match.group() for event in events.get("events", [])
-                         if (match := SCHEDULED_RESULT.search(event.get("message", "")))]
-            if len(published) > 1:
-                raise RuntimeError("Multiple combined result markers; review task logs before rerun")
-            if published:
-                print(published[0], flush=True)
-                return
+                         "--log-stream-names", stream, "--filter-pattern", '"Scheduled collection"')
+            completed = [match.group() for event in events.get("events", [])
+                         if (match := COLLECTION_COMPLETE.search(event.get("message", "")))]
+            if len(completed) > 1:
+                raise RuntimeError("Multiple collection completion markers; review task logs before rerun")
+            if completed:
+                print(completed[0], flush=True)
+                return True
+            skipped = aws("logs", "filter-log-events", "--log-group-name", options["awslogs-group"],
+                          "--log-stream-names", stream, "--filter-pattern", '"already completed; no processing repeated"')
+            if skipped.get("events"):
+                print("Berlin-date slot was already complete; this task did not collect or evaluate", flush=True)
+                return False
             if attempt < 6:
                 time.sleep(10)
             continue
@@ -136,7 +140,7 @@ def report(arn, definition, code):
         if attempt < 6:
             time.sleep(10)
     if SCHEDULED:
-        raise RuntimeError("Combined result publication log unavailable; inspect task logs before rerun")
+        raise RuntimeError("Scheduled collection completion log unavailable; inspect task logs before rerun")
     raise RuntimeError("Batch summary log unavailable; inspect task logs before rerun")
 
 
@@ -186,8 +190,8 @@ def idle(endpoint, after):
 
 
 def main():
-    if sys.argv[1:] not in ([], ["--scheduled-report"]):
-        raise RuntimeError("Expected no arguments or --scheduled-report")
+    if sys.argv[1:] not in ([], ["--scheduled-collection"]):
+        raise RuntimeError("Expected no arguments or --scheduled-collection")
     state = load()
     cluster = output("ecs_cluster_name")
     definition_arn = output("batch_pipeline_task_definition_arn")
@@ -214,7 +218,7 @@ def main():
         state["arn"] = launched["tasks"][0]["taskArn"]
         save(state)
     current, code = wait_task(cluster, state["arn"])
-    report(state["arn"], definition, code)
+    collected = show_result(state["arn"], definition, code)
     if code != 0:
         raise RuntimeError("Batch task failed; inspect safe logs and backlog before any rerun")
     family = definition_arn.rsplit("/", 1)[-1].split(":", 1)[0]
@@ -228,7 +232,8 @@ def main():
         state["idle_verified"] = True
         save(state)
     if SCHEDULED:
-        print("One combined result publication confirmed by task log; owner must confirm the email", flush=True)
+        if collected:
+            print("Scheduled collection completed; verify the refreshed DE/AT views on the protected page", flush=True)
     else:
         print("Batch acceptance complete; inspect reported backlog before another invocation", flush=True)
 

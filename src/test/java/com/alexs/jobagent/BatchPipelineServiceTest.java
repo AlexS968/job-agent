@@ -120,12 +120,12 @@ class BatchPipelineServiceTest {
         assertEquals(1, result.imported().created());
         assertEquals(1, result.published());
         assertEquals(1, result.evaluated());
-        var order = inOrder(sources, himalayas, producer, consumer, employers);
+        var order = inOrder(sources, himalayas, employers, producer, consumer);
         order.verify(sources).importActive();
         order.verify(himalayas).runUntil(deadline);
+        order.verify(employers).runUntil(eq(deadline.minusSeconds(510)), any());
         order.verify(producer).publish(1);
         order.verify(consumer).consume(1, profile);
-        order.verify(employers).runUntil(eq(deadline), any());
     }
 
     @Test

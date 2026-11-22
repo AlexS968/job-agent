@@ -95,9 +95,9 @@ resource "aws_iam_role_policy" "gmail_scheduler" {
 resource "aws_scheduler_schedule" "gmail_cutover" {
   count                        = var.prepare_gmail_cutover ? 1 : 0
   name                         = "${var.name_prefix}-gmail-hourly"
-  description                  = "Bounded Gmail intake after approved cutover"
-  state                        = var.enable_gmail_schedule ? "ENABLED" : "DISABLED"
-  schedule_expression          = var.gmail_schedule_expression
+  description                  = "Retired standalone schedule; use the unified weekday collection"
+  state                        = "DISABLED"
+  schedule_expression          = "cron(0 18 * * ? *)"
   schedule_expression_timezone = "Europe/Berlin"
   flexible_time_window { mode = "OFF" }
   target {

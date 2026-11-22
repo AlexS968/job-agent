@@ -85,16 +85,6 @@ variable "name_prefix" {
   }
 }
 
-variable "aurora_activity_alert_email" {
-  description = "Confirmed owner email for Aurora prolonged-activity notifications. Supply only through an ignored local tfvars file."
-  type        = string
-  sensitive   = true
-  validation {
-    condition     = can(regex("^[^[:space:]@]+@[^[:space:]@]+\\.[^[:space:]@]+$", var.aurora_activity_alert_email))
-    error_message = "Provide one valid email address in an ignored local tfvars file."
-  }
-}
-
 variable "enable_runtime" {
   description = "Create one-off ECS task definitions only after image, database roles and secrets are ready."
   type        = bool
@@ -204,17 +194,17 @@ variable "enable_batch_pipeline" {
 }
 
 variable "enable_scheduled_batch" {
-  description = "Prepare report SNS, failure alerts and a disabled twice-weekly schedule. Does not enable recurring execution."
+  description = "Prepare the weekday collection scheduler, launch DLQ and CloudWatch diagnostics."
   type        = bool
   default     = false
   validation {
-    condition     = !var.enable_scheduled_batch || (var.enable_batch_pipeline && var.enable_vacancy_page && var.page_access_enabled)
-    error_message = "Scheduled results require the batch task and an accessible protected vacancy page."
+    condition     = !var.enable_scheduled_batch || (var.enable_batch_pipeline && var.enable_vacancy_page && var.page_access_enabled && var.prepare_gmail_cutover)
+    error_message = "Scheduled collection requires the batch task, prepared Gmail cutover and an accessible protected vacancy page."
   }
 }
 
 variable "enable_recurring_batch" {
-  description = "Explicit owner gate after email acceptance and an agreed private selection profile."
+  description = "Explicit owner gate for recurring weekday collection."
   type        = bool
   default     = false
   validation {
@@ -250,18 +240,6 @@ variable "source_discovery_reviewed_on" {
   validation {
     condition     = var.source_discovery_reviewed_on == null || can(regex("^[0-9]{4}-[0-9]{2}-[0-9]{2}$", var.source_discovery_reviewed_on))
     error_message = "The source discovery review date must use YYYY-MM-DD."
-  }
-}
-
-variable "batch_report_email" {
-  description = "Owner email for the separate batch report/failure topic; supply only through ignored local tfvars."
-  type        = string
-  sensitive   = true
-  default     = null
-  validation {
-    condition = !var.enable_scheduled_batch || (var.batch_report_email != null &&
-    can(regex("^[^[:space:]@]+@[^[:space:]@]+\\.[^[:space:]@]+$", var.batch_report_email)))
-    error_message = "Prepared batch reporting requires a valid email in ignored local tfvars."
   }
 }
 
@@ -354,21 +332,6 @@ variable "gmail_modify_secret_arn" {
     condition     = !var.prepare_gmail_cutover || (can(regex("^arn:aws:secretsmanager:us-east-1:[0-9]{12}:secret:", var.gmail_modify_secret_arn)) && var.gmail_modify_secret_arn != var.gmail_oauth_secret_arn)
     error_message = "Cutover needs a separate reviewed Gmail modify credential."
   }
-}
-
-variable "enable_gmail_schedule" {
-  type    = bool
-  default = false
-  validation {
-    condition     = !var.enable_gmail_schedule || var.prepare_gmail_cutover
-    error_message = "Prepare the cutover task before enabling its schedule."
-  }
-}
-
-variable "gmail_schedule_expression" {
-  description = "EventBridge Scheduler expression for owner-approved Gmail cadence. Cron uses Europe/Berlin."
-  type        = string
-  default     = "cron(15 * * * ? *)"
 }
 
 variable "gmail_overlap_seconds" {

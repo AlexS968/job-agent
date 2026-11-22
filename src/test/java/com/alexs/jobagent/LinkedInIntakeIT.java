@@ -14,6 +14,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
+import java.time.Clock;
+import java.time.Instant;
 import java.time.LocalDate;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -62,6 +64,7 @@ class LinkedInIntakeIT {
         private List<String> ids = List.of();
         private Map<String, JsonNode> messages = Map.of();
         private String failingId;
+        private java.util.function.Consumer<String> onRead;
         @Override public List<String> alertIds(int limit, LocalDate after, LocalDate before) {
             return ids.stream().limit(limit).toList();
         }
@@ -69,12 +72,14 @@ class LinkedInIntakeIT {
             if (id.equals(failingId)) {
                 throw new IllegalStateException("Synthetic temporary Gmail failure");
             }
+            onRead.accept(id);
             return messages.get(id);
         }
     }
 
     @Autowired GmailCutoverService cutover;
     @Autowired LinkedInIntakeService intake;
+    @Autowired com.alexs.jobagent.source.repository.GmailCutoverRepository gmailState;
     @Autowired LinkedInRepairService repair;
     @Autowired com.alexs.jobagent.source.service.EmployerMonitoringService monitoring;
     @Autowired SyntheticMailbox mailbox;
@@ -90,6 +95,7 @@ class LinkedInIntakeIT {
         mailbox.page = token -> { throw new AssertionError("Unexpected live list"); };
         mailbox.modify = id -> { throw new AssertionError("Unexpected mailbox change"); };
         mailbox.failingId = null;
+        mailbox.onRead = id -> { };
     }
 
     @Test
@@ -297,6 +303,69 @@ class LinkedInIntakeIT {
         assertEquals(1, second.applied());
         assertEquals(0, second.outstanding());
         assertEquals(1, count("gmail_mailbox_actions"));
+    }
+
+    @Test
+    void weekdayIntakeCapsMondayBacklogAndResumesSavedToken() {
+        long now = Instant.now().getEpochSecond();
+        long since = now - 3 * 86_400;
+        jdbc.update("INSERT INTO gmail_cutover(enabled,since_epoch,window_start) VALUES(true,?,?)", since, since);
+        String card = "<a href='https://www.linkedin.com/jobs/view/123456/'>Java Engineer</a>";
+        mailbox.messages = Map.of("first", message("first", (since + 1) * 1000, card),
+                "last", message("last", (since + 2) * 1000, card));
+        var tokens = new java.util.ArrayList<String>();
+        mailbox.page = token -> {
+            tokens.add(token);
+            return switch (token == null ? "" : token) {
+                case "" -> new GmailCutoverClient.Page(List.of("first"), "second");
+                case "second" -> new GmailCutoverClient.Page(List.of("first"), "third");
+                case "third" -> new GmailCutoverClient.Page(List.of("first"), "fourth");
+                case "fourth" -> new GmailCutoverClient.Page(List.of("last"), null);
+                default -> throw new AssertionError(token);
+            };
+        };
+        var applied = new java.util.ArrayList<String>();
+        mailbox.modify = applied::add;
+
+        assertTrue(cutover.runUntil(Instant.now().plusSeconds(180)).morePages());
+        assertEquals("fourth", jdbc.queryForObject("SELECT page_token FROM gmail_cutover", String.class));
+        assertEquals(1, count("gmail_alert_messages"));
+        assertEquals(3, tokens.size());
+        assertTrue(cutover.runUntil(Instant.now().plusSeconds(5)).morePages());
+        assertEquals(3, tokens.size());
+        assertEquals(false, cutover.runUntil(Instant.now().plusSeconds(180)).morePages());
+        assertEquals("fourth", tokens.getLast());
+        assertEquals(List.of("first", "last"), applied);
+        assertEquals(1, count("vacancies"));
+        assertEquals(2, count("gmail_alert_messages"));
+    }
+
+    @Test
+    void partialPageAtDeadlineRetainsCursorAndCommittedMessage() {
+        Instant start = Instant.now();
+        long since = start.getEpochSecond() - 60;
+        jdbc.update("INSERT INTO gmail_cutover(enabled,since_epoch,window_start) VALUES(true,?,?)", since, since);
+        String card = "<a href='https://www.linkedin.com/jobs/view/123456/'>Java Engineer</a>";
+        mailbox.messages = Map.of("first", message("first", (since + 1) * 1000, card),
+                "last", message("last", (since + 2) * 1000, card));
+        var current = new java.util.concurrent.atomic.AtomicReference<>(start);
+        Clock clock = org.mockito.Mockito.mock(Clock.class);
+        org.mockito.Mockito.when(clock.instant()).thenAnswer(call -> current.get());
+        var bounded = new GmailCutoverService(gmailState, intake, mailbox, 7200, clock);
+        mailbox.page = token -> {
+            org.junit.jupiter.api.Assertions.assertNull(token);
+            return new GmailCutoverClient.Page(List.of("first", "last"), null);
+        };
+        // Advance the clock during the first message read, after the page has been fetched.
+        mailbox.onRead = id -> current.set(start.plusSeconds(140));
+        assertTrue(bounded.runUntil(start.plusSeconds(180)).morePages());
+        assertEquals(1, count("gmail_alert_messages"));
+        assertEquals(1, count("gmail_cutover WHERE window_end IS NOT NULL AND page_token IS NULL"));
+        mailbox.modify = id -> { };
+        mailbox.onRead = id -> { };
+        assertEquals(false, bounded.runUntil(start.plusSeconds(320)).morePages());
+        assertEquals(2, count("gmail_alert_messages"));
+        assertEquals(1, count("vacancies"));
     }
 
     @Test

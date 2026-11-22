@@ -1,4 +1,4 @@
-"""Offline checks for the bounded scheduled-report runner path."""
+"""Offline checks for the bounded scheduled-collection runner path."""
 
 import importlib.util
 import json
@@ -41,8 +41,8 @@ class ScheduledRunnerTest(unittest.TestCase):
                     patch.object(runner, "output", side_effect=outputs.__getitem__), \
                     patch.object(runner, "aws", side_effect=fake_aws), \
                     patch.object(runner, "wait_task", return_value=({"stoppedAt": "2026-11-05T18:02:00Z"}, 0)), \
-                    patch.object(runner, "report") as report, patch.object(runner, "idle") as idle, \
-                    patch.object(runner.sys, "argv", [str(SCRIPT), "--scheduled-report"]):
+                    patch.object(runner, "show_result") as report, patch.object(runner, "idle") as idle, \
+                    patch.object(runner.sys, "argv", [str(SCRIPT), "--scheduled-collection"]):
                 runner.main()
                 runner.main()
             launches = [call for call in calls if call[1] == "run-task"]
@@ -56,47 +56,53 @@ class ScheduledRunnerTest(unittest.TestCase):
                                       {"containerDefinitions": [{"name": "job-agent"}]}, 0)
             self.assertEqual(1, idle.call_count)
 
-    def test_report_accepts_one_combined_publication_after_bounded_polling(self):
+    def test_accepts_one_collection_completion_after_bounded_polling(self):
         definition = {"containerDefinitions": [{"name": "job-agent", "logConfiguration": {
             "options": {"awslogs-stream-prefix": "batch", "awslogs-group": "/ecs/synthetic"}}}]}
-        marker = ("Scheduled result: date=2026-11-05, status=PUBLISHED, "
-                  "new_distinct=1, new_de=1, new_at=0, newly_relevant_distinct=0")
+        marker = "Scheduled collection: date=2026-11-05, status=COMPLETE, de_evaluated=true, at_evaluated=true"
         with patch.object(runner, "SCHEDULED", True), patch.object(runner, "aws", side_effect=[
-                {"events": []}, {"events": [{"message": "INFO " + marker}]}]) as aws, \
+                {"events": []}, {"events": []}, {"events": [{"message": "INFO " + marker}]}]) as aws, \
                 patch.object(runner.time, "sleep") as sleep, \
                 patch("builtins.print") as printed:
-            runner.report("arn:aws:ecs:us-east-1:111111111111:task/reviewed/abc", definition, 0)
-        self.assertEqual(2, aws.call_count)
+            runner.show_result("arn:aws:ecs:us-east-1:111111111111:task/reviewed/abc", definition, 0)
+        self.assertEqual(3, aws.call_count)
         self.assertEqual(1, sleep.call_count)
-        self.assertIn('"Scheduled result"', aws.call_args.args)
+        self.assertIn('"Scheduled collection"', aws.call_args.args)
         printed.assert_called_once_with(marker, flush=True)
 
-    def test_legacy_profile_markers_do_not_satisfy_combined_publication(self):
+    def test_legacy_email_markers_do_not_satisfy_collection_completion(self):
         definition = {"containerDefinitions": [{"name": "job-agent", "logConfiguration": {
             "options": {"awslogs-stream-prefix": "batch", "awslogs-group": "/ecs/synthetic"}}}]}
-        with patch.object(runner, "SCHEDULED", True), patch.object(runner, "aws", return_value={
+        with patch.object(runner, "SCHEDULED", True), patch.object(runner, "aws", side_effect=lambda *args: {"events": []} if "already completed" in args[-1] else {
                 "events": [{"message": "Scheduled report: date=2026-11-05, profile=alex-de, status=PUBLISHED"},
                            {"message": "Scheduled report: date=2026-11-05, profile=alex-at, status=PUBLISHED"}]}), \
                 patch.object(runner.time, "sleep") as sleep:
-            with self.assertRaisesRegex(RuntimeError, "Combined result publication log unavailable"):
-                runner.report("arn:aws:ecs:us-east-1:111111111111:task/reviewed/abc", definition, 0)
+            with self.assertRaisesRegex(RuntimeError, "Scheduled collection completion log unavailable"):
+                runner.show_result("arn:aws:ecs:us-east-1:111111111111:task/reviewed/abc", definition, 0)
         self.assertEqual(6, sleep.call_count)
 
-    def test_missing_or_duplicate_combined_markers_fail_safely(self):
+    def test_missing_or_duplicate_collection_markers_fail_safely(self):
         definition = {"containerDefinitions": [{"name": "job-agent", "logConfiguration": {
             "options": {"awslogs-stream-prefix": "batch", "awslogs-group": "/ecs/synthetic"}}}]}
-        marker = ("Scheduled result: date=2026-11-05, status=PUBLISHED, "
-                  "new_distinct=0, new_de=0, new_at=0, newly_relevant_distinct=0")
+        marker = "Scheduled collection: date=2026-11-05, status=COMPLETE, de_evaluated=true, at_evaluated=true"
         with patch.object(runner, "SCHEDULED", True), patch.object(runner, "aws", return_value={
                 "events": [{"message": marker}, {"message": marker}]}):
-            with self.assertRaisesRegex(RuntimeError, "Multiple combined result markers"):
-                runner.report("arn:aws:ecs:us-east-1:111111111111:task/reviewed/abc", definition, 0)
-        with patch.object(runner, "SCHEDULED", True), patch.object(runner, "aws", return_value={
-                "events": [{"message": marker.replace("status=PUBLISHED", "status=PREPARED") }]}), \
+            with self.assertRaisesRegex(RuntimeError, "Multiple collection completion markers"):
+                runner.show_result("arn:aws:ecs:us-east-1:111111111111:task/reviewed/abc", definition, 0)
+        with patch.object(runner, "SCHEDULED", True), patch.object(runner, "aws", side_effect=lambda *args: {"events": []} if "already completed" in args[-1] else {
+                "events": [{"message": marker.replace("status=COMPLETE", "status=FAILED") }]}), \
                 patch.object(runner.time, "sleep") as sleep:
-            with self.assertRaisesRegex(RuntimeError, "Combined result publication log unavailable"):
-                runner.report("arn:aws:ecs:us-east-1:111111111111:task/reviewed/abc", definition, 0)
+            with self.assertRaisesRegex(RuntimeError, "Scheduled collection completion log unavailable"):
+                runner.show_result("arn:aws:ecs:us-east-1:111111111111:task/reviewed/abc", definition, 0)
         self.assertEqual(6, sleep.call_count)
+
+
+    def test_same_day_skip_is_visible_without_claiming_collection(self):
+        definition = {"containerDefinitions": [{"name": "job-agent", "logConfiguration": {
+            "options": {"awslogs-stream-prefix": "batch", "awslogs-group": "/ecs/synthetic"}}}]}
+        with patch.object(runner, "SCHEDULED", True), patch.object(runner, "aws", side_effect=[
+                {"events": []}, {"events": [{"message": "already completed; no processing repeated"}]}]):
+            self.assertFalse(runner.show_result("arn:aws:ecs:us-east-1:111111111111:task/reviewed/abc", definition, 0))
 
 
 if __name__ == "__main__":

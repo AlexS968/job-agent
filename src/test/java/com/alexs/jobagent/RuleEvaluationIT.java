@@ -13,10 +13,8 @@ import com.alexs.jobagent.evaluation.service.ProfileFileService;
 import com.alexs.jobagent.evaluation.service.RuleEvaluationPolicy;
 import com.alexs.jobagent.batch.repository.ScheduledBatchRepository;
 import com.alexs.jobagent.batch.service.BatchPipelineService;
-import com.alexs.jobagent.batch.service.BatchReportFormatter;
-import com.alexs.jobagent.batch.service.ReportGateway;
 import com.alexs.jobagent.batch.service.ScheduledBatchService;
-import com.alexs.jobagent.batch.service.ScheduledResultService;
+import com.alexs.jobagent.source.service.GmailCutoverService;
 import com.alexs.jobagent.outbox.dto.SqsBatchResultDTO;
 import com.alexs.jobagent.outbox.dto.SqsQueueBacklogDTO;
 import com.alexs.jobagent.outbox.repository.ConsumerDeliveryRepository;
@@ -147,7 +145,7 @@ class RuleEvaluationIT {
     }
 
     @Test
-    void emptyQueueStillPreparesBothReportsFromStoredVacancyAndAllowsNewProfileVersion() {
+    void emptyQueueStillEvaluatesBothProfilesAndAllowsNewProfileVersion() {
         long vacancy = insert("Backend Engineer", COUNTRY_REMOTE);
         var de = profiles.loadJson(json.writeValueAsString(new SearchProfileDTO("alex-de", "v1", "DE",
                 List.of("Backend Engineer"), List.of(), List.of(), List.of(), List.of(), false, null)));
@@ -157,14 +155,14 @@ class RuleEvaluationIT {
         var sources = mock(SourceRegistryService.class);
         var producer = mock(SqsProducerService.class);
         var queue = mock(SqsGateway.class);
-        var reports = mock(ReportGateway.class);
+        var gmail = mock(GmailCutoverService.class);
+        when(gmail.runUntil(org.mockito.ArgumentMatchers.any())).thenReturn(
+                new GmailCutoverService.Result(true, false, false, 0, 0, 0, 0));
         var clock = Clock.fixed(Instant.parse("2026-11-05T18:00:00Z"), ZoneOffset.UTC);
         when(sources.importActive()).thenReturn(new ActiveSourceImportResultDTO(0, 0, 0, 0, 0));
         when(producer.publish(10)).thenReturn(new SqsBatchResultDTO(0, 0, 0, 0));
         when(queue.receive()).thenReturn(List.of());
         when(queue.backlog()).thenReturn(new SqsQueueBacklogDTO(0, 0, 0));
-        when(reports.publish(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
-                .thenReturn("synthetic-message-id");
         var consumer = new SqsEvaluationConsumerService(queue, outbox, deliveries, evaluation, json, clock, manager, mapper);
         var himalayas = mock(com.alexs.jobagent.source.service.HimalayasIntakeService.class);
         when(himalayas.runUntil(org.mockito.ArgumentMatchers.any())).thenReturn(
@@ -172,20 +170,13 @@ class RuleEvaluationIT {
         var pipeline = new BatchPipelineService(sources, discovery, outbox, producer, consumer, queue,
                 evaluation, himalayas, mock(EmployerMonitoringService.class), clock);
         var scheduledRepository = new ScheduledBatchRepository(jdbc);
-        var formatter = new BatchReportFormatter();
-        var scheduled = new ScheduledBatchService(scheduledRepository,
-                new ScheduledResultService(scheduledRepository, formatter, manager), pipeline, evaluation,
-                formatter, reports, clock, "https://page.example.test/");
+        var scheduled = new ScheduledBatchService(scheduledRepository, pipeline, evaluation, gmail, clock);
         scheduled.run(List.of(de, at));
         assertEquals(2, jdbc.queryForObject("SELECT count(*) FROM vacancy_evaluations WHERE vacancy_id = ?",
                 Integer.class, vacancy));
-        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM scheduled_result_reports "
-                + "WHERE schedule_date = ? AND status = 'PUBLISHED'", Integer.class, LocalDate.of(2026, 11, 5)));
-        String report = jdbc.queryForObject("SELECT report_text FROM scheduled_result_reports",
-                String.class);
-        assertTrue(report.contains("Germany: 0 new; 0 newly relevant"));
-        assertTrue(report.contains("Austria: 0 new; 0 newly relevant"));
+        assertEquals(0, count("scheduled_result_reports"));
         assertEquals(0, count("scheduled_result_items"));
+        assertEquals("COMPLETE", scheduledRepository.invocationStatus(LocalDate.of(2026, 11, 5)));
         verify(sources).importActive();
         verify(queue).receive();
         var changed = profiles.loadJson(json.writeValueAsString(new SearchProfileDTO("alex-de", "v1", "DE",

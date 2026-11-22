@@ -83,6 +83,9 @@ public class BatchPipelineService {
                         + "updated={}, unchanged={}, failed_rows={}, failed_filters={}",
                 direct.requests(), direct.fetched(), direct.distinct(), direct.roleRelevant(), direct.created(),
                 direct.updated(), direct.unchanged(), direct.failed(), direct.failedFilters());
+        Instant employerDeadline = clock.instant().plusSeconds(90);
+        Instant deliveryReserve = deadline.minusSeconds(120);
+        employers.runUntil(employerDeadline.isBefore(deliveryReserve) ? employerDeadline : deliveryReserve, found);
         SqsBatchResultDTO publication = new SqsBatchResultDTO(0, 0, 0, 0);
         SqsEvaluationBatchDTO consumption = new SqsEvaluationBatchDTO(0, 0, 0, 0);
         if (imported.blockingFailures() == 0 && found.failures() == 0) {
@@ -91,7 +94,6 @@ public class BatchPipelineService {
                 consumption = consumeBatches(profile, maxEvents, deadline);
             }
         }
-        employers.runUntil(deadline, found);
         var pending = outbox.backlog();
         var queued = queue.backlog();
         int failures = found.failures() + imported.blockingFailures() + publication.failed() + publication.deferred()

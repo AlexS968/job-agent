@@ -73,17 +73,35 @@ class SchedulerPassRolesTest(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "ECS service condition"):
             pass_roles(broadened)
 
-    def test_scheduled_result_link_uses_the_deployed_protected_page(self):
-        task_source = (TERRAFORM / "sqs.tf").read_text()
-        variables = (TERRAFORM / "variables.tf").read_text()
-        task = resource(task_source, "aws_ecs_task_definition", "batch_pipeline")
-        page_url = '${aws_apigatewayv2_api.page[0].api_endpoint}/'
-        self.assertIn('{ name = "JOBAGENT_REPORT_PAGEURL", value = "' + page_url + '" }', task)
-        self.assertRegex(
-            variables,
-            r"!var\.enable_scheduled_batch\s*\|\|\s*\(var\.enable_batch_pipeline\s*"
-            r"&&\s*var\.enable_vacancy_page\s*&&\s*var\.page_access_enabled\)",
-        )
+    def test_only_unified_schedule_can_launch_collection(self):
+        batch = resource((TERRAFORM / "scheduled_batch.tf").read_text(), "aws_scheduler_schedule", "batch")
+        standalone = resource((TERRAFORM / "gmail_cutover.tf").read_text(), "aws_scheduler_schedule", "gmail_cutover")
+        self.assertRegex(batch, r'schedule_expression\s*=\s*"cron\(0 19 \? \* MON-FRI \*\)"')
+        self.assertRegex(batch, r'schedule_expression_timezone\s*=\s*"Europe/Berlin"')
+        self.assertRegex(batch, r'task_count\s*=\s*1\b')
+        self.assertRegex(batch, r'maximum_retry_attempts\s*=\s*0\b')
+        self.assertNotIn("JOBAGENT_GMAIL_OAUTH_JSON", batch)
+        self.assertIn('["--mode=scheduled-batch"]', batch)
+        self.assertRegex(standalone, r'state\s*=\s*"DISABLED"')
+        self.assertIn("dead_letter_config { arn = aws_sqs_queue.batch_launch_dlq[0].arn }", batch)
+
+    def test_gmail_secret_injection_is_scoped_to_execution_role(self):
+        source = (TERRAFORM / "sqs.tf").read_text()
+        task = resource(source, "aws_ecs_task_definition", "batch_pipeline")
+        execution = resource(source, "aws_iam_role_policy", "batch_execution")
+        application = resource(source, "aws_iam_role_policy", "batch_pipeline")
+        self.assertIn('role  = aws_iam_role.batch_execution[0].id', execution)
+        self.assertRegex(execution, r'"secretsmanager:GetSecretValue"\]\s+Resource = concat\(\[[^\]]+var.gmail_modify_secret_arn\]')
+        self.assertIn('{ name = "JOBAGENT_GMAIL_OAUTH_JSON", valueFrom = var.gmail_modify_secret_arn }', task)
+        self.assertNotIn("secretsmanager", application)
+        self.assertNotIn("JOBAGENT_REPORT_", task)
+
+    def test_email_resources_are_gone_and_failure_logs_remain(self):
+        source = "\n".join(file.read_text() for file in TERRAFORM.glob("*.tf"))
+        self.assertNotRegex(source, r'aws_sns_|(?i:sns:Publish)')
+        failures = resource(source, "aws_cloudwatch_event_target", "batch_task_failed")
+        self.assertIn("aws_cloudwatch_log_group.batch_task_failures[0].arn", failures)
+        self.assertIn("aws_cloudwatch_log_resource_policy.batch_task_failures", failures)
 
 
 if __name__ == "__main__":

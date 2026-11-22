@@ -79,9 +79,15 @@ public class LinkedInIntakeService {
     }
 
     LinkedInIntakeResultDTO process(List<String> ids, Long liveStart, Long liveEnd) {
+        return process(ids, liveStart, liveEnd, () -> true);
+    }
+
+    LinkedInIntakeResultDTO process(List<String> ids, Long liveStart, Long liveEnd,
+                                    java.util.function.BooleanSupplier canReadMore) {
         if (TransactionSynchronizationManager.isActualTransactionActive()) {
             throw new IllegalStateException("LinkedIn intake owns its transaction boundary");
         }
+        int seen = 0;
         int replayed = 0;
         int cards = 0;
         int created = 0;
@@ -91,14 +97,31 @@ public class LinkedInIntakeService {
             if (Thread.currentThread().isInterrupted()) {
                 throw new IllegalStateException("LinkedIn intake interrupted");
             }
-            MessageOutcome result = processMessage(id, liveStart, liveEnd, MAX_CARDS_PER_RUN - cards);
+            var result = canReadMore.getAsBoolean()
+                    ? processWithinCardLimit(id, liveStart, liveEnd, MAX_CARDS_PER_RUN - cards)
+                    : null;
+            if (result == null) {
+                break;
+            }
+            seen++;
             replayed += result.replayed() ? 1 : 0;
             cards += result.cards();
             created += result.created();
             updated += result.updated();
             review += result.review() ? 1 : 0;
         }
-        return new LinkedInIntakeResultDTO(ids.size(), replayed, cards, created, updated, review);
+        return new LinkedInIntakeResultDTO(seen, replayed, cards, created, updated, review);
+    }
+
+    private MessageOutcome processWithinCardLimit(String id, Long liveStart, Long liveEnd, int remainingCards) {
+        try {
+            return processMessage(id, liveStart, liveEnd, remainingCards);
+        } catch (CardLimitReached limit) {
+            if (liveStart == null) {
+                throw limit;
+            }
+            return null;
+        }
     }
 
     private MessageOutcome processMessage(String id, Long liveStart, Long liveEnd, int remainingCards) {
@@ -120,7 +143,7 @@ public class LinkedInIntakeService {
             return new MessageOutcome(false, 0, 0, 0, false);
         }
         if (alert.cards().size() > remainingCards) {
-            throw new IllegalStateException("LinkedIn intake card limit reached; earlier messages remain durable");
+            throw new CardLimitReached();
         }
         return persist(runId -> {
             MessageOutcome outcome = importMessage(alert, runId);
@@ -129,6 +152,12 @@ public class LinkedInIntakeService {
             }
             return outcome;
         });
+    }
+
+    private static final class CardLimitReached extends IllegalStateException {
+        private CardLimitReached() {
+            super("LinkedIn intake card limit reached; earlier messages remain durable");
+        }
     }
 
     private MessageOutcome recordReview(String id, LinkedInAlertException unsupported) {
