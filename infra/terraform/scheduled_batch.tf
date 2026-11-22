@@ -1,72 +1,3 @@
-resource "aws_sns_topic" "batch_report" {
-  count = var.enable_scheduled_batch ? 1 : 0
-  name  = "${var.name_prefix}-batch-report"
-}
-
-resource "aws_sns_topic_subscription" "batch_report_email" {
-  count     = var.enable_scheduled_batch ? 1 : 0
-  topic_arn = aws_sns_topic.batch_report[0].arn
-  protocol  = "email"
-  endpoint  = var.batch_report_email
-}
-
-data "aws_iam_policy_document" "batch_report_topic" {
-  count = var.enable_scheduled_batch ? 1 : 0
-  statement {
-    sid       = "AllowAccountManagement"
-    actions   = ["SNS:GetTopicAttributes", "SNS:SetTopicAttributes", "SNS:DeleteTopic", "SNS:Subscribe", "SNS:ListSubscriptionsByTopic"]
-    resources = [aws_sns_topic.batch_report[0].arn]
-    principals {
-      type        = "AWS"
-      identifiers = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"]
-    }
-  }
-  statement {
-    sid       = "AllowBatchFailureRule"
-    actions   = ["SNS:Publish"]
-    resources = [aws_sns_topic.batch_report[0].arn]
-    principals {
-      type        = "Service"
-      identifiers = ["events.amazonaws.com"]
-    }
-    condition {
-      test     = "ArnEquals"
-      variable = "aws:SourceArn"
-      values   = [aws_cloudwatch_event_rule.batch_task_failed[0].arn]
-    }
-    condition {
-      test     = "StringEquals"
-      variable = "aws:SourceAccount"
-      values   = [data.aws_caller_identity.current.account_id]
-    }
-  }
-  statement {
-    sid       = "AllowLaunchFailureAlarm"
-    actions   = ["SNS:Publish"]
-    resources = [aws_sns_topic.batch_report[0].arn]
-    principals {
-      type        = "Service"
-      identifiers = ["cloudwatch.amazonaws.com"]
-    }
-    condition {
-      test     = "ArnEquals"
-      variable = "aws:SourceArn"
-      values   = [aws_cloudwatch_metric_alarm.batch_launch_failure[0].arn]
-    }
-    condition {
-      test     = "StringEquals"
-      variable = "aws:SourceAccount"
-      values   = [data.aws_caller_identity.current.account_id]
-    }
-  }
-}
-
-resource "aws_sns_topic_policy" "batch_report" {
-  count  = var.enable_scheduled_batch ? 1 : 0
-  arn    = aws_sns_topic.batch_report[0].arn
-  policy = data.aws_iam_policy_document.batch_report_topic[0].json
-}
-
 resource "aws_sqs_queue" "batch_launch_dlq" {
   count                     = var.enable_scheduled_batch ? 1 : 0
   name                      = "${var.name_prefix}-batch-launch-dlq"
@@ -148,9 +79,9 @@ resource "aws_iam_role_policy" "batch_scheduler" {
 resource "aws_scheduler_schedule" "batch" {
   count                        = var.enable_scheduled_batch ? 1 : 0
   name                         = "${var.name_prefix}-batch-tue-thu"
-  description                  = "Reviewed batch start at 19:00 Europe/Berlin on Tuesday and Thursday"
+  description                  = "Unified weekday collection at 19:00 Europe/Berlin"
   state                        = var.enable_recurring_batch ? "ENABLED" : "DISABLED"
-  schedule_expression          = "cron(0 19 ? * TUE,THU *)"
+  schedule_expression          = "cron(0 19 ? * MON-FRI *)"
   schedule_expression_timezone = "Europe/Berlin"
   flexible_time_window { mode = "OFF" }
   target {
@@ -170,7 +101,7 @@ resource "aws_scheduler_schedule" "batch" {
     }
     dead_letter_config { arn = aws_sqs_queue.batch_launch_dlq[0].arn }
     retry_policy {
-      maximum_retry_attempts       = 1
+      maximum_retry_attempts       = 0
       maximum_event_age_in_seconds = 300
     }
   }
@@ -190,7 +121,6 @@ resource "aws_cloudwatch_metric_alarm" "batch_launch_failure" {
   comparison_operator = "GreaterThanThreshold"
   threshold           = 0
   treat_missing_data  = "missing"
-  alarm_actions       = [aws_sns_topic.batch_report[0].arn]
 }
 
 resource "aws_cloudwatch_event_rule" "batch_task_failed" {
@@ -210,10 +140,35 @@ resource "aws_cloudwatch_event_rule" "batch_task_failed" {
   })
 }
 
+resource "aws_cloudwatch_log_group" "batch_task_failures" {
+  count             = var.enable_scheduled_batch ? 1 : 0
+  name              = "/aws/events/${var.name_prefix}-batch-task-failed"
+  retention_in_days = aws_cloudwatch_log_group.task.retention_in_days
+}
+
+resource "aws_cloudwatch_log_resource_policy" "batch_task_failures" {
+  count       = var.enable_scheduled_batch ? 1 : 0
+  policy_name = "${var.name_prefix}-batch-task-failed"
+  policy_document = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = ["events.amazonaws.com", "delivery.logs.amazonaws.com"] }
+      Action    = ["logs:CreateLogStream", "logs:PutLogEvents"]
+      Resource  = "${aws_cloudwatch_log_group.batch_task_failures[0].arn}:*"
+    }]
+  })
+}
+
 resource "aws_cloudwatch_event_target" "batch_task_failed" {
-  count      = var.enable_scheduled_batch ? 1 : 0
-  rule       = aws_cloudwatch_event_rule.batch_task_failed[0].name
-  arn        = aws_sns_topic.batch_report[0].arn
-  input      = jsonencode("Job Agent batch ECS task stopped with a nonzero or missing exit code. Inspect this batch family's ECS task and CloudWatch logs before any retry.")
-  depends_on = [aws_sns_topic_policy.batch_report]
+  count = var.enable_scheduled_batch ? 1 : 0
+  rule  = aws_cloudwatch_event_rule.batch_task_failed[0].name
+  arn   = aws_cloudwatch_log_group.batch_task_failures[0].arn
+  input_transformer {
+    input_paths    = { task = "$.detail.taskArn" }
+    input_template = <<-JSON
+      {"timestamp": <aws.events.event.ingestion-time>, "message": "Scheduled collection task stopped without a successful exit. Task: <task>"}
+    JSON
+  }
+  depends_on = [aws_cloudwatch_log_resource_policy.batch_task_failures]
 }

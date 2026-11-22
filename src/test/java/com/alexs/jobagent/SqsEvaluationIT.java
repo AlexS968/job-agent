@@ -9,10 +9,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.alexs.jobagent.batch.repository.ScheduledBatchRepository;
-import com.alexs.jobagent.batch.service.BatchReportFormatter;
-import com.alexs.jobagent.batch.service.ReportGateway;
 import com.alexs.jobagent.batch.service.ScheduledBatchService;
-import com.alexs.jobagent.batch.service.ScheduledResultService;
+import com.alexs.jobagent.source.service.GmailCutoverService;
 import com.alexs.jobagent.evaluation.dto.LoadedProfileDTO;
 import com.alexs.jobagent.evaluation.dto.SearchProfileDTO;
 import com.alexs.jobagent.evaluation.service.EvaluationService;
@@ -127,12 +125,11 @@ class SqsEvaluationIT {
         var pipeline = new BatchPipelineService(registry, discovery, outbox,
                 new SqsProducerService(outbox, queue, json, mapper), consumer(queue), queue,
                 evaluations, himalayas, mock(EmployerMonitoringService.class), clock);
-        var reports = mock(ReportGateway.class);
-        when(reports.publish(any(), any())).thenReturn("synthetic-report");
+        var gmail = mock(GmailCutoverService.class);
+        when(gmail.runUntil(org.mockito.ArgumentMatchers.any())).thenReturn(
+                new GmailCutoverService.Result(true, false, false, 0, 0, 0, 0));
         var repository = new ScheduledBatchRepository(jdbc);
-        var formatter = new BatchReportFormatter();
-        var scheduled = new ScheduledBatchService(repository, new ScheduledResultService(repository, formatter, manager),
-                pipeline, evaluations, formatter, reports, clock, "https://page.example.test/");
+        var scheduled = new ScheduledBatchService(repository, pipeline, evaluations, gmail, clock);
 
         scheduled.run(List.of(scheduledProfile("DE"), scheduledProfile("AT")));
 
@@ -145,8 +142,9 @@ class SqsEvaluationIT {
         assertEquals(2, count("vacancy_evaluations WHERE profile_id IN ('alex-de','alex-at') "
                 + "AND country_eligibility='UNKNOWN'"));
         assertEquals(0, count("scheduled_result_items"));
-        assertEquals(1, count("scheduled_result_reports WHERE status='PUBLISHED'"));
-        verify(reports).publish(any(), any());
+        assertEquals(0, count("scheduled_result_reports"));
+        assertEquals(0, count("scheduled_batch_reports"));
+        assertEquals(1, count("scheduled_batch_invocations WHERE status='COMPLETE'"));
     }
 
     private LoadedProfileDTO scheduledProfile(String country) {

@@ -1,8 +1,8 @@
 package com.alexs.jobagent.source.service;
 
+import com.alexs.jobagent.http.BoundedBodySubscriber;
+import com.alexs.jobagent.source.exception.GmailAccessException;
 import com.alexs.jobagent.source.exception.InvalidGmailPageTokenException;
-import java.io.IOException;
-import java.io.InputStream;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
@@ -13,6 +13,9 @@ import java.time.Duration;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -67,7 +70,7 @@ public class GoogleGmailReadClient implements GmailReadClient, GmailCutoverClien
         String url = API + "?maxResults=" + limit + "&q=" + URLEncoder.encode(query, StandardCharsets.UTF_8);
         JsonNode response = get(URI.create(token == null ? url : url + "&pageToken=" + encode(token)), token != null);
         if (!response.isObject()) {
-            throw new IllegalStateException("Invalid Gmail list response");
+            throw new GmailAccessException("Invalid Gmail list response");
         }
         return new Page(messageIds(response.path("messages"), limit), nextToken(response.get("nextPageToken")));
     }
@@ -75,7 +78,7 @@ public class GoogleGmailReadClient implements GmailReadClient, GmailCutoverClien
     private static List<String> messageIds(JsonNode messages, int limit) {
         List<String> ids = new ArrayList<>();
         if (!messages.isMissingNode() && !messages.isArray()) {
-            throw new IllegalStateException("Gmail returned invalid message metadata");
+            throw new GmailAccessException("Gmail returned invalid message metadata");
         }
         if (messages.isArray()) {
             for (JsonNode item : messages) {
@@ -84,7 +87,7 @@ public class GoogleGmailReadClient implements GmailReadClient, GmailCutoverClien
                 }
                 String id = item.path("id").asText();
                 if (!GMAIL_ID.matcher(id).matches()) {
-                    throw new IllegalStateException("Gmail returned invalid message metadata");
+                    throw new GmailAccessException("Gmail returned invalid message metadata");
                 }
                 ids.add(id);
             }
@@ -94,7 +97,7 @@ public class GoogleGmailReadClient implements GmailReadClient, GmailCutoverClien
 
     private static String nextToken(JsonNode next) {
         if (next != null && (!next.isString() || next.asText().isBlank() || next.asText().length() > 4096)) {
-            throw new IllegalStateException("Invalid Gmail pagination metadata");
+            throw new GmailAccessException("Invalid Gmail pagination metadata");
         }
         return next == null ? null : next.asText();
     }
@@ -109,7 +112,7 @@ public class GoogleGmailReadClient implements GmailReadClient, GmailCutoverClien
             }
         }
         if (matches.size() != 1 || !GMAIL_ID.matcher(matches.getFirst()).matches()) {
-            throw new IllegalStateException("Existing processed label was not uniquely identified");
+            throw new GmailAccessException("Existing processed label was not uniquely identified");
         }
         return matches.getFirst();
     }
@@ -125,7 +128,7 @@ public class GoogleGmailReadClient implements GmailReadClient, GmailCutoverClien
                 .timeout(Duration.ofSeconds(25)).header("Authorization", "Bearer " + token())
                 .header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString(body)).build());
         if (!messageId.equals(result.path("id").asText())) {
-            throw new IllegalStateException("Gmail modification acknowledgement was invalid");
+            throw new GmailAccessException("Gmail modification acknowledgement was invalid");
         }
     }
 
@@ -153,19 +156,19 @@ public class GoogleGmailReadClient implements GmailReadClient, GmailCutoverClien
         }
         String configured = oauthConfiguration.get();
         if (configured == null || configured.length() > 16_384) {
-            throw new IllegalStateException("Private Gmail OAuth configuration is unavailable");
+            throw new GmailAccessException("Private Gmail OAuth configuration is unavailable");
         }
         JsonNode secret;
         try {
             secret = json.readTree(configured);
         } catch (RuntimeException invalid) {
-            throw new IllegalStateException("Private Gmail OAuth configuration is invalid");
+            throw new GmailAccessException("Private Gmail OAuth configuration is invalid");
         }
         String clientId = secret.path("client_id").asText();
         String clientSecret = secret.path("client_secret").asText();
         String refreshToken = secret.path("refresh_token").asText();
         if (clientId.isBlank() || clientSecret.isBlank() || refreshToken.isBlank()) {
-            throw new IllegalStateException("Private Gmail OAuth configuration is incomplete");
+            throw new GmailAccessException("Private Gmail OAuth configuration is incomplete");
         }
         String form = "client_id=" + encode(clientId) + "&client_secret=" + encode(clientSecret)
                 + "&refresh_token=" + encode(refreshToken) + "&grant_type=refresh_token";
@@ -175,7 +178,7 @@ public class GoogleGmailReadClient implements GmailReadClient, GmailCutoverClien
         JsonNode result = send(request);
         String issued = result.path("access_token").asText();
         if (issued.isBlank()) {
-            throw new IllegalStateException("Gmail OAuth refresh returned no token");
+            throw new GmailAccessException("Gmail OAuth refresh returned no token");
         }
         accessToken = issued;
         return issued;
@@ -190,27 +193,34 @@ public class GoogleGmailReadClient implements GmailReadClient, GmailCutoverClien
     }
 
     private JsonNode send(HttpRequest request, boolean continuation) {
+        if (Thread.currentThread().isInterrupted()) {
+            throw new IllegalStateException("Gmail request interrupted");
+        }
+        var call = http.sendAsync(request, info -> new BoundedBodySubscriber(MAX_RESPONSE,
+                () -> new GmailAccessException("Gmail response exceeded the byte limit")));
+        HttpResponse<byte[]> response;
         try {
-            HttpResponse<InputStream> response = http.send(request, HttpResponse.BodyHandlers.ofInputStream());
-            try (InputStream body = response.body()) {
-                byte[] bytes = body.readNBytes(MAX_RESPONSE + 1);
-                if (bytes.length > MAX_RESPONSE) {
-                    throw new IllegalStateException("Gmail response exceeded the byte limit");
-                }
-                if (response.statusCode() != 200) {
-                    if (continuation && response.statusCode() == 400 && invalidPageToken(bytes)) {
-                        throw new InvalidGmailPageTokenException();
-                    }
-                    throw new IllegalStateException("Gmail request failed with HTTP " + response.statusCode());
-                }
-                return parseResponse(bytes);
-            }
+            response = call.get(request.timeout().orElseThrow().toMillis(), TimeUnit.MILLISECONDS);
         } catch (InterruptedException interrupted) {
+            call.cancel(true);
             Thread.currentThread().interrupt();
             throw new IllegalStateException("Gmail request interrupted", interrupted);
-        } catch (IOException failure) {
-            throw new IllegalStateException("Gmail request failed", failure);
+        } catch (TimeoutException timeout) {
+            call.cancel(true);
+            throw new GmailAccessException("Gmail request timed out");
+        } catch (ExecutionException failure) {
+            if (failure.getCause() instanceof GmailAccessException safe) {
+                throw safe;
+            }
+            throw new GmailAccessException("Gmail request failed");
         }
+        if (response.statusCode() != 200) {
+            if (continuation && response.statusCode() == 400 && invalidPageToken(response.body())) {
+                throw new InvalidGmailPageTokenException();
+            }
+            throw new GmailAccessException("Gmail request failed with HTTP " + response.statusCode());
+        }
+        return parseResponse(response.body());
     }
 
     private boolean invalidPageToken(byte[] bytes) {
@@ -238,7 +248,7 @@ public class GoogleGmailReadClient implements GmailReadClient, GmailCutoverClien
             return json.readTree(bytes);
         } catch (RuntimeException invalid) {
             // Parser diagnostics may quote response bytes, including mailbox data or OAuth material.
-            throw new IllegalStateException("Gmail response was invalid");
+            throw new GmailAccessException("Gmail response was invalid");
         }
     }
 }
