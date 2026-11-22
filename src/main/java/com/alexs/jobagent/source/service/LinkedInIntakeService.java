@@ -97,16 +97,10 @@ public class LinkedInIntakeService {
             if (Thread.currentThread().isInterrupted()) {
                 throw new IllegalStateException("LinkedIn intake interrupted");
             }
-            if (!canReadMore.getAsBoolean()) {
-                break;
-            }
-            MessageOutcome result;
-            try {
-                result = processMessage(id, liveStart, liveEnd, MAX_CARDS_PER_RUN - cards);
-            } catch (CardLimitReached limit) {
-                if (liveStart == null) {
-                    throw limit;
-                }
+            var result = canReadMore.getAsBoolean()
+                    ? processWithinCardLimit(id, liveStart, liveEnd, MAX_CARDS_PER_RUN - cards)
+                    : null;
+            if (result == null) {
                 break;
             }
             seen++;
@@ -117,6 +111,17 @@ public class LinkedInIntakeService {
             review += result.review() ? 1 : 0;
         }
         return new LinkedInIntakeResultDTO(seen, replayed, cards, created, updated, review);
+    }
+
+    private MessageOutcome processWithinCardLimit(String id, Long liveStart, Long liveEnd, int remainingCards) {
+        try {
+            return processMessage(id, liveStart, liveEnd, remainingCards);
+        } catch (CardLimitReached limit) {
+            if (liveStart == null) {
+                throw limit;
+            }
+            return null;
+        }
     }
 
     private MessageOutcome processMessage(String id, Long liveStart, Long liveEnd, int remainingCards) {

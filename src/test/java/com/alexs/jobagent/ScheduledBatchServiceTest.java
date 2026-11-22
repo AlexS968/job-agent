@@ -1,6 +1,5 @@
 package com.alexs.jobagent;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -87,7 +86,8 @@ class ScheduledBatchServiceTest {
     @Test
     void gmailDatabaseFailureStopsAndMarksInvocationFailed() {
         when(gmail.runUntil(GMAIL_DEADLINE)).thenThrow(new DataAccessResourceFailureException("test"));
-        assertThrows(DataAccessResourceFailureException.class, () -> service.run(List.of(de, at)));
+        var profiles = List.of(de, at);
+        assertThrows(DataAccessResourceFailureException.class, () -> service.run(profiles));
         verifyNoInteractions(pipeline, evaluations);
         verify(repository).finishInvocation(DATE, "FAILED");
     }
@@ -98,8 +98,9 @@ class ScheduledBatchServiceTest {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("Gmail interrupted");
         });
+        var profiles = List.of(de, at);
         try {
-            assertThrows(IllegalStateException.class, () -> service.run(List.of(de, at)));
+            assertThrows(IllegalStateException.class, () -> service.run(profiles));
             org.junit.jupiter.api.Assertions.assertTrue(Thread.currentThread().isInterrupted());
             verifyNoInteractions(pipeline, evaluations);
             verify(repository).finishInvocation(DATE, "FAILED");
@@ -118,10 +119,12 @@ class ScheduledBatchServiceTest {
 
     @Test
     void invalidProfilesAndAmbientTransactionStopBeforeWork() {
-        assertThrows(IllegalArgumentException.class, () -> service.run(List.of(at, de)));
+        var reversedProfiles = List.of(at, de);
+        var profiles = List.of(de, at);
+        assertThrows(IllegalArgumentException.class, () -> service.run(reversedProfiles));
         TransactionSynchronizationManager.setActualTransactionActive(true);
         try {
-            assertThrows(IllegalStateException.class, () -> service.run(List.of(de, at)));
+            assertThrows(IllegalStateException.class, () -> service.run(profiles));
         } finally {
             TransactionSynchronizationManager.setActualTransactionActive(false);
         }

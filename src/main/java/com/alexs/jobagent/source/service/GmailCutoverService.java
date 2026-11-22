@@ -1,8 +1,9 @@
 package com.alexs.jobagent.source.service;
 
-import com.alexs.jobagent.source.repository.GmailCutoverRepository;
 import com.alexs.jobagent.source.exception.GmailAccessException;
 import com.alexs.jobagent.source.exception.InvalidGmailPageTokenException;
+import com.alexs.jobagent.source.repository.GmailCutoverRepository;
+import com.alexs.jobagent.source.repository.GmailCutoverRepository.Window;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.function.BooleanSupplier;
@@ -56,47 +57,66 @@ public class GmailCutoverService {
             return new Result(false, false, false, 0, 0, 0, state.outstanding());
         }
         int applied = maxPages == 1 ? drain(MAX_ACTIONS, hasTime) : 0;
-        int seen = 0;
-        int review = 0;
-        boolean more = window.end() != null;
-        boolean restart = false;
-        for (int i = 0; more && i < maxPages && hasTime.getAsBoolean(); i++) {
-            requireNotInterrupted();
-            GmailCutoverClient.Page page;
-            try {
-                page = gmail.livePage(window.start(), window.end(), window.token());
-            } catch (InvalidGmailPageTokenException invalid) {
-                if (window.token() == null) {
-                    throw invalid;
-                }
-                state.restart(window);
-                restart = true;
-                break;
-            }
-            if (window.token() != null && window.token().equals(page.nextToken())) {
-                throw new GmailAccessException("Gmail returned the same continuation token");
-            }
-            var result = intake.process(page.ids(), window.start(), window.end(), hasTime);
-            seen += result.messages();
-            review += result.reviewRequired();
-            if (result.messages() < page.ids().size()) {
-                break;
-            }
-            state.advance(window, page.nextToken());
-            more = page.nextToken() != null;
-            if (more && i + 1 < maxPages && hasTime.getAsBoolean()) {
-                window = state.window(overlapSeconds);
-                if (window == null) {
-                    return new Result(false, true, false, seen, review, applied, state.outstanding());
-                }
-            }
+        var scan = collectPages(window, maxPages, hasTime);
+        if (!scan.active()) {
+            return new Result(false, true, false, scan.seen(), scan.review(), applied, state.outstanding());
         }
-        if (!restart) {
+        if (!scan.restartRequired()) {
             applied += drain(MAX_ACTIONS - applied, hasTime);
         }
         requireNotInterrupted();
-        return new Result(true, more, restart, seen, review, applied, state.outstanding());
+        return new Result(true, scan.morePages(), scan.restartRequired(), scan.seen(), scan.review(),
+                applied, state.outstanding());
     }
+
+    private PageScan collectPages(Window window, int maxPages, BooleanSupplier hasTime) {
+        int seen = 0;
+        int review = 0;
+        var progress = window.end() == null ? PageProgress.COMPLETE : PageProgress.NEXT;
+        for (int i = 0; progress == PageProgress.NEXT && i < maxPages && hasTime.getAsBoolean(); i++) {
+            var page = collectPage(window, hasTime);
+            seen += page.seen();
+            review += page.review();
+            progress = page.progress();
+            if (progress == PageProgress.NEXT && i + 1 < maxPages && hasTime.getAsBoolean()) {
+                window = state.window(overlapSeconds);
+                if (window == null) {
+                    return new PageScan(false, true, false, seen, review);
+                }
+            }
+        }
+        return new PageScan(true, progress != PageProgress.COMPLETE, progress == PageProgress.RESTART, seen, review);
+    }
+
+    private PageResult collectPage(Window window, BooleanSupplier hasTime) {
+        requireNotInterrupted();
+        GmailCutoverClient.Page page;
+        try {
+            page = gmail.livePage(window.start(), window.end(), window.token());
+        } catch (InvalidGmailPageTokenException invalid) {
+            if (window.token() == null) {
+                throw invalid;
+            }
+            state.restart(window);
+            return new PageResult(PageProgress.RESTART, 0, 0);
+        }
+        if (window.token() != null && window.token().equals(page.nextToken())) {
+            throw new GmailAccessException("Gmail returned the same continuation token");
+        }
+        var result = intake.process(page.ids(), window.start(), window.end(), hasTime);
+        if (result.messages() < page.ids().size()) {
+            return new PageResult(PageProgress.PARTIAL, result.messages(), result.reviewRequired());
+        }
+        state.advance(window, page.nextToken());
+        var progress = page.nextToken() == null ? PageProgress.COMPLETE : PageProgress.NEXT;
+        return new PageResult(progress, result.messages(), result.reviewRequired());
+    }
+
+    private enum PageProgress { NEXT, COMPLETE, PARTIAL, RESTART }
+
+    private record PageResult(PageProgress progress, int seen, int review) {}
+
+    private record PageScan(boolean active, boolean morePages, boolean restartRequired, int seen, int review) {}
 
     private int drain(int limit, BooleanSupplier hasTime) {
         String label = null;
@@ -104,13 +124,10 @@ public class GmailCutoverService {
         while (applied < limit && hasTime.getAsBoolean()) {
             requireNotInterrupted();
             var claim = state.claim();
-            if (claim == null) {
-                break;
-            }
-            if (label == null) {
+            if (claim != null && label == null) {
                 label = gmail.processedLabel();
             }
-            if (!hasTime.getAsBoolean()) {
+            if (claim == null || !hasTime.getAsBoolean()) {
                 break;
             }
             gmail.applyLabels(claim.id(), label);

@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
@@ -42,7 +43,7 @@ class GoogleGmailReadClientTest {
     }
 
     @Test
-    void refreshesOnceAndReadsBoundedArchivedAlertsWithExactSenderQuery() throws Exception {
+    void refreshesOnceAndReadsBoundedArchivedAlertsWithExactSenderQuery() {
         List<HttpRequest> requests = new ArrayList<>();
         var client = scripted(CONFIG, requests, response(200, "{\"access_token\":\"synthetic-access\"}"),
                 response(200, "{\"messages\":[{\"id\":\"mail-1\"},{\"id\":\"mail-2\"},"
@@ -85,7 +86,7 @@ class GoogleGmailReadClientTest {
     }
 
     @Test
-    void invalidListMetadataAndMissingOauthTokenAreSafeFailures() throws Exception {
+    void invalidListMetadataAndMissingOauthTokenAreSafeFailures() {
         var missingToken = scripted(CONFIG, new ArrayList<>(), response(200, "{}"));
         assertEquals("Gmail OAuth refresh returned no token", assertThrows(IllegalStateException.class,
                 () -> missingToken.alertIds(1, null, null)).getMessage());
@@ -96,7 +97,7 @@ class GoogleGmailReadClientTest {
     }
 
     @Test
-    void responseLimitAndHttpFailureCloseBodiesWithoutLeakingThem() throws Exception {
+    void responseLimitAndHttpFailureCloseBodiesWithoutLeakingThem() {
         Reply tooLarge = response(200, new byte[2_000_001]);
         var oversized = scripted(CONFIG, new ArrayList<>(), response(200, "{\"access_token\":\"synthetic\"}"),
                 tooLarge);
@@ -129,7 +130,7 @@ class GoogleGmailReadClientTest {
             assertEquals("Gmail request interrupted", assertThrows(IllegalStateException.class,
                     () -> interrupted.alertIds(1, null, null)).getMessage());
             assertTrue(Thread.currentThread().isInterrupted());
-            org.mockito.Mockito.verify(call).cancel(true);
+            verify(call).cancel(true);
         } finally {
             Thread.interrupted();
         }
@@ -167,7 +168,7 @@ class GoogleGmailReadClientTest {
     }
 
     @Test
-    void onlyExplicitContinuationRejectionIsRecoverable() throws Exception {
+    void onlyExplicitContinuationRejectionIsRecoverable() {
         var client = scripted(CONFIG, new ArrayList<>(), response(200, "{\"access_token\":\"synthetic\"}"),
                 response(400, "{\"error\":{\"errors\":[{\"reason\":\"invalid\",\"location\":\"pageToken\"}]}}"),
                 response(400, "{\"error\":{\"message\":\"Invalid argument\"}}"),
@@ -180,7 +181,7 @@ class GoogleGmailReadClientTest {
     }
 
     @Test
-    void malformedListMetadataCannotBeMistakenForAnEmptyOrFinishedWindow() throws Exception {
+    void malformedListMetadataCannotBeMistakenForAnEmptyOrFinishedWindow() {
         var client = scripted(CONFIG, new ArrayList<>(), response(200, "{\"access_token\":\"synthetic\"}"),
                 response(200, "[]"), response(200, "{\"messages\":{}}"),
                 response(200, "{\"nextPageToken\":123}"), response(200, "{\"nextPageToken\":\" \"}"),
@@ -196,7 +197,7 @@ class GoogleGmailReadClientTest {
     }
 
     @Test
-    void rejectsAnUnusableProcessedLabelAndAnAcknowledgementForAnotherMessage() throws Exception {
+    void rejectsAnUnusableProcessedLabelAndAnAcknowledgementForAnotherMessage() {
         List<HttpRequest> requests = new ArrayList<>();
         var client = scripted(CONFIG, requests, response(200, "{\"access_token\":\"synthetic\"}"),
                 response(200, """
@@ -229,7 +230,7 @@ class GoogleGmailReadClientTest {
         var client = new GoogleGmailReadClient(http, new JsonMapper(), () -> CONFIG);
         assertEquals("Gmail request timed out", assertThrows(IllegalStateException.class,
                 () -> client.alertIds(1, null, null)).getMessage());
-        org.mockito.Mockito.verify(call).cancel(true);
+        verify(call).cancel(true);
     }
 
     @SuppressWarnings("unchecked")

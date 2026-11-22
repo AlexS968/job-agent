@@ -1,6 +1,7 @@
 package com.alexs.jobagent.batch.service;
 
 import com.alexs.jobagent.source.exception.GmailAccessException;
+import com.alexs.jobagent.source.exception.InvalidGmailPageTokenException;
 import com.alexs.jobagent.source.service.GmailCutoverService;
 import com.alexs.jobagent.batch.repository.ScheduledBatchRepository;
 import com.alexs.jobagent.evaluation.dto.LoadedProfileDTO;
@@ -101,7 +102,7 @@ public class ScheduledBatchService {
                             + "seen={}, review={}, applied={}, outstanding={}",
                     result.active(), result.morePages(), result.windowRestartRequired(),
                     result.seen(), result.review(), result.applied(), result.outstanding());
-        } catch (GmailAccessException failure) {
+        } catch (GmailAccessException | InvalidGmailPageTokenException failure) {
             if (Thread.currentThread().isInterrupted()) {
                 throw failure;
             }
