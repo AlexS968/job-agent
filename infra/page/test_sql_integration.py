@@ -473,5 +473,97 @@ WHERE v.listing_id LIKE 'cmp-%';
             self.sql("SET ROLE job_agent_page_reader; DELETE FROM vacancies;")
 
 
+    def test_source_report_period_replay_overlap_geography_and_current_shortlist(self):
+        fixture = """
+BEGIN;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'job_agent_page_reader') THEN
+    CREATE ROLE job_agent_page_reader LOGIN;
+  END IF;
+END $$;
+TRUNCATE vacancies, source_items, employers, evaluation_profiles, verified_source_registry,
+         gmail_alert_messages RESTART IDENTITY CASCADE;
+INSERT INTO employers(source_namespace,external_id,name)
+VALUES ('greenhouse:report','report','Synthetic employer');
+INSERT INTO verified_source_registry(platform,region,source_id,employer_domain,employer_name,
+ official_page_url,evidence_url,evidence_hash,verified_at,status,active)
+VALUES ('GREENHOUSE','global','report','example.test','Synthetic Board',
+        'https://example.test/careers','https://example.test/careers',repeat('b',64),now(),'VERIFIED',true);
+
+INSERT INTO vacancies(id,employer_id,source_namespace,listing_id,title,location,content_digest)
+OVERRIDING SYSTEM VALUE VALUES
+ (10,1,'greenhouse:report','10','Identical title','Berlin',repeat('a',64)),
+ (20,1,'himalayas','20','Identical title','Remote Europe',repeat('a',64)),
+ (30,1,'linkedin','30','Identical title',NULL,repeat('a',64)),
+ (40,1,'greenhouse:report','40','Identical title','Worldwide',repeat('a',64)),
+ (50,1,'himalayas','50','Identical title','Austria',repeat('a',64)),
+ (60,1,'greenhouse:report','60','Identical title','Vienna',repeat('a',64));
+
+INSERT INTO source_items(id,source_namespace,source_item_id,listing_namespace,listing_id,original_url,
+ fetched_at,created_at,raw_payload,input_version,normalization_version,input_digest,content_digest)
+OVERRIDING SYSTEM VALUE
+SELECT id, ns, 'report-' || id, ns, vacancy::text, 'https://example.test/post',
+       now()-fetched::interval, now()-stored::interval, '{}', version, 'v1',
+       repeat('a',64), repeat(digest,64)
+FROM (VALUES
+ (1,10,'linkedin:gmail','linkedin-alert-v1','20 days','6 days','b'),
+ (2,10,'greenhouse:report','greenhouse-board-v1','6 days','6 days','a'),
+ (3,20,'himalayas','himalayas-search-v1','8 days','8 days','a'),
+ (4,20,'himalayas','himalayas-search-v1','3 days','3 days','a'),
+ (5,30,'linkedin:gmail','linkedin-alert-v1','20 days','6 days 23 hours 59 minutes 50 seconds','a'),
+ (6,40,'greenhouse:report','greenhouse-board-v1','8 days','7 days 10 seconds','a'),
+ (7,50,'himalayas','himalayas-search-v1','1 day','1 day','a'),
+ (8,60,'greenhouse:report','greenhouse-board-v1','4 days','4 days','a'),
+ (9,30,'linkedin:gmail','linkedin-alert-v1','19 days','2 days','a')
+) fixture(id,vacancy,ns,version,fetched,stored,digest);
+INSERT INTO vacancy_sources(vacancy_id,source_item_id)
+VALUES (10,1),(10,2),(20,3),(20,4),(30,5),(40,6),(50,7),(60,8),(30,9);
+INSERT INTO gmail_alert_messages(message_id,observed_at,recognized_cards,unsupported_links,status,completed_at)
+SELECT 'report-' || id,fetched_at,1,0,'COMPLETE',created_at FROM source_items WHERE id IN (1,5,9);
+INSERT INTO gmail_alert_cards(message_id,linkedin_job_id,source_item_id,vacancy_id,outcome,advertised_direction)
+VALUES ('report-1','1000',1,10,'CREATED','AUSTRIA'),('report-5','3000',5,30,'CREATED','UNKNOWN'),
+       ('report-9','3000',9,30,'UNCHANGED','UNKNOWN');
+INSERT INTO vacancy_candidate_assessments(vacancy_id,source_item_id,policy_version,decision,reason)
+VALUES (10,1,'java-backend-candidate-v2','REVIEW','TEST'),
+       (10,2,'java-backend-candidate-v2','CANDIDATE','TEST'),
+       (60,8,'candidate-v1','CANDIDATE','TEST');
+INSERT INTO evaluation_profiles(profile_id,profile_version,criteria_hash)
+VALUES ('alex-de','v1',repeat('d',64)),('alex-at','v1',repeat('e',64));
+INSERT INTO vacancy_evaluations(vacancy_id,source_item_id,vacancy_revision,profile_id,profile_version,
+ criteria_hash,policy_version,decision,preference_rank,role_classification,reasons,unknowns,evidence,original_url,
+ country_eligibility)
+VALUES (10,2,repeat('a',64),'alex-de','v1',repeat('d',64),'rules-v2','SUITABLE',1,'PREFERRED',
+        '[]','[]','[]','https://example.test/post','CONFIRMED'),
+       (60,8,repeat('a',64),'alex-at','v1',repeat('e',64),'rules-v2','NEEDS_REVIEW',1,'RESERVE',
+        '[]','[]','[]','https://example.test/post','CONFIRMED'),
+       (10,2,repeat('a',64),'alex-at','v1',repeat('e',64),'rules-v2','NEEDS_REVIEW',1,'RESERVE',
+        '[]','[]','[]','https://example.test/post','UNKNOWN');
+"""
+        def query(days, geography, limit=5000):
+            sql = (page.SOURCE_REPORT_SQL.replace(":days", str(days)).replace(":geography", f"'{geography}'")
+                   .replace(":cohort_limit", str(limit)).replace(":employer_limit", "50"))
+            return sql + ";"
+
+        statements = [query(7, "ALL"), query(30, "ALL"), query(7, "UNKNOWN"),
+                      query(7, "AUSTRIA"), query(7, "ALL", 1)]
+        grants = ";\n".join(reader.GRANTS)
+        results = self.sql(fixture + grants + "; SET LOCAL ROLE job_agent_page_reader;\n"
+                           + "\n".join(statements) + "ROLLBACK;")
+        seven, thirty, unknown, austria, too_large = map(json.loads, results)
+        self.assertEqual((4, 1), (seven["total"], seven["overlap"]))
+        self.assertEqual((6, 1), (thirty["total"], thirty["overlap"]))
+        channels = {row["channel"]: row for row in seven["channels"]}
+        self.assertEqual((2, 1, 0, 1), tuple(channels["LINKEDIN"][k] for k in
+                         ("vacancies", "channelOnly", "candidates", "shortlistDe")))
+        self.assertEqual((2, 1, 1, 1, 1), tuple(channels["CAREER_BOARDS"][k] for k in
+                         ("vacancies", "channelOnly", "candidates", "shortlistDe", "shortlistAt")))
+        self.assertEqual("Synthetic Board", seven["employers"][0]["employer_name"])
+        self.assertEqual(2, unknown["total"])
+        self.assertEqual(1, unknown["overlap"])
+        self.assertEqual(2, austria["total"])
+        self.assertEqual(0, austria["overlap"])
+        self.assertTrue(too_large["cohortExceeded"])
+
+
 if __name__ == "__main__":
     unittest.main()

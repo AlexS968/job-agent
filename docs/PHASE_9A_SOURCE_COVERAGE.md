@@ -2,7 +2,7 @@
 
 On 2026-11-17 the owner agreed to implement LinkedIn-alert intake first, then multiple vacancy channels and an employer registry with optional verified career-page monitoring. Direct aggregator vacancies remain usable while employer association is pending. See the [master plan](../MASTER_PLAN.md), [system and AWS architecture diagrams](TARGET_ARCHITECTURE.md) and [retirement register](SOURCE_ARCHITECTURE_RETIREMENT_REGISTER.md).
 
-The historical Tavily experiment began with a controlled AWS `source-discovery-once` task on 2026-11-17. Four Tavily requests returned 35 distinct URL leads. Five were checked, with zero confirmed associations, activations or new listings. The revised multi-channel implementation still needs live acceptance. Phase 9A.2 is the separate protected opportunity report page.
+The historical Tavily experiment began with a controlled AWS `source-discovery-once` task on 2026-11-17. Four Tavily requests returned 35 distinct URL leads. Five were checked, with zero confirmed associations, activations or new listings. The revised multi-channel implementation still needs live acceptance. The [Phase 9A.2 Source Report](#phase-9a2-protected-source-report) is prepared locally.
 
 ## Domain-scoped vacancy search evidence (2026-11-19)
 
@@ -69,7 +69,7 @@ Each invocation claims at most five due leads. For an employer-hosted result, in
 
 After import, at most 100 current, linked, previously unassessed non-synthetic snapshots receive a `java-backend-candidate-v2` decision. A generic engineering title proceeds to description evidence; clear Java/Spring backend evidence advances, unrelated professions do not, and unclear or other-stack evidence stays `REVIEW`. Kafka and other unconfirmed owner skills do not exclude a Java-first role. The stored assessment is linked to source snapshot and vacancy. Current trusted-source `rules-v2` evaluation reads that assessment; existing `rules-v1` evaluations, receipts and extraction evidence remain historical. DE/AT eligibility and salary uncertainty remain separate. The protected page requires current `rules-v2` evaluations after the profile sweep.
 
-Per-run logs distinguish searches attempted, outbound requests, distinct returned lead URLs, confirmed/activated/review/retryable associations, imported listings, newly assessed candidates/review/other roles and DE/AT recommendation counts. Each attempted verification logs lead ID, stage, normalized host, HTTP status when available, redirect/request counts, elapsed milliseconds, retryability, outcome and reason; the link-limit reason includes actual and allowed link counts. URLs, query strings, bodies and credentials are omitted. HTTP 429/5xx remain bounded retries; HTTP 4xx such as 403/404 become review outcomes without automatic retries. These are **invocation counts**, not a claim about all currently stored vacancies or market coverage. A board's fetched listing count includes irrelevant roles; a URL lead is not a listing; one vacancy can have multiple source snapshots or appear for both profiles. Phase 9A.2 will use stored provenance and deduplicate vacancy identities for its protected report.
+Per-run logs distinguish searches attempted, outbound requests, distinct returned lead URLs, confirmed/activated/review/retryable associations, imported listings, newly assessed candidates/review/other roles and DE/AT recommendation counts. Each attempted verification logs lead ID, stage, normalized host, HTTP status when available, redirect/request counts, elapsed milliseconds, retryability, outcome and reason; the link-limit reason includes actual and allowed link counts. URLs, query strings, bodies and credentials are omitted. HTTP 429/5xx remain bounded retries; HTTP 4xx such as 403/404 become review outcomes without automatic retries. These are **invocation counts**, not a claim about all currently stored vacancies or market coverage. A board's fetched listing count includes irrelevant roles; a URL lead is not a listing; one vacancy can have multiple source snapshots or appear for both profiles. The Phase 9A.2 report aggregates stored vacancy identities and provenance separately from these invocation logs.
 
 The initial AWS run checked IDs 1–5 in ID order: `careers.telekom.com` and `remotefront.com` had generic `HTTP_STATUS` failures; `wellfound.com` exceeded the link limit; `in.linkedin.com` lacked independent employer evidence; and `en.devjobs.de` had a generic `HTTP_STATUS` failure. The old diagnostic did not retain the status codes, so those failures cannot be classified retrospectively. This local follow-up does not establish that any of the remaining leads is verifiable. A separately approved controlled AWS run must activate a new conflict-free source and import its vacancies before Phase 9A.1's live acceptance criterion is met.
 
@@ -99,3 +99,28 @@ ORDER BY status, reason, attempts;
 ```
 
 This path is prepared locally. Acquisition of a new employer board and a subsequent import in AWS remain pending. The prior Tavily discovery flow stays in place through that checkpoint.
+
+
+## Phase 9A.2 protected source report
+
+The protected vacancy site links to a separate Source Report view and back. Navigation shares the current in-memory Cognito access token. The report endpoint requires the existing API Gateway JWT and the Lambda owner-group check.
+
+The 7- and 30-day windows end at the database statement timestamp and use the first stored observation time in each channel. Archived LinkedIn mail can enter the period when it is first stored. Replay and subsequent observations in the same channel do not reset that date. Each row counts distinct stored vacancy IDs. The overall total counts a shared vacancy ID once, and confirmed overlap counts IDs first observed in more than one selected channel during the window. A vacancy seen in multiple channels outside that window can still count as channel-only in the current view. Incomplete identity links make measured overlap a lower bound. Employer names and job titles never establish identity.
+
+The employer breakdown uses the verified registry board identity. Separate boards remain separate if the registry cannot establish shared ownership. Inactive boards with verified status can contribute historical observations, while a board that has lost verification is omitted. Candidate counts use the stored current candidate policy on the latest in-window observation per source. Current DE and AT shortlist counts use the same evaluation criteria as the vacancy page and can overlap. Their time reference is the report read. The advertised geography filter uses the latest stored LinkedIn direction and narrowly recognized normalized posting locations from the owning Himalayas or board source. Missing evidence and conflicting known directions stay Unknown. A recognized advertised geography does not establish permission to work there.
+
+The query caps recent observations at 5,000 and returns a capacity error instead of partial totals. The employer breakdown returns up to 50 rows and flags truncation. Historical matching can still require reading older linked observations. The report reads structured fields only and returns aggregate counts.
+
+### Release and acceptance
+
+1. After PR CI, use the existing reviewed `job-agent` login. Set `PAGE_EXPECTED_ACCOUNT_ID`, `PAGE_CLUSTER_ARN` and `PAGE_MIGRATOR_SECRET_ARN` as in the [page reader runbook](PHASE_6A_PAGE.md). Set `PAGE_READER_SECRET_ARN` to the reviewed existing page reader secret ARN. Run this preflight and grant step from the repository root:
+
+   ```bash
+   python3 infra/page/upgrade_reader.py --source-report
+   ```
+
+   It adds only SELECT on `source_items.created_at`, `vacancies.location`, `verified_source_registry.employer_name`, and `vacancy_candidate_assessments(source_item_id, policy_version, decision)` for `job_agent_page_reader`. It verifies the resulting grants and runs both report periods under that reader identity without printing data. Stop before Terraform if either fails. Schema, credentials and raw-payload access are unchanged.
+2. Review one fresh Terraform plan and apply it. Expect the protected `GET /source-report` route and refreshed existing page package. The feedback Lambda may also pick up the shared package hash. Confirm there is no new service, schedule change, migration or Java image publication.
+3. Run one AWS smoke session. Verify an unauthenticated data request returns 401, then sign in as the owner. Navigate from vacancies to Source Report and back without a second sign-in. Switch periods and advertised geography, expand company career boards, and check the unique, overlap and current DE/AT counts against the reader results. Confirm that empty and temporary read errors are distinguishable if observed. The deployment and smoke remain pending.
+
+To roll back, restore the prior page package and route configuration through a fresh reviewed Terraform plan. The additive reader grants can be reviewed for removal separately after rollback, once no deployed report query uses them. Existing page and vacancy data remain intact.

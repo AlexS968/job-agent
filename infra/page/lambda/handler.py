@@ -54,24 +54,29 @@ WHERE v.source_namespace = 'linkedin' AND si.listing_id ~ '^[0-9]{4,32}$'
 ORDER BY v.id DESC LIMIT :limit OFFSET :offset
 """
 
-CURRENT_CTE = """
-WITH current_profile AS (
+def current_shortlist_ctes(profile_filter, for_source_report=False):
+    # Shared between the vacancy page and the source report. The filter is a static SQL fragment.
+    prefix = "," if for_source_report else "WITH"
+    scope = "JOIN membership m ON m.vacancy_id = vs.vacancy_id" if for_source_report else ""
+    return f"""
+{prefix} current_profile AS (
   SELECT profile_id, profile_version, criteria_hash,
          row_number() OVER (PARTITION BY profile_id ORDER BY first_seen_at DESC,
                             profile_version DESC) AS profile_rank
-  FROM evaluation_profiles WHERE profile_id = :profile
+  FROM evaluation_profiles WHERE {profile_filter}
 ), current_source AS (
   SELECT vs.vacancy_id, si.id AS source_item_id,
          row_number() OVER (PARTITION BY vs.vacancy_id ORDER BY si.id DESC) AS source_rank
   FROM vacancy_sources vs JOIN source_items si ON si.id = vs.source_item_id
   JOIN vacancies v ON v.id = vs.vacancy_id
+  {scope}
   WHERE si.content_digest IS NOT DISTINCT FROM v.content_digest
 ), current_evaluation AS (
-  SELECT e.id, e.vacancy_id, e.profile_version, e.vacancy_revision,
+  SELECT e.id, e.profile_id, e.vacancy_id, e.profile_version, e.vacancy_revision,
          e.original_url, e.decision, e.role_classification, e.reasons,
          e.unknowns, e.preference_rank, e.evaluated_at,
          v.title, em.name AS employer,
-         row_number() OVER (PARTITION BY e.vacancy_id ORDER BY e.evaluated_at DESC,
+         row_number() OVER (PARTITION BY e.profile_id, e.vacancy_id ORDER BY e.evaluated_at DESC,
                            e.id DESC) AS evaluation_rank
   FROM vacancy_evaluations e
   JOIN current_profile cp ON cp.profile_id = e.profile_id AND cp.profile_version = e.profile_version
@@ -91,7 +96,8 @@ WITH current_profile AS (
 )
 """
 
-SQL = CURRENT_CTE + """
+
+SQL = current_shortlist_ctes("profile_id = :profile") + """
 SELECT ce.id, ce.vacancy_id, ce.title, ce.employer, ce.original_url, ce.decision,
        ce.role_classification, ce.reasons, ce.unknowns, ce.profile_version, ce.vacancy_revision,
        f.id, f.owner_decision, f.owner_reason, f.evaluation_id
@@ -413,6 +419,115 @@ SELECT (SELECT count(*) FROM stored),
 """
 
 
+SOURCE_REPORT_CHANNELS = {
+    "LINKEDIN": "LinkedIn",
+    "HIMALAYAS": "Himalayas",
+    "CAREER_BOARDS": "Verified company career boards",
+}
+REPORT_GEOGRAPHIES = {"ALL", "GERMANY", "AUSTRIA", "REMOTE_EUROPE", "REMOTE_WORLDWIDE", "UNKNOWN"}
+MAX_REPORT_OBSERVATIONS = 5000
+MAX_REPORT_EMPLOYERS = 50
+
+SOURCE_REPORT_SQL = """
+WITH report_period AS (
+  SELECT statement_timestamp() AS as_of
+), boards AS (
+  SELECT employer_name, platform, region, source_id,
+         CASE WHEN platform = 'GREENHOUSE' THEN 'greenhouse:' || source_id
+              ELSE 'lever:' || region || ':' || source_id END AS namespace
+  FROM verified_source_registry
+  WHERE status = 'VERIFIED' AND ((platform = 'GREENHOUSE' AND region = 'global') OR platform = 'LEVER')
+), source_namespaces AS (
+  SELECT 'linkedin:gmail' AS namespace, 'linkedin-alert-v1' AS input_version, 'LINKEDIN' AS channel,
+         NULL::text AS employer_name
+  UNION ALL SELECT 'himalayas', 'himalayas-search-v1', 'HIMALAYAS', NULL
+  UNION ALL SELECT namespace,
+                   CASE WHEN platform = 'GREENHOUSE' THEN 'greenhouse-board-v1' ELSE 'lever-postings-v1' END,
+                   'CAREER_BOARDS', employer_name FROM boards
+), recent_observations AS MATERIALIZED (
+  SELECT vs.vacancy_id, si.id AS source_item_id, si.fetched_at, si.content_digest,
+         sn.namespace, sn.channel, sn.employer_name
+  FROM source_namespaces sn
+  JOIN source_items si ON si.source_namespace = sn.namespace AND si.input_version = sn.input_version
+  JOIN vacancy_sources vs ON vs.source_item_id = si.id
+  CROSS JOIN report_period p
+  WHERE si.created_at BETWEEN p.as_of - (:days * interval '24 hours') AND p.as_of
+  LIMIT (:cohort_limit + 1)
+), first_channels AS MATERIALIZED (
+  SELECT DISTINCT r.vacancy_id, r.channel
+  FROM recent_observations r CROSS JOIN report_period p
+  WHERE NOT EXISTS (
+    SELECT 1 FROM vacancy_sources prior
+    JOIN source_items si ON si.id = prior.source_item_id
+    JOIN source_namespaces sn ON sn.namespace = si.source_namespace AND sn.input_version = si.input_version
+    WHERE prior.vacancy_id = r.vacancy_id AND sn.channel = r.channel
+      AND si.created_at < p.as_of - (:days * interval '24 hours')
+  )
+), cohort AS (
+  SELECT DISTINCT ON (r.vacancy_id, r.namespace) r.*
+  FROM recent_observations r JOIN first_channels f USING (vacancy_id, channel)
+  ORDER BY r.vacancy_id, r.namespace, r.fetched_at DESC, r.source_item_id DESC
+), evidence AS (
+  SELECT c.*, a.decision = 'CANDIDATE' AS candidate,
+    CASE
+      WHEN c.channel = 'LINKEDIN' THEN coalesce(card.parsed_direction, card.advertised_direction)
+      WHEN c.namespace = v.source_namespace AND c.content_digest = v.content_digest THEN
+        CASE lower(btrim(v.location))
+          WHEN 'germany' THEN 'GERMANY' WHEN 'deutschland' THEN 'GERMANY' WHEN 'berlin' THEN 'GERMANY'
+          WHEN 'berlin, germany' THEN 'GERMANY'
+          WHEN 'austria' THEN 'AUSTRIA' WHEN 'österreich' THEN 'AUSTRIA' WHEN 'vienna' THEN 'AUSTRIA'
+          WHEN 'wien' THEN 'AUSTRIA' WHEN 'vienna, austria' THEN 'AUSTRIA'
+          WHEN 'remote europe' THEN 'REMOTE_EUROPE'
+          WHEN 'remote worldwide' THEN 'REMOTE_WORLDWIDE'
+          WHEN 'worldwide' THEN 'REMOTE_WORLDWIDE'
+        END
+    END AS advertised
+  FROM cohort c JOIN vacancies v ON v.id = c.vacancy_id
+  LEFT JOIN gmail_alert_cards card ON card.source_item_id = c.source_item_id AND c.channel = 'LINKEDIN'
+  LEFT JOIN vacancy_candidate_assessments a ON a.source_item_id = c.source_item_id
+                    AND a.policy_version = 'java-backend-candidate-v2'
+), geography AS (
+  SELECT vacancy_id, CASE WHEN count(DISTINCT advertised) FILTER (WHERE advertised <> 'UNKNOWN') = 1
+       THEN min(advertised) FILTER (WHERE advertised <> 'UNKNOWN') ELSE 'UNKNOWN' END AS advertised
+  FROM evidence GROUP BY vacancy_id
+), selected AS MATERIALIZED (
+  SELECT e.* FROM evidence e JOIN geography g USING (vacancy_id)
+  WHERE :geography = 'ALL' OR g.advertised = :geography
+), membership AS (
+  SELECT vacancy_id, count(DISTINCT channel) AS channels FROM selected GROUP BY vacancy_id
+)
+""" + current_shortlist_ctes("profile_id IN ('alex-de', 'alex-at')", for_source_report=True) + """
+, shortlist AS (
+  SELECT e.vacancy_id, bool_or(e.profile_id = 'alex-de') AS de, bool_or(e.profile_id = 'alex-at') AS at
+  FROM current_evaluation e JOIN membership m USING (vacancy_id)
+  WHERE e.evaluation_rank = 1 GROUP BY e.vacancy_id
+), counts AS (
+  SELECT e.channel, e.namespace, e.employer_name,
+         count(DISTINCT e.vacancy_id) AS vacancies,
+         count(DISTINCT e.vacancy_id) FILTER (WHERE e.candidate) AS candidates,
+         count(DISTINCT e.vacancy_id) FILTER (WHERE s.de) AS "shortlistDe",
+         count(DISTINCT e.vacancy_id) FILTER (WHERE s.at) AS "shortlistAt",
+         count(DISTINCT e.vacancy_id) FILTER (WHERE m.channels = 1) AS "channelOnly"
+  FROM selected e JOIN membership m USING (vacancy_id)
+  LEFT JOIN shortlist s USING (vacancy_id)
+  GROUP BY GROUPING SETS ((e.channel), (e.channel, e.namespace, e.employer_name))
+), employer_rows AS (
+  SELECT * FROM counts WHERE channel = 'CAREER_BOARDS' AND namespace IS NOT NULL
+  ORDER BY employer_name, namespace LIMIT :employer_limit
+)
+SELECT jsonb_build_object(
+  'total', (SELECT count(*) FROM membership),
+  'overlap', (SELECT count(*) FROM membership WHERE channels > 1),
+  'asOf', (SELECT as_of FROM report_period),
+  'cohortExceeded', (SELECT count(*) > :cohort_limit FROM recent_observations),
+  'employersTruncated', (SELECT count(*) > :employer_limit FROM counts
+                        WHERE channel = 'CAREER_BOARDS' AND namespace IS NOT NULL),
+  'channels', (SELECT coalesce(json_agg(counts ORDER BY channel), '[]') FROM counts WHERE namespace IS NULL),
+  'employers', (SELECT coalesce(json_agg(employer_rows ORDER BY employer_name, namespace), '[]') FROM employer_rows)
+)::text
+"""
+
+
 def response(status, body, content_type="application/json"):
     payload = body if isinstance(body, str) else json.dumps(body, separators=(",", ":"))
     auth_origin = os.environ.get("COGNITO_DOMAIN", "")
@@ -460,6 +575,35 @@ def decode_row(row):
 
 def cell_value(cell):
     return None if cell.get("isNull") else next(iter(cell.values()), None)
+
+
+def read_source_report(event, client):
+    if not authorized(event):
+        return response(403, {"error": "Owner access required"})
+    query = event.get("queryStringParameters") or {}
+    days = query.get("days", "30")
+    geography = query.get("geography", "ALL")
+    if days not in ("7", "30") or geography not in REPORT_GEOGRAPHIES:
+        return response(400, {"error": "Choose a 7- or 30-day period and a supported geography"})
+    try:
+        result = client.execute_statement(
+            resourceArn=os.environ["DB_CLUSTER_ARN"], secretArn=os.environ["DB_READER_SECRET_ARN"],
+            database="job_agent", sql=SOURCE_REPORT_SQL, parameters=[
+                parameter("days", int(days)), parameter("geography", geography),
+                parameter("cohort_limit", MAX_REPORT_OBSERVATIONS), parameter("employer_limit", MAX_REPORT_EMPLOYERS)])
+        report = json.loads(cell_value(result["records"][0][0]))
+        if report.pop("cohortExceeded"):
+            return response(422, {"error": "The period exceeds the source report capacity."})
+        counts = ("vacancies", "candidates", "shortlistDe", "shortlistAt", "channelOnly")
+        rows = {item["channel"]: item for item in report["channels"]}
+        report["channels"] = [
+            {"channel": channel, "label": label, **{key: rows.get(channel, {}).get(key, 0) for key in counts}}
+            for channel, label in SOURCE_REPORT_CHANNELS.items()]
+        for employer in report["employers"]:
+            employer["label"] = f"{employer.pop('employer_name')} ({employer.pop('namespace')})"
+        return response(200, report)
+    except Exception:  # Avoid exposing Data API diagnostics or database contents.
+        return response(503, {"error": "Source report is temporarily unavailable"})
 
 
 def read_page(event, client):
@@ -730,6 +874,10 @@ def handler(event, _context):
                               "domain": os.environ["COGNITO_DOMAIN"],
                               "redirect": os.environ["PAGE_URL"],
                               "feedbackEnabled": os.environ.get("PAGE_FEEDBACK_ENABLED") == "true"})
+    if path == "/source-report":
+        if not authorized(event):
+            return response(403, {"error": "Owner access required"})
+        return read_source_report(event, boto3.client("rds-data"))
     if path == "/vacancies":
         return read_page(event, boto3.client("rds-data"))
     if path == "/linkedin":
