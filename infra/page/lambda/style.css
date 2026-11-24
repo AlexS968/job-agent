@@ -3,3 +3,12 @@ main{background:white;padding:1.5rem;border-radius:.5rem}button{margin:.3rem;pad
 article{border-top:1px solid #ccd6df;padding:1rem 0}a{overflow-wrap:anywhere}ul{margin:.3rem 0 1rem}
 button[aria-pressed="true"]{background:#153e75;color:white;font-weight:700}
 button:focus-visible,a:focus-visible{outline:3px solid #b75b00;outline-offset:2px}
+nav[aria-label="Job Agent"]{display:flex;gap:1rem}
+nav a[aria-current="page"]{font-weight:700}
+#source-report-filters label{margin-right:.25rem}
+#source-report-filters select{margin-right:1rem}
+.report-table{overflow-x:auto}
+.report-table table{border-collapse:collapse;width:100%}
+.report-table caption{text-align:left;margin-bottom:.5rem}
+.report-table th,.report-table td{border-bottom:1px solid #ccd6df;padding:.5rem;text-align:left}
+#source-report-boards th{padding-left:1.25rem;font-weight:normal}

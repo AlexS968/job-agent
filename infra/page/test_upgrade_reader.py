@@ -44,6 +44,27 @@ class UpgradeReaderTest(unittest.TestCase):
             self.assertEqual(self.migrator, call.kwargs["secretArn"])
             self.assertTrue(call.kwargs["sql"].startswith("GRANT SELECT"))
 
+    def test_source_report_grants_only_approved_columns_and_probes_existing_reader(self):
+        secret = "arn:aws:secretsmanager:us-east-1:123456789012:secret:synthetic-reader"
+        self.secrets.describe_secret.return_value = {"ARN": secret}
+        base = upgrade.reader.EXPECTED_COLUMNS - upgrade.reader.SOURCE_REPORT_COLUMNS
+        before = {"connect": True, "schemaUsage": True, "selectedColumns": sorted(base)}
+        after = {**before, "selectedColumns": sorted(upgrade.reader.EXPECTED_COLUMNS)}
+        with patch.object(upgrade.reader, "inspect_role", side_effect=[before, after, after]), \
+             patch.object(upgrade.reader, "validate_role"), \
+             patch.object(upgrade, "verify_source_report") as probe:
+            for _ in range(2):
+                upgrade.upgrade(self.sts, self.clusters, self.rds, self.secrets,
+                                "123456789012", self.cluster, self.migrator, secret)
+        self.assertEqual([
+            "GRANT SELECT (created_at) ON public.source_items TO job_agent_page_reader",
+            "GRANT SELECT (source_item_id, policy_version, decision) ON public.vacancy_candidate_assessments TO job_agent_page_reader",
+            "GRANT SELECT (location) ON public.vacancies TO job_agent_page_reader",
+            "GRANT SELECT (employer_name) ON public.verified_source_registry TO job_agent_page_reader",
+        ], [call.kwargs["sql"] for call in self.rds.execute_statement.call_args_list[1:-1]])
+        probe.assert_called_with(self.rds, self.cluster, secret)
+        self.assertEqual(2, probe.call_count)
+
     def test_unexpected_privilege_state_stops_before_grants(self):
         invalid = {"connect": True, "schemaUsage": True,
                    "selectedColumns": list(upgrade.OLD_COLUMNS | {"source_items.raw_payload"})}

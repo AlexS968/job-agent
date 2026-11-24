@@ -18,6 +18,7 @@ async function signIn() {
   config = await configPromise;
   const verifier = base64url(crypto.getRandomValues(new Uint8Array(32)));
   const challenge = base64url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
+  sessionStorage.setItem("sign-in-view", viewingSourceReport() ? "source-report" : "vacancies");
   sessionStorage.setItem("pkce", verifier);
   const stateValue = base64url(crypto.getRandomValues(new Uint8Array(24)));
   sessionStorage.setItem("oauth-state", stateValue);
@@ -47,10 +48,11 @@ async function exchangeCode(code, returnedState) {
   document.querySelector("#quality-section").hidden = false;
   document.querySelector("#yield-section").hidden = false;
   document.querySelector("#linkedin-section").hidden = false;
-  await load();
-  await loadLinkedIn();
-  await loadQuality();
-  await loadYield();
+  document.querySelector("#source-report-filters").hidden = false;
+  const returnView = sessionStorage.getItem("sign-in-view");
+  sessionStorage.removeItem("sign-in-view");
+  history.replaceState(null, "", returnView === "source-report" ? "#source-report" : "/");
+  return selectView();
 }
 async function loadLinkedIn() {
   const selectedProfile = profile, requestedOffset = linkedinOffset;
@@ -305,7 +307,121 @@ async function loadYield() {
     yieldState.textContent = error.message; yieldRetry.hidden = false;
   }
 }
-document.querySelector("#signin").addEventListener("click", () => signIn().catch(() => state.textContent = "Sign-in unavailable."));
+const reportDays = document.querySelector("#report-days");
+const reportGeography = document.querySelector("#report-geography");
+const reportState = document.querySelector("#source-report-state");
+const reportRetry = document.querySelector("#source-report-retry");
+const authState = document.querySelector("#auth-state");
+let reportRequest = 0;
+let vacancyViewLoaded = false;
+
+function viewingSourceReport() {
+  return location.hash === "#source-report";
+}
+
+function selectView() {
+  const report = viewingSourceReport();
+  document.querySelector("#vacancy-view").hidden = report;
+  document.querySelector("#source-report-view").hidden = !report;
+  document.querySelector("#show-vacancies").setAttribute("aria-current", report ? "false" : "page");
+  document.querySelector("#show-source-report").setAttribute("aria-current", report ? "page" : "false");
+  document.title = report ? "Job Agent Source Report" : "Job Agent vacancies";
+  if (!token) return;
+  if (report) return loadSourceReport();
+  if (!vacancyViewLoaded) {
+    vacancyViewLoaded = true;
+    load(); loadLinkedIn(); loadQuality(); loadYield();
+  }
+}
+
+function reportRow(entry, label) {
+  const row = document.createElement("tr");
+  const heading = document.createElement("th");
+  heading.scope = "row";
+  heading.append(label);
+  row.append(heading);
+  for (const key of ["vacancies", "candidates", "shortlistDe", "shortlistAt", "channelOnly"]) {
+    const cell = document.createElement("td");
+    cell.textContent = entry[key];
+    row.append(cell);
+  }
+  return row;
+}
+
+function renderSourceReport(data) {
+  const rows = document.querySelector("#source-report-rows");
+  const boards = document.querySelector("#source-report-boards");
+  rows.replaceChildren();
+  boards.replaceChildren();
+  boards.hidden = true;
+  for (const entry of data.channels) {
+    let label = entry.label;
+    if (entry.channel === "CAREER_BOARDS" && data.employers.length) {
+      label = document.createElement("button");
+      label.type = "button";
+      label.textContent = entry.label;
+      label.setAttribute("aria-controls", boards.id);
+      label.setAttribute("aria-expanded", "false");
+      label.addEventListener("click", () => {
+        boards.hidden = !boards.hidden;
+        label.setAttribute("aria-expanded", String(!boards.hidden));
+      });
+    }
+    rows.append(reportRow(entry, label));
+  }
+  for (const employer of data.employers) {
+    boards.append(reportRow(employer, employer.label));
+  }
+}
+
+async function loadSourceReport() {
+  if (!token) return;
+  const request = ++reportRequest;
+  const results = document.querySelector("#source-report-results");
+  const notes = document.querySelector("#source-report-notes");
+  reportState.textContent = "Loading source report…";
+  results.hidden = true;
+  notes.hidden = true;
+  reportRetry.hidden = true;
+  try {
+    const query = new URLSearchParams({days: reportDays.value, geography: reportGeography.value});
+    const result = await fetch("/source-report?" + query,
+      {headers: {Authorization: "Bearer " + token}, cache: "no-store"});
+    if (request !== reportRequest || !viewingSourceReport()) return;
+    if (result.status === 401 || result.status === 403) {
+      reportState.textContent = "Access expired or denied. Sign in again.";
+      return;
+    }
+    if (result.status === 422) {
+      reportState.textContent = "This period exceeds the report capacity." +
+        (reportDays.value === "30" ? " Try the 7-day period." : "");
+      return;
+    }
+    if (!result.ok) throw Error();
+    const data = await result.json();
+    if (request !== reportRequest || !viewingSourceReport()) return;
+    reportState.textContent = data.total ? `${data.total} unique vacancies. Confirmed cross-channel overlap: ${data.overlap}.` :
+      "No stored vacancies match this period and advertised geography.";
+    reportState.textContent += ` Current shortlist as of ${new Date(data.asOf).toLocaleString()}.`;
+    renderSourceReport(data);
+    if (data.employersTruncated) {
+      reportState.textContent += " The employer breakdown shows the first 50 employers.";
+    }
+    notes.hidden = false;
+    results.hidden = false;
+  } catch {
+    if (request !== reportRequest || !viewingSourceReport()) return;
+    reportState.textContent = "The source report is temporarily unavailable.";
+    reportRetry.hidden = false;
+  }
+}
+
+window.addEventListener("hashchange", selectView);
+reportDays.addEventListener("change", loadSourceReport);
+reportGeography.addEventListener("change", loadSourceReport);
+reportRetry.addEventListener("click", loadSourceReport);
+selectView();
+document.querySelector("#signin").addEventListener("click", () => signIn().catch(() => authState.textContent = "Sign-in unavailable."));
 document.querySelector("#signout").addEventListener("click", () => {
   token = undefined;
   const url = new URL(config.domain + "/logout");
@@ -325,4 +441,4 @@ document.querySelector("#linkedin-retry").addEventListener("click", loadLinkedIn
 document.querySelector("#linkedin-more").addEventListener("click", loadLinkedIn);
 const code = new URL(location.href).searchParams.get("code");
 if (code) exchangeCode(code, new URL(location.href).searchParams.get("state"))
-  .catch(error => state.textContent = error.message);
+  .catch(error => authState.textContent = error.message);

@@ -5,39 +5,77 @@
 <title>Job Agent vacancies</title>
 <link rel="stylesheet" href="/style.css">
 <main>
-  <h1>Job Agent vacancies</h1>
-  <p>Current stored evaluations. Eligibility and salary marked unknown still need verification.</p>
-  <p>Owner decisions are personal judgments, not verified vacancy facts or automatic changes to selection criteria.</p>
+  <nav aria-label="Job Agent"><a id="show-vacancies" href="#vacancies">Vacancies</a>
+    <a id="show-source-report" href="#source-report">Source Report</a></nav>
   <button id="signin">Sign in</button>
   <button id="signout" hidden>Sign out</button>
-  <nav hidden id="profiles" aria-label="Work country"><button data-profile="alex-de" aria-pressed="true">Germany</button>
-    <button data-profile="alex-at" aria-pressed="false">Austria</button></nav>
-  <section id="quality-section" aria-labelledby="quality-heading" hidden>
-    <h2 id="quality-heading">Why are there few opportunities?</h2>
-    <p id="quality-state" role="status"></p>
-    <button id="quality-retry" hidden>Retry explanation</button>
-    <details><summary>See counts, evidence and examples</summary><div id="quality-details"></div></details>
-  </section>
-  <h2 id="selected-country">Germany opportunities</h2>
-  <p id="state" role="status">Sign in to view vacancies.</p>
-  <button id="retry" hidden>Retry this read</button>
-  <div id="items"></div>
-  <button id="more" hidden>More</button>
-  <section id="linkedin-section" hidden aria-labelledby="linkedin-heading">
-    <h2 id="linkedin-heading">LinkedIn alerts needing review</h2>
-    <p>Cards can advertise Germany, Austria, Remote Europe or Remote Worldwide; missing or ambiguous evidence is marked unknown. Advertised direction is not confirmed work-country eligibility. These stored links are observations, not country recommendations.</p>
-    <p id="linkedin-state" role="status"></p>
-    <button id="linkedin-retry" hidden>Retry LinkedIn observations</button>
-    <div id="linkedin-items"></div>
-    <button id="linkedin-more" hidden>More LinkedIn observations</button>
-  </section>
-  <section id="yield-section" aria-labelledby="yield-heading" hidden>
-    <h2 id="yield-heading">Source and profile diagnostic</h2>
-    <p>Selected country only. All stored observations from currently active sources; source counts can overlap. Unknown conditions are separate from exclusions.</p>
-    <p id="yield-state" role="status">Sign in to view source counts.</p>
-    <button id="yield-retry" hidden>Retry source counts</button>
-    <div id="yield-items"></div>
-    <button id="yield-more" hidden>More sources</button>
+  <p id="auth-state" role="status"></p>
+  <div id="vacancy-view">
+    <h1>Job Agent vacancies</h1>
+    <p>Current stored evaluations. Eligibility and salary marked unknown still need verification.</p>
+    <p>Owner decisions are personal judgments, not verified vacancy facts or automatic changes to selection criteria.</p>
+    <nav hidden id="profiles" aria-label="Work country"><button data-profile="alex-de" aria-pressed="true">Germany</button>
+      <button data-profile="alex-at" aria-pressed="false">Austria</button></nav>
+    <section id="quality-section" aria-labelledby="quality-heading" hidden>
+      <h2 id="quality-heading">Why are there few opportunities?</h2>
+      <p id="quality-state" role="status"></p>
+      <button id="quality-retry" hidden>Retry explanation</button>
+      <details><summary>See counts, evidence and examples</summary><div id="quality-details"></div></details>
+    </section>
+    <h2 id="selected-country">Germany opportunities</h2>
+    <p id="state" role="status">Sign in to view vacancies.</p>
+    <button id="retry" hidden>Retry this read</button>
+    <div id="items"></div>
+    <button id="more" hidden>More</button>
+    <section id="linkedin-section" hidden aria-labelledby="linkedin-heading">
+      <h2 id="linkedin-heading">LinkedIn alerts needing review</h2>
+      <p>Cards can advertise Germany, Austria, Remote Europe or Remote Worldwide; missing or ambiguous evidence is marked unknown. Advertised direction is not confirmed work-country eligibility. These stored links are observations, not country recommendations.</p>
+      <p id="linkedin-state" role="status"></p>
+      <button id="linkedin-retry" hidden>Retry LinkedIn observations</button>
+      <div id="linkedin-items"></div>
+      <button id="linkedin-more" hidden>More LinkedIn observations</button>
+    </section>
+    <section id="yield-section" aria-labelledby="yield-heading" hidden>
+      <h2 id="yield-heading">Source and profile diagnostic</h2>
+      <p>Selected country only. All stored observations from currently active sources; source counts can overlap. Unknown conditions are separate from exclusions.</p>
+      <p id="yield-state" role="status">Sign in to view source counts.</p>
+      <button id="yield-retry" hidden>Retry source counts</button>
+      <div id="yield-items"></div>
+      <button id="yield-more" hidden>More sources</button>
+    </section>
+  </div>
+  <section id="source-report-view" aria-labelledby="source-report-heading" hidden>
+    <h1 id="source-report-heading">Source Report</h1>
+    <p>Vacancies enter the period on their first stored observation in each channel. A vacancy can
+      appear in multiple rows. The overall total counts confirmed shared identities once.</p>
+    <div id="source-report-filters" hidden>
+      <label for="report-days">Period</label>
+      <select id="report-days"><option value="30">Last 30 days</option><option value="7">Last 7 days</option></select>
+      <label for="report-geography">Advertised geography</label>
+      <select id="report-geography">
+        <option value="ALL">All geographies</option>
+        <option value="GERMANY">Germany</option>
+        <option value="AUSTRIA">Austria</option>
+        <option value="REMOTE_EUROPE">Remote Europe</option>
+        <option value="REMOTE_WORLDWIDE">Remote Worldwide</option>
+        <option value="UNKNOWN">Unknown</option>
+      </select>
+    </div>
+    <p id="source-report-state" role="status">Sign in to view the source report.</p>
+    <button id="source-report-retry" type="button" hidden>Retry source report</button>
+    <div class="report-table" id="source-report-results" hidden>
+      <table>
+        <caption>Stored vacancies by source. Shortlist columns show current status and may overlap.</caption>
+        <thead><tr><th scope="col">Source</th><th scope="col">Unique vacancies</th>
+          <th scope="col">Java/backend candidates</th><th scope="col">Current DE shortlist</th>
+          <th scope="col">Current AT shortlist</th><th scope="col">Only this channel</th></tr></thead>
+        <tbody id="source-report-rows"></tbody>
+        <tbody id="source-report-boards" hidden></tbody>
+      </table>
+    </div>
+    <p id="source-report-notes" hidden>Measured overlap is a lower bound when postings have yet to
+      be linked to a shared vacancy. Advertised geography is separate from work eligibility.
+      Missing or conflicting geography is shown as Unknown.</p>
   </section>
 </main>
 <script src="/app.js" defer></script>

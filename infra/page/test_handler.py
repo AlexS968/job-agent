@@ -52,6 +52,39 @@ class PageTest(unittest.TestCase):
         self.env.start()
         self.addCleanup(self.env.stop)
 
+    def test_source_report_denies_access_before_creating_data_client(self):
+        request = event(owner=False)
+        request["rawPath"] = "/source-report"
+        with patch.object(page.boto3, "client") as factory:
+            self.assertEqual(403, page.handler(request, None)["statusCode"])
+        factory.assert_not_called()
+
+    def test_source_report_defaults_and_empty_channel_rows(self):
+        request = {**event(), "rawPath": "/source-report", "queryStringParameters": None}
+        raw = {"total": 0, "overlap": 0, "channels": [], "employers": [],
+               "cohortExceeded": False, "employersTruncated": False}
+        db = FakeDataApi([[{"stringValue": json.dumps(raw)}]])
+        with patch.object(page.boto3, "client", return_value=db):
+            result = page.handler(request, None)
+        self.assertEqual(200, result["statusCode"])
+        data = json.loads(result["body"])
+        self.assertEqual(["LINKEDIN", "HIMALAYAS", "CAREER_BOARDS"], [r["channel"] for r in data["channels"]])
+        self.assertEqual([0, 0, 0], [r["vacancies"] for r in data["channels"]])
+        params = {p["name"]: page.cell_value(p["value"]) for p in db.calls[0]["parameters"]}
+        self.assertEqual({"days": 30, "geography": "ALL", "cohort_limit": 5000, "employer_limit": 50}, params)
+
+    def test_source_report_rejects_invalid_filters_and_sanitizes_read_errors(self):
+        db = FakeDataApi(fail=True)
+        invalid = {**event(), "queryStringParameters": {"days": "365", "geography": "WORLD"}}
+        self.assertEqual(400, page.read_source_report(invalid, db)["statusCode"])
+        self.assertEqual([], db.calls)
+        valid = {**event(), "queryStringParameters": {"days": "7", "geography": "UNKNOWN"}}
+        result = page.read_source_report(valid, db)
+        self.assertEqual(503, result["statusCode"])
+        self.assertNotIn("synthetic secret", result["body"])
+        exceeded = FakeDataApi([[{"stringValue": '{"cohortExceeded":true}'}]])
+        self.assertEqual(422, page.read_source_report(valid, exceeded)["statusCode"])
+
     def test_missing_owner_group_never_queries_database(self):
         db = FakeDataApi([row()])
         result = page.read_page(event(owner=False), db)

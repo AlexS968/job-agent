@@ -18,6 +18,12 @@ MIGRATOR = "job_agent_migrator"
 SECRET_NAME = "job-agent-p5a-page-reader"
 REGION = "us-east-1"
 DATABASE = "job_agent"
+SOURCE_REPORT_GRANTS = {
+    "source_items": ("created_at",),
+    "vacancy_candidate_assessments": ("source_item_id", "policy_version", "decision"),
+    "vacancies": ("location",),
+    "verified_source_registry": ("employer_name",),
+}
 TABLE_COLUMNS = {
     "source_items": ("id", "source_namespace", "listing_id", "content_digest", "input_version", "fetched_at"),
     "vacancy_sources": ("vacancy_id", "source_item_id"),
@@ -32,6 +38,9 @@ TABLE_COLUMNS = {
     "gmail_alert_cards": ("source_item_id", "advertised_direction", "direction_evidence",
                          "advertised_title", "advertised_employer", "advertised_location", "parsed_direction"),
 }
+for table, columns in SOURCE_REPORT_GRANTS.items():
+    TABLE_COLUMNS[table] = TABLE_COLUMNS.get(table, ()) + columns
+SOURCE_REPORT_COLUMNS = {f"{table}.{column}" for table, columns in SOURCE_REPORT_GRANTS.items() for column in columns}
 EXPECTED_COLUMNS = {f"{table}.{column}" for table, columns in TABLE_COLUMNS.items() for column in columns}
 GRANTS = (
     f"GRANT CONNECT ON DATABASE {DATABASE} TO {ROLE}",
