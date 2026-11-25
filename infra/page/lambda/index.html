@@ -6,7 +6,8 @@
 <link rel="stylesheet" href="/style.css">
 <main>
   <nav aria-label="Job Agent"><a id="show-vacancies" href="#vacancies">Vacancies</a>
-    <a id="show-source-report" href="#source-report">Source Report</a></nav>
+    <a id="show-source-report" href="#source-report">Source Report</a>
+    <a id="show-market-analysis" href="#market-analysis">Market Analysis</a></nav>
   <button id="signin">Sign in</button>
   <button id="signout" hidden>Sign out</button>
   <p id="auth-state" role="status"></p>
@@ -46,6 +47,7 @@
   </div>
   <section id="source-report-view" aria-labelledby="source-report-heading" hidden>
     <h1 id="source-report-heading">Source Report</h1>
+    <p><a href="#market-analysis">Compare completed months in Market Analysis</a></p>
     <p>Vacancies enter the period on their first stored observation in each channel. A vacancy can
       appear in multiple rows. The overall total counts confirmed shared identities once.</p>
     <div id="source-report-filters" hidden>
@@ -76,6 +78,28 @@
     <p id="source-report-notes" hidden>Measured overlap is a lower bound when postings have yet to
       be linked to a shared vacancy. Advertised geography is separate from work eligibility.
       Missing or conflicting geography is shown as Unknown.</p>
+  </section>
+  <section id="market-analysis-view" aria-labelledby="market-analysis-heading" hidden>
+    <h1 id="market-analysis-heading">Market Analysis</h1>
+    <p>First-stored vacancy observations in the two most recent completed Europe/Berlin calendar months.</p>
+    <p id="market-analysis-state" role="status">Sign in to view market analysis.</p>
+    <button id="market-analysis-retry" type="button" hidden>Retry market analysis</button>
+    <div id="market-analysis-results" hidden>
+      <p id="market-analysis-limits"></p>
+      <div class="report-table">
+        <table>
+          <caption>Distinct observed vacancy IDs by month</caption>
+          <thead><tr><th scope="col">Measure</th><th id="market-older" scope="col"></th>
+            <th id="market-newer" scope="col"></th></tr></thead>
+          <tbody id="market-analysis-rows"></tbody>
+        </table>
+      </div>
+      <details><summary>Observed vacancies by verified career board</summary><div id="market-analysis-boards"></div></details>
+      <p>Confirmed overlap counts stored IDs linked to more than one channel in the same month. Incomplete links
+        make overlap a lower bound. A vacancy can appear in both months if a second channel first stored it later.</p>
+      <p>Advertised geography does not establish permission to work there. Skill trends are unavailable because
+        skill evidence was not collected comparably across these months.</p>
+    </div>
   </section>
 </main>
 <script src="/app.js" defer></script>

@@ -126,3 +126,20 @@ During rollout of PR #72, the merged query timed out on warm Aurora under the pa
 3. Run one AWS smoke session. Verify an unauthenticated data request returns 401, then sign in as the owner. Navigate from vacancies to Source Report and back without a second sign-in. Switch periods and advertised geography, expand company career boards, and check the unique, overlap and current DE/AT counts against the reader results. Confirm that empty and temporary read errors are distinguishable if observed. The deployment and smoke remain pending.
 
 To roll back, restore the prior page package and route configuration through a fresh reviewed Terraform plan. The additive reader grants can be reviewed for removal separately after rollback, once no deployed report query uses them. Existing page and vacancy data remain intact.
+
+
+## Phase 9B market analysis
+
+Market Analysis is prepared locally as a separate protected view linked from Source Report. It uses the two most recent completed calendar months in Europe/Berlin. Each month includes its local start and excludes the next month's local start, including across daylight-saving transitions. The measure is first storage in a tracked channel. Publication and original email dates do not set the month. Archived alerts can enter a later month when imported.
+
+Vacancy totals count distinct stored IDs each month. Confirmed overlap counts IDs first stored in multiple channels in the same month. Incomplete identity links make this a lower bound. A vacancy can also count in two different months when a later channel first stores it. Channel counts can overlap. The board breakdown uses currently verified registry identities, including verified inactive boards. Separate boards with the same employer name stay separate. The report caps input at 5,000 in-period observations across both months and returns an explicit capacity error above that limit. It shows up to 50 boards per month and flags a truncated breakdown.
+
+Advertised geography uses recorded LinkedIn direction or supported normalized location on a matching in-period revision from the owning Himalayas or board source. Missing or conflicting evidence maps to Unknown. These categories do not establish permission to work from a country.
+
+All channel coverage is marked unknown. An empty group means there are no stored observations for that source and month. The existing database cannot establish whether collection yielded zero, failed, or was skipped. A channel appearing in one month does not establish its activation date or comparable coverage. The report withholds trend conclusions and labels skill trends unavailable. The legacy Sheet is outside the comparable collection cohort. Durable per-source collection records are a separate follow-up.
+
+### Phase 9B release and rollback
+
+After focused verification and PR CI, review one Terraform plan for JWT-protected \`GET /market-analysis\` and the existing shared page package. Apply the reviewed plan and run one smoke session. Verify an unauthenticated API request returns 401. Sign in as the owner and navigate from Source Report to Market Analysis without a second sign-in. Check the completed-month labels, source coverage, geography, totals and overlap against the stored sample, then return to Source Report. The rollout uses the existing read-only role, with no migration, Java image publication or scheduled work. Incremental cost comes from on-demand Lambda and database reads.
+
+To roll back, use a fresh reviewed Terraform plan to restore the previous page package and remove the new route. The report has no persistent state to revert.

@@ -52,6 +52,42 @@ class PageTest(unittest.TestCase):
         self.env.start()
         self.addCleanup(self.env.stop)
 
+    def test_market_analysis_denies_non_owner_before_database_access(self):
+        request = {**event(owner=False), "rawPath": "/market-analysis"}
+        request["requestContext"]["authorizer"]["jwt"]["claims"] = {
+            "sub": "synthetic-user", "cognito:groups": "[another-group]"}
+        with patch.object(page.boto3, "client") as factory:
+            result = page.handler(request, None)
+        self.assertEqual(403, result["statusCode"])
+        factory.assert_not_called()
+
+    def test_market_analysis_labels_missing_collection_coverage_even_with_observations(self):
+        empty = {"month": "2026-09", "total": 0, "overlap": 0, "sources": {}, "geographies": {},
+                 "boards": [], "boardsTruncated": False}
+        observed = {**empty, "month": "2026-10", "total": 2,
+                    "sources": {"HIMALAYAS": 2}, "geographies": {"UNKNOWN": 2}}
+        report = {"observationLimitExceeded": False, "months": [empty, observed]}
+        db = FakeDataApi([[{"stringValue": json.dumps(report)}]])
+        with patch.object(page.boto3, "client", return_value=db):
+            result = page.handler({**event(), "rawPath": "/market-analysis"}, None)
+        self.assertEqual(200, result["statusCode"])
+        payload = json.loads(result["body"])
+        self.assertEqual("UNKNOWN", payload["coverage"])
+        before, after = payload["months"]
+        self.assertEqual([0, 0, 0], [source["vacancies"] for source in before["sources"]])
+        self.assertEqual([0, 2, 0], [source["vacancies"] for source in after["sources"]])
+        self.assertTrue(all(source["coverage"] == "UNKNOWN"
+                            for month in payload["months"] for source in month["sources"]))
+        self.assertEqual([0, 0, 0, 0, 2], [row["vacancies"] for row in after["geographies"]])
+        self.assertEqual("secret-test", db.calls[0]["secretArn"])
+
+    def test_market_analysis_handles_capacity_and_database_errors_safely(self):
+        oversized = FakeDataApi([[{"stringValue": '{"observationLimitExceeded":true}'}]])
+        self.assertEqual(422, page.read_market_analysis(event(), oversized)["statusCode"])
+        result = page.read_market_analysis(event(), FakeDataApi(fail=True))
+        self.assertEqual(503, result["statusCode"])
+        self.assertNotIn("synthetic secret", result["body"])
+
     def test_source_report_denies_access_before_creating_data_client(self):
         request = event(owner=False)
         request["rawPath"] = "/source-report"
