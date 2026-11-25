@@ -18,7 +18,7 @@ async function signIn() {
   config = await configPromise;
   const verifier = base64url(crypto.getRandomValues(new Uint8Array(32)));
   const challenge = base64url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
-  sessionStorage.setItem("sign-in-view", viewingSourceReport() ? "source-report" : "vacancies");
+  sessionStorage.setItem("sign-in-view", selectedView());
   sessionStorage.setItem("pkce", verifier);
   const stateValue = base64url(crypto.getRandomValues(new Uint8Array(24)));
   sessionStorage.setItem("oauth-state", stateValue);
@@ -51,7 +51,8 @@ async function exchangeCode(code, returnedState) {
   document.querySelector("#source-report-filters").hidden = false;
   const returnView = sessionStorage.getItem("sign-in-view");
   sessionStorage.removeItem("sign-in-view");
-  history.replaceState(null, "", returnView === "source-report" ? "#source-report" : "/");
+  const returnPath = pageViews.includes(returnView) && returnView !== "vacancies" ? "#" + returnView : "/";
+  history.replaceState(null, "", returnPath);
   return selectView();
 }
 async function loadLinkedIn() {
@@ -315,19 +316,29 @@ const authState = document.querySelector("#auth-state");
 let reportRequest = 0;
 let vacancyViewLoaded = false;
 
-function viewingSourceReport() {
-  return location.hash === "#source-report";
+const pageViews = ["vacancies", "source-report", "market-analysis"];
+const marketState = document.querySelector("#market-analysis-state");
+const marketRetry = document.querySelector("#market-analysis-retry");
+let marketRequest = 0;
+
+function selectedView() {
+  const view = location.hash.slice(1);
+  return pageViews.includes(view) ? view : "vacancies";
 }
 
 function selectView() {
-  const report = viewingSourceReport();
-  document.querySelector("#vacancy-view").hidden = report;
-  document.querySelector("#source-report-view").hidden = !report;
-  document.querySelector("#show-vacancies").setAttribute("aria-current", report ? "false" : "page");
-  document.querySelector("#show-source-report").setAttribute("aria-current", report ? "page" : "false");
-  document.title = report ? "Job Agent Source Report" : "Job Agent vacancies";
+  const view = selectedView();
+  document.querySelector("#vacancy-view").hidden = view !== "vacancies";
+  document.querySelector("#source-report-view").hidden = view !== "source-report";
+  document.querySelector("#market-analysis-view").hidden = view !== "market-analysis";
+  for (const entry of pageViews) {
+    document.querySelector("#show-" + entry).setAttribute("aria-current", view === entry ? "page" : "false");
+  }
+  const title = {"vacancies": "vacancies", "source-report": "Source Report", "market-analysis": "Market Analysis"};
+  document.title = "Job Agent " + title[view];
   if (!token) return;
-  if (report) return loadSourceReport();
+  if (view === "source-report") return loadSourceReport();
+  if (view === "market-analysis") return loadMarketAnalysis();
   if (!vacancyViewLoaded) {
     vacancyViewLoaded = true;
     load(); loadLinkedIn(); loadQuality(); loadYield();
@@ -387,7 +398,7 @@ async function loadSourceReport() {
     const query = new URLSearchParams({days: reportDays.value, geography: reportGeography.value});
     const result = await fetch("/source-report?" + query,
       {headers: {Authorization: "Bearer " + token}, cache: "no-store"});
-    if (request !== reportRequest || !viewingSourceReport()) return;
+    if (request !== reportRequest || selectedView() !== "source-report") return;
     if (result.status === 401 || result.status === 403) {
       reportState.textContent = "Access expired or denied. Sign in again.";
       return;
@@ -399,7 +410,7 @@ async function loadSourceReport() {
     }
     if (!result.ok) throw Error();
     const data = await result.json();
-    if (request !== reportRequest || !viewingSourceReport()) return;
+    if (request !== reportRequest || selectedView() !== "source-report") return;
     reportState.textContent = data.total ? `${data.total} unique vacancies. Confirmed cross-channel overlap: ${data.overlap}.` :
       "No stored vacancies match this period and advertised geography.";
     reportState.textContent += ` Current shortlist as of ${new Date(data.asOf).toLocaleString()}.`;
@@ -410,12 +421,112 @@ async function loadSourceReport() {
     notes.hidden = false;
     results.hidden = false;
   } catch {
-    if (request !== reportRequest || !viewingSourceReport()) return;
+    if (request !== reportRequest || selectedView() !== "source-report") return;
     reportState.textContent = "The source report is temporarily unavailable.";
     reportRetry.hidden = false;
   }
 }
 
+function monthLabel(month) {
+  return new Intl.DateTimeFormat("en", {month: "long", year: "numeric", timeZone: "UTC"})
+    .format(new Date(month + "-01T00:00:00Z"));
+}
+
+function comparisonRow(label, values) {
+  const row = document.createElement("tr");
+  const heading = document.createElement("th");
+  heading.scope = "row";
+  heading.textContent = label;
+  row.append(heading);
+  for (const value of values) {
+    const cell = document.createElement("td");
+    cell.textContent = value;
+    row.append(cell);
+  }
+  return row;
+}
+
+function renderMarketAnalysis(months) {
+  document.querySelector("#market-older").textContent = monthLabel(months[0].month);
+  document.querySelector("#market-newer").textContent = monthLabel(months[1].month);
+  const rows = document.querySelector("#market-analysis-rows");
+  rows.replaceChildren(comparisonRow("Distinct vacancies observed", months.map(month => month.total)),
+    comparisonRow("Confirmed cross-channel overlap", months.map(month => month.overlap)));
+  for (const [index, source] of months[0].sources.entries()) {
+    rows.append(comparisonRow(source.label, months.map(month => {
+      const entry = month.sources[index];
+      const observed = entry.vacancies === 0 ? "No stored observations" : String(entry.vacancies);
+      return entry.coverage === "UNKNOWN" ? observed + " · coverage unknown" : observed;
+    })));
+  }
+  for (const [index, geography] of months[0].geographies.entries()) {
+    rows.append(comparisonRow("Advertised: " + geography.label,
+      months.map(month => month.geographies[index].vacancies)));
+  }
+  const boards = document.querySelector("#market-analysis-boards");
+  boards.replaceChildren();
+  for (const month of months) {
+    const heading = document.createElement("h2");
+    heading.textContent = monthLabel(month.month);
+    boards.append(heading);
+    if (!month.boards.length) {
+      const empty = document.createElement("p");
+      empty.textContent = "No stored observations from verified boards. Coverage unknown.";
+      boards.append(empty);
+      continue;
+    }
+    const list = document.createElement("ul");
+    for (const board of month.boards) {
+      const item = document.createElement("li");
+      item.textContent = `${board.employer} (${board.board}): ${board.vacancies}`;
+      list.append(item);
+    }
+    boards.append(list);
+    if (month.boardsTruncated) {
+      const limit = document.createElement("p");
+      limit.textContent = "Showing up to 50 boards by observed vacancy count.";
+      boards.append(limit);
+    }
+  }
+}
+
+async function loadMarketAnalysis() {
+  if (!token) return;
+  const request = ++marketRequest;
+  const results = document.querySelector("#market-analysis-results");
+  results.hidden = true;
+  marketRetry.hidden = true;
+  marketState.textContent = "Loading market analysis…";
+  try {
+    const result = await fetch("/market-analysis", {
+      headers: {Authorization: "Bearer " + token}, cache: "no-store"
+    });
+    if (request !== marketRequest || selectedView() !== "market-analysis") return;
+    if (result.status === 401 || result.status === 403) {
+      marketState.textContent = "Access expired or denied. Sign in again.";
+      return;
+    }
+    if (result.status === 422) {
+      marketState.textContent = "The two completed months exceed the analysis capacity.";
+      return;
+    }
+    if (!result.ok) throw Error();
+    const data = await result.json();
+    if (request !== marketRequest || selectedView() !== "market-analysis") return;
+    renderMarketAnalysis(data.months);
+    marketState.textContent = data.months.some(month => month.total > 0)
+      ? "Stored observations for two completed months." : "There are no stored observations for these months.";
+    document.querySelector("#market-analysis-limits").textContent =
+      "Coverage is unknown. These counts describe the stored sample. Trend conclusions are withheld because comparable source collection could not be established.";
+    results.hidden = false;
+  } catch {
+    if (request !== marketRequest || selectedView() !== "market-analysis") return;
+    marketState.textContent = "Market analysis is temporarily unavailable.";
+    marketRetry.hidden = false;
+  }
+}
+
+marketRetry.addEventListener("click", loadMarketAnalysis);
 window.addEventListener("hashchange", selectView);
 reportDays.addEventListener("change", loadSourceReport);
 reportGeography.addEventListener("change", loadSourceReport);

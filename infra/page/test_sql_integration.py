@@ -565,5 +565,86 @@ VALUES (10,2,repeat('a',64),'alex-de','v1',repeat('d',64),'rules-v2','SUITABLE',
         self.assertTrue(too_large["cohortExceeded"])
 
 
+    def test_market_analysis_berlin_boundaries_replay_overlap_and_source_mix(self):
+        fixture = """
+BEGIN;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'job_agent_page_reader') THEN
+    CREATE ROLE job_agent_page_reader LOGIN;
+  END IF;
+END $$;
+TRUNCATE vacancies, source_items, employers, verified_source_registry, gmail_alert_messages
+  RESTART IDENTITY CASCADE;
+INSERT INTO employers(source_namespace,external_id,name)
+VALUES ('greenhouse:market','market','Synthetic employer');
+INSERT INTO verified_source_registry(platform,region,source_id,employer_domain,employer_name,
+ official_page_url,evidence_url,evidence_hash,verified_at,status,active)
+VALUES ('GREENHOUSE','global','market','example.test','Synthetic Board',
+        'https://example.test/careers','https://example.test/careers',repeat('b',64),now(),'VERIFIED',true);
+INSERT INTO vacancies(id,employer_id,source_namespace,listing_id,title,location,content_digest)
+OVERRIDING SYSTEM VALUE VALUES
+ (10,1,'greenhouse:market','10','Identical title','Berlin',repeat('a',64)),
+ (20,1,'himalayas','20','Identical title','Remote Europe',repeat('a',64)),
+ (30,1,'linkedin','30','Identical title',NULL,repeat('a',64)),
+ (40,1,'linkedin','40','Identical title',NULL,repeat('a',64)),
+ (50,1,'himalayas','50','Identical title','Germany',repeat('a',64)),
+ (60,1,'greenhouse:market','60','Identical title','Vienna',repeat('a',64)),
+ (70,1,'greenhouse:market','70','Identical title','Vienna',repeat('a',64)),
+ (80,1,'himalayas','80','Identical title','Germany',repeat('a',64));
+INSERT INTO source_items(id,source_namespace,source_item_id,listing_namespace,listing_id,original_url,
+ fetched_at,created_at,raw_payload,input_version,normalization_version,input_digest,content_digest)
+OVERRIDING SYSTEM VALUE
+SELECT id, ns, 'market-' || id, ns, vacancy::text, 'https://example.test/post',
+       stored::timestamptz - interval '35 days', stored::timestamptz, '{}',
+       CASE ns WHEN 'linkedin:gmail' THEN 'linkedin-alert-v1'
+               WHEN 'himalayas' THEN 'himalayas-search-v1' ELSE 'greenhouse-board-v1' END,
+       'v1', repeat('a',64), repeat(digest,64)
+FROM (VALUES
+ (1,10,'linkedin:gmail','2026-08-31T22:00:00Z','b'),
+ (2,10,'greenhouse:market','2026-09-15T12:00:00Z','a'),
+ (3,20,'himalayas','2026-09-30T22:00:00Z','a'),
+ (4,10,'linkedin:gmail','2026-10-05T12:00:00Z','b'),
+ (5,30,'linkedin:gmail','2026-08-31T21:59:59Z','a'),
+ (6,30,'linkedin:gmail','2026-10-10T12:00:00Z','a'),
+ (7,40,'linkedin:gmail','2026-10-31T22:59:59Z','a'),
+ (8,50,'himalayas','2026-10-31T23:00:00Z','a'),
+ (9,60,'greenhouse:market','2026-10-15T12:00:00Z','b'),
+ (10,70,'greenhouse:market','2026-10-15T12:00:00Z','a'),
+ (11,80,'himalayas','2026-10-15T12:00:00Z','a'),
+ (12,80,'himalayas','2026-10-16T12:00:00Z','a')
+) fixture(id,vacancy,ns,stored,digest);
+INSERT INTO vacancy_sources(vacancy_id,source_item_id) VALUES
+ (10,1),(10,2),(20,3),(10,4),(30,5),(30,6),(40,7),(50,8),(60,9),(70,10),(80,11),(80,12);
+INSERT INTO gmail_alert_messages(message_id,observed_at,recognized_cards,unsupported_links,status,completed_at)
+SELECT 'market-' || id,fetched_at,1,0,'COMPLETE',created_at FROM source_items WHERE id IN (1,7);
+INSERT INTO gmail_alert_cards(message_id,linkedin_job_id,source_item_id,vacancy_id,outcome,advertised_direction)
+VALUES ('market-1','1000',1,10,'CREATED','AUSTRIA'),('market-7','4000',7,40,'CREATED','REMOTE_WORLDWIDE');
+"""
+
+        def query(as_of, limit=5000):
+            return (page.MARKET_ANALYSIS_SQL.replace("statement_timestamp()", f"'{as_of}'::timestamptz")
+                    .replace(":observation_limit", str(limit)).replace(":board_limit", "50") + ";")
+
+        grants = ";\n".join(reader.GRANTS)
+        results = self.sql(fixture + grants + "; SET LOCAL ROLE job_agent_page_reader;\n"
+                           + query("2026-10-31T23:00:00Z")
+                           + query("2026-10-31T23:00:00Z", 1)
+                           + query("2026-08-01T00:00:00Z") + "ROLLBACK;")
+        report, oversized, empty = map(json.loads, results)
+        old, new = report["months"]
+        self.assertEqual(("2026-09", 1, 1), (old["month"], old["total"], old["overlap"]))
+        self.assertEqual(("2026-10", 5, 0), (new["month"], new["total"], new["overlap"]))
+        self.assertEqual({"LINKEDIN": 1, "CAREER_BOARDS": 1}, old["sources"])
+        self.assertEqual({"LINKEDIN": 1, "CAREER_BOARDS": 2, "HIMALAYAS": 2}, new["sources"])
+        self.assertEqual({"UNKNOWN": 1}, old["geographies"])
+        self.assertEqual({
+            "GERMANY": 1, "AUSTRIA": 1, "REMOTE_EUROPE": 1, "REMOTE_WORLDWIDE": 1, "UNKNOWN": 1,
+        }, new["geographies"])
+        self.assertEqual([{"board": "greenhouse:market", "employer": "Synthetic Board", "vacancies": 2}],
+                         new["boards"])
+        self.assertTrue(oversized["observationLimitExceeded"])
+        self.assertEqual([0, 0], [month["total"] for month in empty["months"]])
+
+
 if __name__ == "__main__":
     unittest.main()

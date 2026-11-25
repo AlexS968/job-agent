@@ -428,10 +428,8 @@ REPORT_GEOGRAPHIES = {"ALL", "GERMANY", "AUSTRIA", "REMOTE_EUROPE", "REMOTE_WORL
 MAX_REPORT_OBSERVATIONS = 5000
 MAX_REPORT_EMPLOYERS = 50
 
-SOURCE_REPORT_SQL = """
-WITH report_period AS (
-  SELECT statement_timestamp() AS as_of
-), boards AS (
+REPORT_SOURCE_NAMESPACES = """
+, boards AS (
   SELECT employer_name, platform, region, source_id,
          CASE WHEN platform = 'GREENHOUSE' THEN 'greenhouse:' || source_id
               ELSE 'lever:' || region || ':' || source_id END AS namespace
@@ -444,7 +442,31 @@ WITH report_period AS (
   UNION ALL SELECT namespace,
                    CASE WHEN platform = 'GREENHOUSE' THEN 'greenhouse-board-v1' ELSE 'lever-postings-v1' END,
                    'CAREER_BOARDS', employer_name FROM boards
-), recent_observations AS MATERIALIZED (
+)
+"""
+
+ADVERTISED_DIRECTION_SQL = """
+CASE
+  WHEN c.channel = 'LINKEDIN' THEN coalesce(card.parsed_direction, card.advertised_direction)
+  WHEN c.namespace = v.source_namespace AND c.content_digest = v.content_digest THEN
+    CASE lower(btrim(v.location))
+      WHEN 'germany' THEN 'GERMANY' WHEN 'deutschland' THEN 'GERMANY' WHEN 'berlin' THEN 'GERMANY'
+      WHEN 'berlin, germany' THEN 'GERMANY'
+      WHEN 'austria' THEN 'AUSTRIA' WHEN 'österreich' THEN 'AUSTRIA' WHEN 'vienna' THEN 'AUSTRIA'
+      WHEN 'wien' THEN 'AUSTRIA' WHEN 'vienna, austria' THEN 'AUSTRIA'
+      WHEN 'remote europe' THEN 'REMOTE_EUROPE'
+      WHEN 'remote worldwide' THEN 'REMOTE_WORLDWIDE'
+      WHEN 'worldwide' THEN 'REMOTE_WORLDWIDE'
+    END
+END
+"""
+
+SOURCE_REPORT_SQL = """
+WITH report_period AS (
+  SELECT statement_timestamp() AS as_of
+)
+""" + REPORT_SOURCE_NAMESPACES + """
+, recent_observations AS MATERIALIZED (
   SELECT vs.vacancy_id, si.id AS source_item_id, si.fetched_at, si.content_digest,
          sn.namespace, sn.channel, sn.employer_name
   FROM source_namespaces sn
@@ -469,19 +491,7 @@ WITH report_period AS (
   ORDER BY r.vacancy_id, r.namespace, r.fetched_at DESC, r.source_item_id DESC
 ), evidence AS (
   SELECT c.*, a.decision = 'CANDIDATE' AS candidate,
-    CASE
-      WHEN c.channel = 'LINKEDIN' THEN coalesce(card.parsed_direction, card.advertised_direction)
-      WHEN c.namespace = v.source_namespace AND c.content_digest = v.content_digest THEN
-        CASE lower(btrim(v.location))
-          WHEN 'germany' THEN 'GERMANY' WHEN 'deutschland' THEN 'GERMANY' WHEN 'berlin' THEN 'GERMANY'
-          WHEN 'berlin, germany' THEN 'GERMANY'
-          WHEN 'austria' THEN 'AUSTRIA' WHEN 'österreich' THEN 'AUSTRIA' WHEN 'vienna' THEN 'AUSTRIA'
-          WHEN 'wien' THEN 'AUSTRIA' WHEN 'vienna, austria' THEN 'AUSTRIA'
-          WHEN 'remote europe' THEN 'REMOTE_EUROPE'
-          WHEN 'remote worldwide' THEN 'REMOTE_WORLDWIDE'
-          WHEN 'worldwide' THEN 'REMOTE_WORLDWIDE'
-        END
-    END AS advertised
+    """ + ADVERTISED_DIRECTION_SQL + """ AS advertised
   FROM cohort c JOIN vacancies v ON v.id = c.vacancy_id
   LEFT JOIN gmail_alert_cards card ON card.source_item_id = c.source_item_id AND c.channel = 'LINKEDIN'
   LEFT JOIN vacancy_candidate_assessments a ON a.source_item_id = c.source_item_id
@@ -525,6 +535,90 @@ SELECT jsonb_build_object(
   'channels', (SELECT coalesce(json_agg(counts ORDER BY channel), '[]') FROM counts WHERE namespace IS NULL),
   'employers', (SELECT coalesce(json_agg(employer_rows ORDER BY employer_name, namespace), '[]') FROM employer_rows)
 )::text
+"""
+
+
+MARKET_GEOGRAPHIES = {
+    "GERMANY": "Germany",
+    "AUSTRIA": "Austria",
+    "REMOTE_EUROPE": "Remote Europe",
+    "REMOTE_WORLDWIDE": "Remote Worldwide",
+    "UNKNOWN": "Unknown",
+}
+
+MARKET_ANALYSIS_SQL = """
+WITH berlin_clock AS (
+  SELECT date_trunc('month', statement_timestamp() AT TIME ZONE 'Europe/Berlin') AS month_start
+), months AS (
+  SELECT to_char(month_start - n * interval '1 month', 'YYYY-MM') AS month,
+    (month_start - n * interval '1 month') AT TIME ZONE 'Europe/Berlin' AS starts_at,
+    (month_start - (n - 1) * interval '1 month') AT TIME ZONE 'Europe/Berlin' AS ends_at
+  FROM berlin_clock CROSS JOIN (VALUES (1), (2)) AS offsets(n)
+)
+""" + REPORT_SOURCE_NAMESPACES + """
+, observations AS MATERIALIZED (
+  SELECT m.month, vs.vacancy_id, si.id AS source_item_id, si.fetched_at, si.content_digest,
+         sn.namespace, sn.channel, sn.employer_name
+  FROM months m
+  JOIN source_items si ON si.created_at >= m.starts_at AND si.created_at < m.ends_at
+  JOIN source_namespaces sn ON sn.namespace = si.source_namespace AND sn.input_version = si.input_version
+  JOIN vacancy_sources vs ON vs.source_item_id = si.id
+  LIMIT (:observation_limit + 1)
+), first_channels AS MATERIALIZED (
+  SELECT o.vacancy_id, o.channel, min(o.month) AS month
+  FROM observations o
+  WHERE NOT EXISTS (
+    SELECT 1 FROM vacancy_sources prior
+    JOIN source_items si ON si.id = prior.source_item_id
+    JOIN source_namespaces sn ON sn.namespace = si.source_namespace AND sn.input_version = si.input_version
+    WHERE prior.vacancy_id = o.vacancy_id AND sn.channel = o.channel
+      AND si.created_at < (SELECT min(starts_at) FROM months)
+  )
+  GROUP BY o.vacancy_id, o.channel
+), cohort AS (
+  SELECT DISTINCT ON (o.month, o.vacancy_id, o.namespace) o.*
+  FROM observations o JOIN first_channels f USING (vacancy_id, channel, month)
+  ORDER BY o.month, o.vacancy_id, o.namespace, o.fetched_at DESC, o.source_item_id DESC
+), evidence AS MATERIALIZED (
+  SELECT c.*, """ + ADVERTISED_DIRECTION_SQL + """ AS advertised
+  FROM cohort c JOIN vacancies v ON v.id = c.vacancy_id
+  LEFT JOIN gmail_alert_cards card ON card.source_item_id = c.source_item_id AND c.channel = 'LINKEDIN'
+), vacancies_by_month AS (
+  SELECT month, vacancy_id, count(DISTINCT channel) AS channels,
+    CASE WHEN count(DISTINCT advertised) FILTER (WHERE advertised <> 'UNKNOWN') = 1
+         THEN min(advertised) FILTER (WHERE advertised <> 'UNKNOWN') ELSE 'UNKNOWN' END AS geography
+  FROM evidence GROUP BY month, vacancy_id
+), totals AS (
+  SELECT month, count(*) AS total, count(*) FILTER (WHERE channels > 1) AS overlap
+  FROM vacancies_by_month GROUP BY month
+), geography_counts AS (
+  SELECT month, jsonb_object_agg(geography, vacancies) AS counts
+  FROM (SELECT month, geography, count(*) AS vacancies FROM vacancies_by_month GROUP BY month, geography) g
+  GROUP BY month
+), source_counts AS (
+  SELECT month, jsonb_object_agg(channel, vacancies) AS counts
+  FROM (SELECT month, channel, count(DISTINCT vacancy_id) AS vacancies FROM evidence GROUP BY month, channel) s
+  GROUP BY month
+), board_counts AS (
+  SELECT month, namespace, employer_name, count(DISTINCT vacancy_id) AS vacancies
+  FROM evidence WHERE channel = 'CAREER_BOARDS' GROUP BY month, namespace, employer_name
+), ranked_boards AS (
+  SELECT *, row_number() OVER (PARTITION BY month ORDER BY vacancies DESC, namespace) AS rank
+  FROM board_counts
+)
+SELECT jsonb_build_object(
+  'observationLimitExceeded', (SELECT count(*) > :observation_limit FROM observations),
+  'months', jsonb_agg(jsonb_build_object(
+    'month', m.month, 'total', coalesce(t.total, 0), 'overlap', coalesce(t.overlap, 0),
+    'geographies', coalesce(g.counts, '{}'::jsonb), 'sources', coalesce(s.counts, '{}'::jsonb),
+    'boards', coalesce((SELECT jsonb_agg(jsonb_build_object(
+      'board', b.namespace, 'employer', b.employer_name, 'vacancies', b.vacancies) ORDER BY b.rank)
+      FROM ranked_boards b WHERE b.month = m.month AND b.rank <= :board_limit), '[]'::jsonb),
+    'boardsTruncated', EXISTS (SELECT 1 FROM ranked_boards b WHERE b.month = m.month AND b.rank > :board_limit)
+  ) ORDER BY m.month)
+)::text
+FROM months m LEFT JOIN totals t USING (month)
+LEFT JOIN geography_counts g USING (month) LEFT JOIN source_counts s USING (month)
 """
 
 
@@ -604,6 +698,33 @@ def read_source_report(event, client):
         return response(200, report)
     except Exception:  # Avoid exposing Data API diagnostics or database contents.
         return response(503, {"error": "Source report is temporarily unavailable"})
+
+
+def read_market_analysis(event, client):
+    if not authorized(event):
+        return response(403, {"error": "Owner access required"})
+    try:
+        result = client.execute_statement(
+            resourceArn=os.environ["DB_CLUSTER_ARN"], secretArn=os.environ["DB_READER_SECRET_ARN"],
+            database="job_agent", sql=MARKET_ANALYSIS_SQL, parameters=[
+                parameter("observation_limit", MAX_REPORT_OBSERVATIONS),
+                parameter("board_limit", MAX_REPORT_EMPLOYERS)])
+        report = json.loads(cell_value(result["records"][0][0]))
+        if report.pop("observationLimitExceeded"):
+            return response(422, {"error": "The two completed months exceed the report capacity."})
+        report["coverage"] = "UNKNOWN"
+        for month in report["months"]:
+            month["sources"] = [
+                {"channel": channel, "label": label, "vacancies": month["sources"].get(channel, 0),
+                 "coverage": "UNKNOWN"}
+                for channel, label in SOURCE_REPORT_CHANNELS.items()]
+            month["geographies"] = [
+                {"geography": key, "label": label, "vacancies": month["geographies"].get(key, 0)}
+                for key, label in MARKET_GEOGRAPHIES.items()]
+        return response(200, report)
+    except Exception:  # Avoid exposing database diagnostics or vacancy data.
+        return response(503, {"error": "Market analysis is temporarily unavailable"})
+
 
 
 def read_page(event, client):
@@ -874,6 +995,10 @@ def handler(event, _context):
                               "domain": os.environ["COGNITO_DOMAIN"],
                               "redirect": os.environ["PAGE_URL"],
                               "feedbackEnabled": os.environ.get("PAGE_FEEDBACK_ENABLED") == "true"})
+    if path == "/market-analysis":
+        if not authorized(event):
+            return response(403, {"error": "Owner access required"})
+        return read_market_analysis(event, boto3.client("rds-data"))
     if path == "/source-report":
         if not authorized(event):
             return response(403, {"error": "Owner access required"})
