@@ -143,7 +143,7 @@ def inspect_role(rds, cluster, admin):
     return None if value is None else json.loads(value)
 
 
-def validate_role(state):
+def validate_role(state, *, additional_select_columns=()):
     if state is None:
         return
     flags = {"login": True, "super": False, "createdb": False, "createrole": False,
@@ -158,7 +158,7 @@ def validate_role(state):
     columns = state.get("selectedColumns")
     if not isinstance(columns, list) or not all(isinstance(column, str) for column in columns):
         raise RuntimeError("Reader column grants are unknown")
-    if not set(columns) <= EXPECTED_COLUMNS:
+    if not set(columns) <= EXPECTED_COLUMNS.union(additional_select_columns):
         raise RuntimeError("Reader has unexpected SELECT grants")
 
 
