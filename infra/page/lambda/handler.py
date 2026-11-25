@@ -497,7 +497,7 @@ WITH report_period AS (
   SELECT vacancy_id, count(DISTINCT channel) AS channels FROM selected GROUP BY vacancy_id
 )
 """ + current_shortlist_ctes("profile_id IN ('alex-de', 'alex-at')", for_source_report=True) + """
-, shortlist AS (
+, shortlist AS MATERIALIZED (
   SELECT e.vacancy_id, bool_or(e.profile_id = 'alex-de') AS de, bool_or(e.profile_id = 'alex-at') AS at
   FROM current_evaluation e JOIN membership m USING (vacancy_id)
   WHERE e.evaluation_rank = 1 GROUP BY e.vacancy_id

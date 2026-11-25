@@ -6,6 +6,7 @@ from pathlib import Path
 import runpy
 import sys
 
+from prepare_feedback import READ_COLUMNS
 import prepare_reader as reader
 
 PHASE7_COLUMNS = {f"gmail_alert_cards.{column}"
@@ -30,6 +31,7 @@ ADDITIONAL_GRANTS = (
 
 REPORT_GRANTS = tuple(f"GRANT SELECT ({', '.join(columns)}) ON public.{table} TO {reader.ROLE}"
                       for table, columns in reader.SOURCE_REPORT_GRANTS.items())
+FEEDBACK_READ_COLUMNS = frozenset(f"review_feedback.{column}" for column in READ_COLUMNS)
 
 
 def upgrade(sts, clusters, rds, secrets, account, cluster, migrator, report_reader=None):
@@ -54,12 +56,16 @@ def upgrade(sts, clusters, rds, secrets, account, cluster, migrator, report_read
     if actor != reader.MIGRATOR:
         raise RuntimeError("Grant actor is not the table-owning migrator")
     state = reader.inspect_role(rds, cluster, migrator)
-    reader.validate_role(state)
+    approved_feedback = FEEDBACK_READ_COLUMNS if report_reader else frozenset()
+    reader.validate_role(state, additional_select_columns=approved_feedback)
     if state is None or not state["connect"] or not state["schemaUsage"]:
         raise RuntimeError("Reader bootstrap is incomplete")
     columns = set(state["selectedColumns"])
     baseline = (reader.EXPECTED_COLUMNS - reader.SOURCE_REPORT_COLUMNS) if report_reader else OLD_COLUMNS
     expected = reader.EXPECTED_COLUMNS if report_reader else EXPECTED_COLUMNS
+    if columns & approved_feedback:
+        baseline = baseline | approved_feedback
+        expected = expected | approved_feedback
     if not baseline <= columns <= expected:
         raise RuntimeError("Reader grants differ from reviewed baseline")
     if columns != expected:
@@ -67,8 +73,8 @@ def upgrade(sts, clusters, rds, secrets, account, cluster, migrator, report_read
             rds.execute_statement(resourceArn=cluster, secretArn=migrator,
                                   database=reader.DATABASE, sql=statement)
         updated = reader.inspect_role(rds, cluster, migrator)
-        reader.validate_role(updated)
-        if set(updated["selectedColumns"]) != expected:
+        reader.validate_role(updated, additional_select_columns=approved_feedback)
+        if updated is None or set(updated["selectedColumns"]) != expected:
             raise RuntimeError("Reader grant upgrade is incomplete")
     if report_reader:
         verify_source_report(rds, cluster, report_reader)

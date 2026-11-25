@@ -111,15 +111,17 @@ The employer breakdown uses the verified registry board identity. Separate board
 
 The query caps recent observations at 5,000 and returns a capacity error instead of partial totals. The employer breakdown returns up to 50 rows and flags truncation. Historical matching can still require reading older linked observations. The report reads structured fields only and returns aggregate counts.
 
+During rollout of PR #72, the merged query timed out on warm Aurora under the page reader role. A read-only probe that materialized the shortlist CTE completed in 0.57 s for 7 days and 0.78 s for 30 days. These are probe timings. The updated Lambda and authenticated browser smoke still need verification.
+
 ### Release and acceptance
 
-1. After PR CI, use the existing reviewed `job-agent` login. Set `PAGE_EXPECTED_ACCOUNT_ID`, `PAGE_CLUSTER_ARN` and `PAGE_MIGRATOR_SECRET_ARN` as in the [page reader runbook](PHASE_6A_PAGE.md). Set `PAGE_READER_SECRET_ARN` to the reviewed existing page reader secret ARN. Run this preflight and grant step from the repository root:
+1. After PR CI, use the existing reviewed `job-agent` login. Set `PAGE_EXPECTED_ACCOUNT_ID`, `PAGE_CLUSTER_ARN` and `PAGE_MIGRATOR_SECRET_ARN` as in the [page reader runbook](PHASE_6A_PAGE.md). Set `PAGE_READER_SECRET_ARN` to the reviewed existing page reader secret ARN. Run the preflight from the repository root:
 
    ```bash
    python3 infra/page/upgrade_reader.py --source-report
    ```
 
-   It adds only SELECT on `source_items.created_at`, `vacancies.location`, `verified_source_registry.employer_name`, and `vacancy_candidate_assessments(source_item_id, policy_version, decision)` for `job_agent_page_reader`. It verifies the resulting grants and runs both report periods under that reader identity without printing data. Stop before Terraform if either fails. Schema, credentials and raw-payload access are unchanged.
+   The report SELECT grants on `source_items.created_at`, `vacancies.location`, `verified_source_registry.employer_name`, and `vacancy_candidate_assessments(source_item_id, policy_version, decision)` are already applied and verified in AWS. With those grants present, the preflight checks metadata and runs both report periods under `job_agent_page_reader` without printing data. It accepts the exact seven Phase 6B `review_feedback` SELECT columns from `prepare_feedback.READ_COLUMNS`, leaves those grants intact, and rejects unexpected columns or write access. Stop before Terraform if the preflight fails.
 2. Review one fresh Terraform plan and apply it. Expect the protected `GET /source-report` route and refreshed existing page package. The feedback Lambda may also pick up the shared package hash. Confirm there is no new service, schedule change, migration or Java image publication.
 3. Run one AWS smoke session. Verify an unauthenticated data request returns 401, then sign in as the owner. Navigate from vacancies to Source Report and back without a second sign-in. Switch periods and advertised geography, expand company career boards, and check the unique, overlap and current DE/AT counts against the reader results. Confirm that empty and temporary read errors are distinguishable if observed. The deployment and smoke remain pending.
 
