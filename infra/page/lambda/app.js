@@ -18,7 +18,6 @@ const qualityState = document.querySelector("#quality-state");
 const qualityDetails = document.querySelector("#quality-details");
 const qualityRetry = document.querySelector("#quality-retry");
 let yieldOffset = 0;
-let linkedinOffset = 0;
 const base64url = bytes => btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 const configPromise = fetch("/config", {cache: "no-store"}).then(r => { if (!r.ok) throw Error(); return r.json(); });
 async function signIn() {
@@ -52,65 +51,15 @@ async function exchangeCode(code, returnedState) {
   document.querySelector("#signin").hidden = true;
   document.querySelector("#signout").hidden = false;
   document.querySelector("#profiles").hidden = false;
+  document.querySelector("#vacancy-filters").hidden = false;
   document.querySelector("#quality-section").hidden = false;
   document.querySelector("#yield-section").hidden = false;
-  document.querySelector("#linkedin-section").hidden = false;
   document.querySelector("#source-report-filters").hidden = false;
   const returnView = sessionStorage.getItem("sign-in-view");
   sessionStorage.removeItem("sign-in-view");
   const returnPath = pageViews.includes(returnView) && returnView !== "vacancies" ? "#" + returnView : "/";
   history.replaceState(null, "", returnPath);
   return selectView();
-}
-async function loadLinkedIn() {
-  const selectedProfile = profile, requestedOffset = linkedinOffset;
-  const country = selectedProfile === "alex-de" ? "Germany" : "Austria";
-  const status = document.querySelector("#linkedin-state");
-  const list = document.querySelector("#linkedin-items");
-  const retryButton = document.querySelector("#linkedin-retry");
-  const moreButton = document.querySelector("#linkedin-more");
-  status.textContent = "Loading stored LinkedIn observations…";
-  retryButton.hidden = true; moreButton.hidden = true;
-  try {
-    const query = new URLSearchParams({profile:selectedProfile,offset:String(requestedOffset),limit:"20"});
-    const response = await readFetch("/linkedin?" + query,
-      {headers:{Authorization:"Bearer " + token},cache:"no-store"});
-    if (!response.ok) throw Error("Stored LinkedIn observations are temporarily unavailable.");
-    const page = await response.json();
-    if (selectedProfile !== profile || requestedOffset !== linkedinOffset) return;
-    if (requestedOffset === 0) list.replaceChildren();
-    for (const item of page.items) {
-      const card = document.createElement("article");
-      const heading = document.createElement("h3");
-      const link = document.createElement("a");
-      link.href = item.url; link.rel = "noopener noreferrer"; link.textContent = item.title;
-      heading.append(link);
-      const employer = document.createElement("p");
-      employer.textContent = item.advertisedEmployer ?
-        `Advertised employer: ${item.advertisedEmployer} (unverified)` : item.employer || "Employer not verified";
-      const directions = {GERMANY:"Germany", AUSTRIA:"Austria", REMOTE_EUROPE:"Remote Europe",
-        REMOTE_WORLDWIDE:"Remote Worldwide", UNKNOWN:"Unknown direction"};
-      const advertised = directions[item.advertisedDirection] || "Unknown direction";
-      card.append(heading, employer,
-        document.createTextNode(`Advertised direction: ${advertised}`),
-        document.createTextNode(item.directionEvidence ? ` (card says: ${item.directionEvidence})` :
-          " (the card gives insufficient location evidence)"),
-        line("Evaluation", [item.decision]),
-        line("Role", [item.role]), line("Reasons", item.reasons),
-        line("Unknown conditions", item.unknowns),
-        document.createTextNode("Country eligibility has not been confirmed from this alert."));
-      list.append(card);
-    }
-    status.textContent = page.items.length ?
-      `Showing ${list.children.length} stored LinkedIn observations across advertised directions. ` +
-      `Selected evaluation profile: ${country}. None is confirmed as a ${country} recommendation from this alert.` :
-      `No stored LinkedIn observations in this sample. Selected evaluation profile: ${country}.`;
-    if (page.nextOffset !== null) { linkedinOffset = page.nextOffset; moreButton.hidden = false; }
-  } catch (error) {
-    if (error.name === "AbortError") return;
-    if (selectedProfile !== profile) return;
-    status.textContent = error.message; retryButton.hidden = false;
-  }
 }
 function line(label, values) {
   const p = document.createElement("p");
@@ -134,7 +83,7 @@ function feedbackEditor(item, selectedProfile) {
       (item.feedbackEvaluationId !== item.evaluationId ? " (recorded for an earlier evaluation)" : "") :
     "No owner decision recorded.";
   section.append(heading, latest);
-  if (!config.feedbackEnabled) return section;
+  if (!config.feedbackEnabled || !item.recommended) return section;
   const choice = document.createElement("select");
   const reason = document.createElement("select");
   const button = document.createElement("button"); button.type = "button"; button.textContent = "Save decision";
@@ -186,34 +135,32 @@ function feedbackEditor(item, selectedProfile) {
 }
 async function load() {
   const selectedProfile = profile, requestedOffset = offset;
+  const selectedSource = document.querySelector("#vacancy-source").value;
+  const selectedStatus = document.querySelector("#vacancy-status").value;
   const country = selectedProfile === "alex-de" ? "Germany" : "Austria";
-  document.querySelector("#selected-country").textContent = `${country} opportunities`;
+  document.querySelector("#selected-country").textContent = `${country} vacancy review`;
   document.querySelectorAll("[data-profile]").forEach(button =>
     button.setAttribute("aria-pressed", String(button.dataset.profile === profile)));
   state.textContent = "Loading vacancies…";
   more.hidden = true;
   retry.hidden = true;
   try {
-    const query = new URLSearchParams({profile:selectedProfile,offset:String(requestedOffset),limit:"20"});
+    const query = new URLSearchParams({profile:selectedProfile, source:selectedSource, status:selectedStatus,
+      offset:String(requestedOffset),limit:"20"});
     const response = await readFetch("/vacancies?" + query, {headers:{Authorization:"Bearer " + token},cache:"no-store"});
     if (response.status === 401 || response.status === 403) throw Error("Access expired or denied. Sign in again.");
     if (!response.ok) throw Error("Vacancies could not be loaded. Please retry later.");
     const page = await response.json();
-    if (selectedProfile !== profile || requestedOffset !== offset) return;
+    if (selectedProfile !== profile || requestedOffset !== offset ||
+        selectedSource !== document.querySelector("#vacancy-source").value ||
+        selectedStatus !== document.querySelector("#vacancy-status").value) return;
     if (requestedOffset === 0) items.replaceChildren();
-    for (const item of page.items) {
-      const card = document.createElement("article");
-      const heading = document.createElement("h2");
-      const link = document.createElement("a");
-      link.href = item.url; link.rel = "noopener noreferrer"; link.textContent = item.title;
-      heading.append(link); card.append(heading);
-      const employer = document.createElement("p"); employer.textContent = item.employer || "Employer unknown";
-      card.append(employer, line("Evaluation", [item.decision]), line("Reasons", item.reasons),
-        line("Needs verification", item.unknowns), feedbackEditor(item, selectedProfile));
-      items.append(card);
-    }
-    state.textContent = items.children.length ? `Showing ${items.children.length} ${country} opportunities.` :
-      "No currently confirmed recommendations in this stored sample. See source counts and unknown conditions below.";
+    for (const item of page.items) items.append(renderVacancy(item, selectedProfile));
+    const scope = document.querySelector("#vacancy-status").selectedOptions[0].textContent;
+    state.textContent = page.total ?
+      `${scope}: ${page.total} distinct stored vacancies for the selected source scope; showing ${items.children.length}. ` +
+      `Assessment profile: ${country}. Advertised geography is not work-country eligibility.` :
+      `No stored vacancies match these filters for the ${country} assessment. Other sources or list scopes may contain observations.`;
     if (page.nextOffset !== null) { offset = page.nextOffset; more.hidden = false; }
   } catch (error) {
     if (error.name === "AbortError") return;
@@ -222,6 +169,41 @@ async function load() {
     retry.hidden = false;
   }
 }
+function paragraph(text) {
+  const node = document.createElement("p"); node.textContent = text; return node;
+}
+function renderVacancy(item, selectedProfile) {
+  const card = document.createElement("article");
+  const heading = document.createElement("h3");
+  if (item.url) {
+    const link = document.createElement("a");
+    link.href = item.url; link.rel = "noopener noreferrer"; link.textContent = item.title; heading.append(link);
+  } else heading.textContent = item.title;
+  card.append(heading);
+  const sources = {LINKEDIN:"LinkedIn alert", HIMALAYAS:"Himalayas", CAREER_BOARDS:"Verified company career board"};
+  const employer = item.employer || "Employer not established";
+  const employerEvidence = ["LINKEDIN", "HIMALAYAS"].includes(item.source) && item.employer
+    ? `Advertised employer: ${employer} (source claim)` : employer;
+  card.append(paragraph(`${sources[item.source] || "Stored source"} · ${employerEvidence}`));
+  const directions = {GERMANY:"Germany", AUSTRIA:"Austria", REMOTE_EUROPE:"Remote Europe",
+    REMOTE_WORLDWIDE:"Remote Worldwide", UNKNOWN:"Unknown"};
+  card.append(paragraph(`Advertised geography: ${directions[item.advertisedDirection] || "Unknown"}` +
+    (item.advertisedLocation || item.location ? ` (${item.advertisedLocation || item.location})` : "") +
+    ". This does not establish work-country permission."));
+  const explanation = item.explanation;
+  card.append(paragraph("Application assessment: " + explanation.decisionLabel),
+    paragraph(explanation.assessment), paragraph(explanation.relevance));
+  for (const text of [...explanation.exclusions, ...explanation.questions]) card.append(paragraph(text));
+  card.append(paragraph(explanation.nextAction));
+  if (item.applicationUrl) {
+    const apply = document.createElement("a"); apply.href = item.applicationUrl;
+    apply.rel = "noopener noreferrer"; apply.textContent = "Apply on the advertised application site"; card.append(apply);
+  }
+  if (!item.url) card.append(paragraph("Posting link is unavailable until Job Agent refreshes this evidence."));
+  card.append(feedbackEditor(item, selectedProfile));
+  return card;
+}
+
 function codes(values) {
   const entries = Object.entries(values || {});
   return entries.length ? entries.map(([code, count]) => `${code.replaceAll("_", " ").toLowerCase()}: ${count}`).join("; ") : "none recorded";
@@ -351,7 +333,7 @@ function selectView() {
   if (view === "source-report") return loadSourceReport();
   if (view === "market-analysis") return loadMarketAnalysis();
   {
-    load(); loadLinkedIn(); loadQuality(); loadYield();
+    load(); loadQuality(); loadYield();
   }
 }
 
@@ -554,16 +536,19 @@ document.querySelector("#signout").addEventListener("click", () => {
 });
 document.querySelectorAll("[data-profile]").forEach(button => button.addEventListener("click", () => {
   readRecovery.cancel();
-  profile = button.dataset.profile; offset = 0; yieldOffset = 0; linkedinOffset = 0;
-  load(); loadLinkedIn(); loadQuality(); loadYield();
+  profile = button.dataset.profile; offset = 0; yieldOffset = 0;
+  load(); loadQuality(); loadYield();
 }));
 more.addEventListener("click", load);
 retry.addEventListener("click", load);
 yieldMore.addEventListener("click", loadYield);
 yieldRetry.addEventListener("click", loadYield);
 qualityRetry.addEventListener("click", loadQuality);
-document.querySelector("#linkedin-retry").addEventListener("click", loadLinkedIn);
-document.querySelector("#linkedin-more").addEventListener("click", loadLinkedIn);
+for (const id of ["vacancy-source", "vacancy-status"]) {
+  document.querySelector("#" + id).addEventListener("change", () => {
+    readRecovery.cancel(); offset = 0; load();
+  });
+}
 const code = new URL(location.href).searchParams.get("code");
 if (code) exchangeCode(code, new URL(location.href).searchParams.get("state"))
   .catch(error => authState.textContent = error.message);

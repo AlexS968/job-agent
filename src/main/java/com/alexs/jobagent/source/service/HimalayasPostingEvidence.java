@@ -22,6 +22,18 @@ public class HimalayasPostingEvidence {
         return new ReviewMetadataDTO(expired, applicationLink(row));
     }
 
+    public Instant expiry(String rawPayload) {
+        JsonNode expiry = json.readTree(rawPayload).path("expiryDate");
+        if (!expiry.isIntegralNumber() || !expiry.canConvertToLong() || expiry.asLong() <= 0) {
+            return null;
+        }
+        try {
+            return Instant.ofEpochSecond(expiry.asLong());
+        } catch (java.time.DateTimeException outsideSupportedRange) {
+            return null;
+        }
+    }
+
     static String applicationLink(JsonNode row) {
         JsonNode field = row.path("applicationLink");
         if (!field.isTextual() || field.asText().length() > 2048) {

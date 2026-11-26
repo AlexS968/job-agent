@@ -21,24 +21,30 @@
     <nav hidden id="profiles" aria-label="Work country"><button data-profile="alex-de" aria-pressed="true">Germany</button>
       <button data-profile="alex-at" aria-pressed="false">Austria</button></nav>
     <section id="quality-section" aria-labelledby="quality-heading" hidden>
-      <h2 id="quality-heading">Why are there few opportunities?</h2>
+      <h2 id="quality-heading">Verified board sample: why few recommendations?</h2>
       <p id="quality-state" role="status"></p>
       <button id="quality-retry" hidden>Retry explanation</button>
       <details><summary>See counts, evidence and examples</summary><div id="quality-details"></div></details>
     </section>
-    <h2 id="selected-country">Germany opportunities</h2>
+    <h2 id="selected-country">Germany vacancy review</h2>
+    <div id="vacancy-filters" hidden>
+      <label for="vacancy-source">Source</label>
+      <select id="vacancy-source"><option value="ALL">All three source channels</option>
+        <option value="LINKEDIN">LinkedIn alerts</option><option value="HIMALAYAS">Himalayas</option>
+        <option value="CAREER_BOARDS">Verified company career boards</option></select>
+      <label for="vacancy-status">List scope</label>
+      <select id="vacancy-status"><option value="CANDIDATES">Role candidates and unclear roles</option>
+        <option value="SHORTLIST">Country-confirmed shortlist</option><option value="ALL">All current observations</option>
+        <option value="EXCLUDED">Excluded by the current assessment</option>
+        <option value="UNASSESSED">Without a current assessment</option></select>
+      <p>Counts use distinct vacancy identities in exactly the selected source and list scope, not all listings on a platform.
+        Unknown salary or eligibility is not a confirmed exclusion. Check the posting or ask the employer about salary and work-country permission; the owner must check personal authorization separately. Job Agent needs further source evidence for unclear roles. Individual cards identify the applicable gaps. Role candidates are not country recommendations.
+        Per-vacancy failure history is unavailable: missing assessments do not establish failed or queued work.</p>
+    </div>
     <p id="state" role="status">Sign in to view vacancies.</p>
     <button id="retry" hidden>Retry this read</button>
     <div id="items"></div>
     <button id="more" hidden>More</button>
-    <section id="linkedin-section" hidden aria-labelledby="linkedin-heading">
-      <h2 id="linkedin-heading">LinkedIn alerts needing review</h2>
-      <p>Cards can advertise Germany, Austria, Remote Europe or Remote Worldwide; missing or ambiguous evidence is marked unknown. Advertised direction is not confirmed work-country eligibility. These stored links are observations, not country recommendations.</p>
-      <p id="linkedin-state" role="status"></p>
-      <button id="linkedin-retry" hidden>Retry LinkedIn observations</button>
-      <div id="linkedin-items"></div>
-      <button id="linkedin-more" hidden>More LinkedIn observations</button>
-    </section>
     <section id="yield-section" aria-labelledby="yield-heading" hidden>
       <h2 id="yield-heading">Source and profile diagnostic</h2>
       <p>Selected country only. All stored observations from currently active sources; source counts can overlap. Unknown conditions are separate from exclusions.</p>

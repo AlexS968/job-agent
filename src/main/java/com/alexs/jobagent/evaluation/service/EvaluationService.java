@@ -1,6 +1,7 @@
 package com.alexs.jobagent.evaluation.service;
 
 import com.alexs.jobagent.evaluation.dto.EvaluationBatchResultDTO;
+import com.alexs.jobagent.evaluation.dto.EvaluationInputRefreshDTO;
 import com.alexs.jobagent.evaluation.dto.LoadedProfileDTO;
 import com.alexs.jobagent.evaluation.dto.ShortlistDTO;
 import com.alexs.jobagent.evaluation.dto.VacancyEvaluationDTO;
@@ -214,6 +215,7 @@ public class EvaluationService {
     private boolean evaluateLocked(VacancyReadDTO vacancy, SourceEvidenceDTO source, LoadedProfileDTO profile,
                                    String policyVersion, String revision) {
         long id = vacancy.id();
+        recordInput(vacancy, source, revision);
         SelectedExtractionDTO selected = select(policyVersion, id, source.sourceItemId(), revision);
         Long workId = selected == null ? null : selected.workId();
         String basis = selected == null ? "NONE" : selected.status();
@@ -265,6 +267,45 @@ public class EvaluationService {
                 selected == null ? null : selected.workId(), selected == null ? "NONE" : selected.status());
         return result == null || metadata == null ? result
                 : result.withSourceAttribution("Himalayas", metadata.applicationLink());
+    }
+
+    private void recordInput(VacancyReadDTO vacancy, SourceEvidenceDTO source, String revision) {
+        var metadata = isHimalayas(vacancy, source)
+                ? himalayasEvidence.reviewMetadata(source.rawPayload(), clock.instant()) : null;
+        evaluations.recordInput(vacancy.id(), source.sourceItemId(), revision, source.originalUrl(),
+                metadata == null ? null : metadata.applicationLink(),
+                metadata == null ? null : himalayasEvidence.expiry(source.rawPayload()));
+    }
+
+    /** Bounded, resumable local/database-only projection refresh; does not evaluate or enqueue work. */
+    public EvaluationInputRefreshDTO refreshInputs(long afterId, int maximum) {
+        rejectAmbient();
+        if (afterId < 0 || maximum < 1 || maximum > MAX_BATCH) {
+            throw new IllegalArgumentException("Invalid input refresh bounds");
+        }
+        List<Long> ids = vacancies.idsAfter(afterId, maximum);
+        int refreshed = 0;
+        long cursor = afterId;
+        for (long id : ids) {
+            if (Thread.currentThread().isInterrupted()) {
+                throw new IllegalStateException("Input refresh interrupted");
+            }
+            boolean present = Boolean.TRUE.equals(transaction.execute(status -> {
+                VacancyReadDTO vacancy = vacancies.lock(id);
+                SourceEvidenceDTO source = vacancy == null ? null : sources.latestForVacancy(id);
+                if (source == null) {
+                    return false;
+                }
+                recordInput(vacancy, source, policy.revision(vacancy, source));
+                return true;
+            }));
+            if (present) {
+                refreshed++;
+            }
+            cursor = id;
+        }
+        return new EvaluationInputRefreshDTO(ids.size(), refreshed, ids.size() - refreshed, cursor,
+                !vacancies.idsAfter(cursor, 1).isEmpty());
     }
 
     private static boolean isHimalayas(VacancyReadDTO vacancy, SourceEvidenceDTO source) {

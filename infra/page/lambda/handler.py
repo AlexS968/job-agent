@@ -14,6 +14,16 @@ MAX_OFFSET = 1000
 MAX_BODY = 64_000
 MIN_COMPARABLE_FEEDBACK = 10
 
+def advertised_location_sql(column):
+    # Column expressions are static call-site constants, never request input.
+    return rf"""CASE
+      WHEN lower(btrim({column})) ~ '^(germany|deutschland|berlin|berlin, germany)( \(remote\))?$' THEN 'GERMANY'
+      WHEN lower(btrim({column})) ~ '^(austria|österreich|vienna|wien|vienna, austria)( \(remote\))?$' THEN 'AUSTRIA'
+      WHEN lower(btrim({column})) ~ '^(remote[- ]*europe|europe(an)?( union)?[ ,()-]+remote[)]?|remote[ ,()-]+(europe|european union)[)]?)$' THEN 'REMOTE_EUROPE'
+      WHEN lower(btrim({column})) IN ('remote worldwide','worldwide','remote anywhere') THEN 'REMOTE_WORLDWIDE'
+      ELSE 'UNKNOWN' END"""
+
+
 LINKEDIN_SQL = """
 SELECT v.id,
        CASE WHEN card.parsed_direction IS NULL THEN v.title
@@ -44,8 +54,13 @@ LEFT JOIN LATERAL (
 LEFT JOIN LATERAL (
   SELECT decision, role_classification, reasons, unknowns
   FROM vacancy_evaluations e
-  WHERE e.vacancy_id = v.id AND e.vacancy_revision = v.content_digest
+  WHERE e.vacancy_id = v.id AND EXISTS (SELECT 1 FROM vacancy_evaluation_inputs fingerprint
+      WHERE fingerprint.vacancy_id = e.vacancy_id AND fingerprint.source_item_id = e.source_item_id
+        AND fingerprint.input_fingerprint = e.vacancy_revision)
     AND e.profile_id = :profile AND e.policy_version = 'rules-v2'
+    AND e.country_evidence_policy = 'country-v1'
+    AND e.criteria_hash = (SELECT criteria_hash FROM evaluation_profiles WHERE profile_id = :profile
+      ORDER BY first_seen_at DESC, profile_version DESC LIMIT 1)
     AND e.profile_version = (
       SELECT profile_version FROM evaluation_profiles
       WHERE profile_id = :profile ORDER BY first_seen_at DESC, profile_version DESC LIMIT 1)
@@ -88,29 +103,104 @@ def current_shortlist_ctes(profile_filter, for_source_report=False):
   JOIN employers em ON em.id = v.employer_id
   JOIN source_items si ON si.id = e.source_item_id
   WHERE e.policy_version = 'rules-v2'
+    AND EXISTS (SELECT 1 FROM vacancy_evaluation_inputs fingerprint
+      WHERE fingerprint.vacancy_id = e.vacancy_id AND fingerprint.source_item_id = e.source_item_id
+        AND fingerprint.input_fingerprint = e.vacancy_revision
+        AND (fingerprint.expires_at IS NULL OR fingerprint.expires_at > now()))
     AND e.country_evidence_policy = 'country-v1'
     AND e.country_eligibility = 'CONFIRMED'
     AND e.decision IN ('SUITABLE', 'NEEDS_REVIEW')
     AND e.role_classification IN ('PREFERRED', 'RESERVE')
     AND ((v.source_namespace LIKE 'greenhouse:%' AND si.input_version = 'greenhouse-board-v1')
-      OR (v.source_namespace LIKE 'lever:%' AND si.input_version = 'lever-postings-v1'))
+      OR (v.source_namespace LIKE 'lever:%' AND si.input_version = 'lever-postings-v1')
+      OR (v.source_namespace = 'linkedin' AND si.input_version = 'linkedin-alert-v1')
+      OR (v.source_namespace = 'himalayas' AND si.input_version = 'himalayas-search-v1'))
 )
 """
 
 
-SQL = current_shortlist_ctes("profile_id = :profile") + """
-SELECT ce.id, ce.vacancy_id, ce.title, ce.employer, ce.original_url, ce.decision,
-       ce.role_classification, ce.reasons, ce.unknowns, ce.profile_version, ce.vacancy_revision,
-       f.id, f.owner_decision, f.owner_reason, f.evaluation_id
-FROM current_evaluation ce
-LEFT JOIN LATERAL (
-  SELECT id, owner_decision, owner_reason, evaluation_id FROM review_feedback
-  WHERE vacancy_id = ce.vacancy_id AND profile_id = :profile ORDER BY id DESC LIMIT 1
-) f ON TRUE
-WHERE ce.evaluation_rank = 1
-ORDER BY CASE ce.decision WHEN 'SUITABLE' THEN 0 ELSE 1 END, ce.preference_rank,
-         CASE ce.role_classification WHEN 'PREFERRED' THEN 0 ELSE 1 END, ce.vacancy_id
-LIMIT :limit OFFSET :offset
+# Source/status filters apply before pagination and the total is computed from the same rows.
+# Historical evaluations supply existence only; their assessment is never presented as current.
+SQL = f"""
+WITH profile AS (
+  SELECT profile_version, criteria_hash FROM evaluation_profiles WHERE profile_id = :profile
+  ORDER BY first_seen_at DESC, profile_version DESC LIMIT 1
+), observed AS MATERIALIZED (
+  SELECT v.id AS vacancy_id, v.title, em.name AS employer, si.id AS source_item_id,
+         si.source_namespace, si.input_version, i.original_url, i.application_url, i.expires_at,
+         i.input_fingerprint, v.location,
+         CASE WHEN v.source_namespace = 'linkedin' THEN 'LINKEDIN'
+              WHEN v.source_namespace = 'himalayas' THEN 'HIMALAYAS' ELSE 'CAREER_BOARDS' END AS channel,
+         e.id, e.decision, e.role_classification, e.reasons, e.unknowns, e.profile_version,
+         e.vacancy_revision, e.country_eligibility, candidate.decision AS candidate_decision,
+         card.advertised_employer, card.advertised_title, card.advertised_location,
+         CASE WHEN v.source_namespace = 'linkedin' THEN coalesce(card.parsed_direction, card.advertised_direction, 'UNKNOWN')
+              ELSE {advertised_location_sql('v.location')} END AS advertised_direction,
+         f.id AS feedback_id, f.owner_decision, f.owner_reason, f.evaluation_id AS feedback_evaluation_id,
+         CASE WHEN i.vacancy_id IS NULL THEN 'INPUT_REFRESH_REQUIRED'
+              WHEN e.id IS NOT NULL THEN 'CURRENT'
+              WHEN EXISTS (SELECT 1 FROM vacancy_evaluations history
+                WHERE history.vacancy_id = v.id AND history.profile_id = :profile) THEN 'STALE'
+              ELSE 'NOT_EVALUATED' END AS evaluation_state
+  FROM vacancies v JOIN employers em ON em.id = v.employer_id
+  JOIN LATERAL (
+    SELECT si.id, si.source_namespace, si.input_version FROM vacancy_sources vs JOIN source_items si ON si.id = vs.source_item_id
+    WHERE vs.vacancy_id = v.id AND si.content_digest IS NOT DISTINCT FROM v.content_digest
+    ORDER BY si.id DESC LIMIT 1
+  ) si ON TRUE
+  LEFT JOIN vacancy_evaluation_inputs i ON i.vacancy_id = v.id AND i.source_item_id = si.id
+  LEFT JOIN LATERAL (
+    SELECT e.id, e.decision, e.role_classification, e.reasons, e.unknowns, e.profile_version,
+           e.vacancy_revision, e.country_eligibility FROM vacancy_evaluations e JOIN profile p
+      ON p.profile_version = e.profile_version AND p.criteria_hash = e.criteria_hash
+    WHERE e.vacancy_id = v.id AND e.source_item_id = si.id AND e.vacancy_revision = i.input_fingerprint
+      AND e.profile_id = :profile AND e.policy_version = 'rules-v2'
+      AND e.country_evidence_policy = 'country-v1'
+    ORDER BY e.evaluated_at DESC, e.id DESC LIMIT 1
+  ) e ON TRUE
+  LEFT JOIN vacancy_candidate_assessments candidate ON candidate.source_item_id = si.id
+    AND candidate.policy_version = 'java-backend-candidate-v2'
+  LEFT JOIN LATERAL (
+    SELECT card.advertised_employer, card.advertised_title, card.advertised_location,
+           card.parsed_direction, card.advertised_direction FROM vacancy_sources vs JOIN source_items observation ON observation.id = vs.source_item_id
+    JOIN gmail_alert_cards card ON card.source_item_id = observation.id
+    WHERE vs.vacancy_id = v.id ORDER BY observation.fetched_at DESC, observation.id DESC LIMIT 1
+  ) card ON TRUE
+  LEFT JOIN LATERAL (
+    SELECT id, owner_decision, owner_reason, evaluation_id FROM review_feedback
+    WHERE vacancy_id = v.id AND profile_id = :profile ORDER BY id DESC LIMIT 1
+  ) f ON TRUE
+  WHERE ((v.source_namespace = 'linkedin' AND si.input_version = 'linkedin-alert-v1')
+     OR (v.source_namespace = 'himalayas' AND si.input_version = 'himalayas-search-v1')
+     OR (v.source_namespace LIKE 'greenhouse:%' AND si.input_version = 'greenhouse-board-v1')
+     OR (v.source_namespace LIKE 'lever:%' AND si.input_version = 'lever-postings-v1'))
+), classified AS (
+  SELECT *, (id IS NOT NULL AND decision IN ('SUITABLE','NEEDS_REVIEW')
+      AND role_classification IN ('PREFERRED','RESERVE') AND country_eligibility = 'CONFIRMED'
+      AND (expires_at IS NULL OR expires_at > now())) AS recommended
+  FROM observed
+), filtered AS MATERIALIZED (
+  SELECT * FROM classified
+  WHERE (:source = 'ALL' OR channel = :source)
+    AND (expires_at IS NULL OR expires_at > now())
+    AND (:status = 'ALL'
+      OR (:status = 'SHORTLIST' AND recommended)
+      OR (:status = 'CANDIDATES' AND input_fingerprint IS NOT NULL AND (role_classification IN ('PREFERRED','RESERVE')
+           OR candidate_decision IN ('CANDIDATE','REVIEW')) AND decision IS DISTINCT FROM 'EXCLUDED')
+      OR (:status = 'EXCLUDED' AND decision = 'EXCLUDED')
+      OR (:status = 'UNASSESSED' AND evaluation_state <> 'CURRENT'))
+)
+SELECT entries.id, entries.vacancy_id,
+       coalesce(entries.advertised_title, entries.title),
+       coalesce(entries.advertised_employer, nullif(entries.employer, 'Employer unknown')),
+       entries.original_url, entries.decision, entries.role_classification, entries.reasons::text,
+       entries.unknowns::text, entries.profile_version, entries.vacancy_revision,
+       entries.feedback_id, entries.owner_decision, entries.owner_reason, entries.feedback_evaluation_id,
+       entries.channel, entries.evaluation_state, entries.country_eligibility, entries.candidate_decision,
+       entries.recommended, entries.application_url, entries.location, entries.advertised_direction,
+       entries.advertised_location, totals.total
+FROM (SELECT count(*) AS total FROM filtered) totals
+LEFT JOIN LATERAL (SELECT * FROM filtered ORDER BY vacancy_id DESC LIMIT :limit OFFSET :offset) entries ON TRUE
 """
 
 FEEDBACK_CTE = """
@@ -137,12 +227,18 @@ WITH current_profile AS (
   JOIN vacancies v ON v.id = e.vacancy_id
   JOIN source_items si ON si.id = e.source_item_id
   WHERE e.policy_version = 'rules-v2'
+    AND EXISTS (SELECT 1 FROM vacancy_evaluation_inputs fingerprint
+      WHERE fingerprint.vacancy_id = e.vacancy_id AND fingerprint.source_item_id = e.source_item_id
+        AND fingerprint.input_fingerprint = e.vacancy_revision
+        AND (fingerprint.expires_at IS NULL OR fingerprint.expires_at > now()))
     AND e.country_evidence_policy = 'country-v1'
     AND e.country_eligibility = 'CONFIRMED'
     AND e.decision IN ('SUITABLE', 'NEEDS_REVIEW')
     AND e.role_classification IN ('PREFERRED', 'RESERVE')
     AND ((v.source_namespace LIKE 'greenhouse:%' AND si.input_version = 'greenhouse-board-v1')
-      OR (v.source_namespace LIKE 'lever:%' AND si.input_version = 'lever-postings-v1'))
+      OR (v.source_namespace LIKE 'lever:%' AND si.input_version = 'lever-postings-v1')
+      OR (v.source_namespace = 'linkedin' AND si.input_version = 'linkedin-alert-v1')
+      OR (v.source_namespace = 'himalayas' AND si.input_version = 'himalayas-search-v1'))
 )
 """
 
@@ -203,6 +299,10 @@ WITH active_sources AS (
   JOIN profiles p ON p.profile_id = e.profile_id AND p.profile_version = e.profile_version
                  AND p.criteria_hash = e.criteria_hash
   WHERE cs.rank = 1 AND e.policy_version = 'rules-v2'
+    AND EXISTS (SELECT 1 FROM vacancy_evaluation_inputs fingerprint
+      WHERE fingerprint.vacancy_id = e.vacancy_id AND fingerprint.source_item_id = e.source_item_id
+        AND fingerprint.input_fingerprint = e.vacancy_revision
+        AND (fingerprint.expires_at IS NULL OR fingerprint.expires_at > now()))
     AND e.country_evidence_policy = 'country-v1'
   ORDER BY si.source_namespace, e.vacancy_id, e.profile_id, e.evaluated_at DESC, e.id DESC
 ), rows AS (
@@ -280,9 +380,15 @@ WITH active_sources AS (
   JOIN active_sources a ON a.namespace = si.source_namespace
   JOIN vacancies v ON v.id = e.vacancy_id
   WHERE e.profile_id = :profile AND e.policy_version = 'rules-v2'
+    AND EXISTS (SELECT 1 FROM vacancy_evaluation_inputs fingerprint
+      WHERE fingerprint.vacancy_id = e.vacancy_id AND fingerprint.source_item_id = e.source_item_id
+        AND fingerprint.input_fingerprint = e.vacancy_revision
+        AND (fingerprint.expires_at IS NULL OR fingerprint.expires_at > now()))
     AND e.country_evidence_policy = 'country-v1'
     AND ((v.source_namespace LIKE 'greenhouse:%' AND si.input_version = 'greenhouse-board-v1')
-      OR (v.source_namespace LIKE 'lever:%' AND si.input_version = 'lever-postings-v1'))
+      OR (v.source_namespace LIKE 'lever:%' AND si.input_version = 'lever-postings-v1')
+      OR (v.source_namespace = 'linkedin' AND si.input_version = 'linkedin-alert-v1')
+      OR (v.source_namespace = 'himalayas' AND si.input_version = 'himalayas-search-v1'))
   ORDER BY e.vacancy_id, e.evaluated_at DESC, e.id DESC
 ), classified AS (
   SELECT s.vacancy_id, e.id AS evaluation_id, e.decision, e.reasons, e.unknowns,
@@ -323,9 +429,15 @@ WITH active_sources AS (
   JOIN active_sources a ON a.namespace = si.source_namespace
   JOIN vacancies v ON v.id = e.vacancy_id
   WHERE e.profile_id = :profile AND e.policy_version = 'rules-v2'
+    AND EXISTS (SELECT 1 FROM vacancy_evaluation_inputs fingerprint
+      WHERE fingerprint.vacancy_id = e.vacancy_id AND fingerprint.source_item_id = e.source_item_id
+        AND fingerprint.input_fingerprint = e.vacancy_revision
+        AND (fingerprint.expires_at IS NULL OR fingerprint.expires_at > now()))
     AND e.country_evidence_policy = 'country-v1'
     AND ((v.source_namespace LIKE 'greenhouse:%' AND si.input_version = 'greenhouse-board-v1')
-      OR (v.source_namespace LIKE 'lever:%' AND si.input_version = 'lever-postings-v1'))
+      OR (v.source_namespace LIKE 'lever:%' AND si.input_version = 'lever-postings-v1')
+      OR (v.source_namespace = 'linkedin' AND si.input_version = 'linkedin-alert-v1')
+      OR (v.source_namespace = 'himalayas' AND si.input_version = 'himalayas-search-v1'))
 ), matched_versions AS (
   SELECT newer.id AS newer_id, older.id AS older_id,
          (newer.decision IN ('SUITABLE','NEEDS_REVIEW')
@@ -450,15 +562,7 @@ ADVERTISED_DIRECTION_SQL = """
 CASE
   WHEN c.channel = 'LINKEDIN' THEN coalesce(card.parsed_direction, card.advertised_direction)
   WHEN c.namespace = v.source_namespace AND c.content_digest = v.content_digest THEN
-    CASE lower(btrim(v.location))
-      WHEN 'germany' THEN 'GERMANY' WHEN 'deutschland' THEN 'GERMANY' WHEN 'berlin' THEN 'GERMANY'
-      WHEN 'berlin, germany' THEN 'GERMANY'
-      WHEN 'austria' THEN 'AUSTRIA' WHEN 'österreich' THEN 'AUSTRIA' WHEN 'vienna' THEN 'AUSTRIA'
-      WHEN 'wien' THEN 'AUSTRIA' WHEN 'vienna, austria' THEN 'AUSTRIA'
-      WHEN 'remote europe' THEN 'REMOTE_EUROPE'
-      WHEN 'remote worldwide' THEN 'REMOTE_WORLDWIDE'
-      WHEN 'worldwide' THEN 'REMOTE_WORLDWIDE'
-    END
+    """ + advertised_location_sql("v.location") + """
 END
 """
 
@@ -672,13 +776,88 @@ def decode_row(row):
             "roleClassification", "reasons", "unknowns", "profileVersion", "revision",
             "feedbackId", "ownerDecision", "ownerReason", "feedbackEvaluationId")
     item = dict(zip(keys, values))
-    url = urlsplit(item["url"] or "")
-    if url.scheme != "https" or not url.hostname or url.username or url.password:
+    if item.get("vacancyId") is None:
         return None
+    if item["url"] and not safe_link(item["url"]):
+        return None
+    extras = ("source", "evaluationState", "countryEligibility", "candidateDecision", "recommended",
+              "applicationUrl", "location", "advertisedDirection", "advertisedLocation", "total")
+    item.update(zip(extras, values[15:]))
+    item["applicationUrl"] = safe_link(item.get("applicationUrl"))
+    item["explanation"] = explain_vacancy(item)
     for key in ("reasons", "unknowns"):
         raw = json.loads(item[key] or "[]")
         item[key] = [str(value)[:80] for value in raw[:20] if isinstance(value, str)]
     return item
+
+
+def safe_link(value):
+    try:
+        url = urlsplit(value or "")
+        return value if (url.scheme == "https" and url.hostname and not url.username and not url.password
+                         and len(value) <= 2048 and not any(ord(c) < 32 for c in value)) else None
+    except ValueError:
+        return None
+
+
+def explain_vacancy(item):
+    state = item.get("evaluationState", "CURRENT")
+    assessments = {
+        "INPUT_REFRESH_REQUIRED": "Currentness has not been checked against the stored evidence yet. Job Agent needs a bounded input refresh; no queued work is established.",
+        "STALE": "An earlier assessment exists but does not match the current profile, policy or evidence. Job Agent needs to reassess this vacancy.",
+        "NOT_EVALUATED": "No assessment is stored for this profile. Job Agent needs to evaluate it; processing is not known to be queued.",
+    }
+    if state in assessments:
+        assessment = assessments[state]
+    elif item.get("decision") == "EXCLUDED":
+        assessment = "The current assessment does not match this profile; review the specific reasons below."
+    elif item.get("recommended"):
+        assessment = "Role relevance and work-country evidence support the current country shortlist. Other unresolved facts still need checking."
+    else:
+        assessment = "This is an observation to review, not a confirmed recommendation for the selected country."
+    relevance = ("Stored Java/backend evidence supports role relevance."
+                 if item.get("candidateDecision") == "CANDIDATE" else
+                 "The current assessment matches the profile's role criteria."
+                 if item.get("roleClassification") in ("PREFERRED", "RESERVE") else
+                 "Role relevance is not established. Job Agent needs more title or description evidence.")
+    questions = {
+        "SALARY_UNKNOWN": "Salary is not stated — check the posting or ask the employer.",
+        "WORK_ELIGIBILITY_UNCONFIRMED": "Permission to work from the selected country is unconfirmed — ask the employer; the owner must check personal authorization separately.",
+        "ROLE_NOT_ESTABLISHED": "Role details are unclear — Job Agent needs source evidence; the owner can inspect the posting.",
+        "ROLE_CANDIDATE_UNCERTAIN": "Java/backend relevance is unclear — Job Agent needs more description evidence; the owner can inspect the posting.",
+        "SALARY_NOT_COMPARABLE": "Salary terms cannot be compared reliably — ask the employer for currency, period and range.",
+        "CONFLICTING_COUNTRY_ELIGIBILITY": "Work-country statements conflict — ask the employer which restriction applies.",
+        "REMOTE_POLICY_UNKNOWN": "Remote terms are unclear — check the posting or ask the employer.",
+    }
+    reasons = {
+        "ROLE_UNMATCHED": "The role does not match the configured role criteria.",
+        "ROLE_OUTSIDE_JAVA_BACKEND_SCOPE": "The source evidence places this role outside the Java/backend candidate scope.",
+        "EXPLICIT_TITLE_EXCLUSION": "The title matches an explicitly excluded role criterion.",
+        "EXPLICIT_COUNTRY_EXCLUSION": "The source explicitly restricts the work country outside the configured criteria.",
+        "EXPLICIT_ARRANGEMENT_EXCLUSION": "The advertised working arrangement conflicts with the configured criteria.",
+        "ROLE_NOT_ESTABLISHED": "Role relevance is not established from the available evidence.",
+        "WORK_COUNTRY_EXCLUDED": "The source restricts work to another country.",
+        "SALARY_BELOW_MINIMUM": "The stated salary is below the configured minimum.",
+    }
+    unknowns = item.get("unknowns") or []
+    if isinstance(unknowns, str):
+        unknowns = json.loads(unknowns)
+    unresolved = [questions.get(code, "A configured condition remains unresolved — the owner should inspect the posting and ask the employer where needed.")
+                  for code in unknowns[:20]]
+    if item.get("countryEligibility") != "CONFIRMED" and not any("Permission to work" in q for q in unresolved):
+        unresolved.append(questions["WORK_ELIGIBILITY_UNCONFIRMED"])
+    raw_reasons = item.get("reasons") or []
+    if isinstance(raw_reasons, str):
+        raw_reasons = json.loads(raw_reasons)
+    exclusions = [reasons.get(code, "A configured exclusion applies — the owner should inspect this assessment against the posting.")
+                  for code in raw_reasons if item.get("decision") == "EXCLUDED"]
+    return {"assessment": assessment, "decisionLabel": (
+                {"SUITABLE": "Potential fit", "NEEDS_REVIEW": "Facts need checking", "EXCLUDED": "Outside the configured criteria"}
+                .get(item.get("decision"), "No current assessment") if state == "CURRENT" else "No current assessment"),
+            "relevance": relevance, "questions": list(dict.fromkeys(unresolved)),
+            "exclusions": list(dict.fromkeys(exclusions)),
+            "nextAction": "Open the original posting, verify the unresolved facts and record your own decision where a current shortlist assessment is available.",
+            "failureEvidence": "Per-vacancy failure history is unavailable; absence of an assessment does not establish a failed or queued run."}
 
 
 def cell_value(cell):
@@ -748,6 +927,11 @@ def read_page(event, client):
     profile = query.get("profile", "alex-de")
     if profile not in ("alex-de", "alex-at"):
         return response(400, {"error": "Choose Germany or Austria"})
+    source = query.get("source", "ALL")
+    status = query.get("status", "CANDIDATES")
+    if source not in ("ALL", "LINKEDIN", "HIMALAYAS", "CAREER_BOARDS") or status not in (
+            "CANDIDATES", "SHORTLIST", "ALL", "EXCLUDED", "UNASSESSED"):
+        return response(400, {"error": "Choose a supported source and list scope"})
     try:
         limit = integer(query.get("limit", "20"), 1, MAX_PAGE)
         offset = integer(query.get("offset", "0"), 0, MAX_OFFSET)
@@ -758,12 +942,14 @@ def read_page(event, client):
             resourceArn=os.environ["DB_CLUSTER_ARN"], secretArn=os.environ["DB_READER_SECRET_ARN"],
             database="job_agent", sql=SQL,
             parameters=[{"name": "profile", "value": {"stringValue": profile}},
+                        parameter("source", source), parameter("status", status),
                         {"name": "limit", "value": {"longValue": limit + 1}},
                         {"name": "offset", "value": {"longValue": offset}}])
         records = result.get("records", [])
         items = [item for row in records if (item := decode_row(row))]
-        body = {"profile": profile, "items": items[:limit],
-                "nextOffset": offset + limit if len(records) > limit else None}
+        total = cell_value(records[0][-1]) if records and len(records[0]) >= 25 else len(items)
+        body = {"profile": profile, "source": source, "status": status, "total": total, "items": items[:limit],
+                "nextOffset": offset + limit if len(items) > limit else None}
         if len(json.dumps(body).encode("utf-8")) > MAX_BODY:
             return response(502, {"error": "Page is too large; choose fewer entries"})
         return response(200, body)
@@ -801,7 +987,7 @@ def read_linkedin(event, client):
                           "employer": None if employer == "Employer unknown" else employer,
                           "advertisedEmployer": advertised_employer,
                           "url": "https://www.linkedin.com/jobs/view/" + job_id + "/",
-                          "decision": decision or "PENDING_EVALUATION",
+                          "decision": decision or "UNASSESSED",
                           "advertisedDirection": direction,
                           "directionEvidence": evidence,
                           "role": role or "UNKNOWN",

@@ -192,9 +192,17 @@ public class JobAgentApplication {
                 requireOnlyOptions(args, GMAIL_CUTOVER_MODE);
                 LOGGER.info("Gmail cutover: {}", context.getBean(GmailCutoverService.class).run());
             }
-            case "--mode=linkedin-repair" -> runLinkedInRepair(args, context);
+            case "--mode=linkedin-repair", "--mode=linkedin-geography-repair" -> runLinkedInRepair(args, context);
             case "--mode=linkedin-intake" -> runLinkedInIntake(args, context);
             case "--mode=himalayas-intake" -> runHimalayasIntake(args, context);
+            case "--mode=evaluation-input-refresh" -> {
+                requireOnlyOptions(args, "--mode=evaluation-input-refresh", "--after-id=", LIMIT_OPTION);
+                var refreshed = evaluations.refreshInputs(optionalLong(args, "--after-id=", 0),
+                        Math.toIntExact(optionalLong(args, LIMIT_OPTION, 100)));
+                LOGGER.info("Evaluation input refresh: examined={}, refreshed={}, unavailable={}, last_vacancy_id={}, more_available={}",
+                        refreshed.examined(), refreshed.refreshed(), refreshed.unavailable(),
+                        refreshed.lastVacancyId(), refreshed.moreAvailable());
+            }
             case "--mode=evaluate-rules" -> runEvaluateRules(args, profiles, evaluations);
             case "--mode=shortlist" -> runShortlist(args, profiles, evaluations);
             case "--mode=evaluate-extraction" -> runEvaluateExtraction(args, profiles, evaluations);
@@ -209,13 +217,15 @@ public class JobAgentApplication {
     }
 
     private void runLinkedInRepair(String[] args, ApplicationContext context) {
-        requireOnlyOptions(args, "--mode=linkedin-repair");
+        requireOnlyOptions(args, args[0]);
         String selected = context.getEnvironment().getProperty("JOBAGENT_LINKEDIN_REPAIR_IDS");
         if (selected == null || selected.length() > 650) {
             throw new IllegalArgumentException("Set a private LinkedIn repair sample");
         }
-        var result = context.getBean(LinkedInRepairService.class).repair(
-                Arrays.asList(selected.strip().split(",", -1)));
+        var sample = Arrays.asList(selected.strip().split(",", -1));
+        var service = context.getBean(LinkedInRepairService.class);
+        var result = "--mode=linkedin-geography-repair".equals(args[0])
+                ? service.repairGeography(sample) : service.repair(sample);
         LOGGER.info("LinkedIn repair: {}", result);
         if (result.reviewRequired() > 0) {
             throw new IllegalStateException("LinkedIn repair has messages requiring review");

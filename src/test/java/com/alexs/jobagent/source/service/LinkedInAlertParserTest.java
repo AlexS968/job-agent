@@ -17,6 +17,18 @@ class LinkedInAlertParserTest {
     private final LinkedInAlertParser parser = new LinkedInAlertParser();
 
     @Test
+    void advertisedGeographyRecognizesExplicitRemoteFormatsWithoutInferringEligibility() {
+        assertEquals("GERMANY", LinkedInAlertParser.direction("Deutschland (Remote)"));
+        assertEquals("AUSTRIA", LinkedInAlertParser.direction("Österreich (Remote)"));
+        assertEquals("REMOTE_EUROPE", LinkedInAlertParser.direction("Europe (Remote)"));
+        assertEquals("REMOTE_EUROPE", LinkedInAlertParser.direction("Remote - Europe"));
+        assertEquals("UNKNOWN", LinkedInAlertParser.direction("Belgium (Hybrid)"));
+        assertEquals("UNKNOWN", LinkedInAlertParser.direction("Deutschland or Österreich (Remote)"));
+        assertEquals("UNKNOWN", LinkedInAlertParser.direction("Remote for 12 weeks in Europe"));
+        assertEquals("UNKNOWN", LinkedInAlertParser.direction(null));
+    }
+
+    @Test
     void countsCardsRatherThanAdvertisedSubjectAndCollapsesMimeRepetitions() {
         var parsed = parser.parse(message("jobalerts-noreply@linkedin.com",
                 "<a href='https://www.linkedin.com/jobs/view/123456/'>Java Engineer</a>"
