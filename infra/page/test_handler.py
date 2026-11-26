@@ -52,6 +52,19 @@ class PageTest(unittest.TestCase):
         self.env.start()
         self.addCleanup(self.env.stop)
 
+    def test_read_failures_identify_only_confirmed_resume_without_private_details(self):
+        class Failure(Exception):
+            response = {"Error": {"Code": "DatabaseResumingException", "Message": "private SQL secret"}}
+        with self.assertLogs(page.__name__, level="WARNING") as logs:
+            result = page.read_failure(Failure("private detail"))
+        self.assertEqual(503, result["statusCode"])
+        self.assertEqual("DATABASE_RESUMING", json.loads(result["body"])["code"])
+        self.assertNotIn("private", " ".join(logs.output) + result["body"])
+        result = page.read_failure(RuntimeError("database might be waking"))
+        self.assertEqual("READ_UNAVAILABLE", json.loads(result["body"])["code"])
+        Failure.response["Error"]["Code"] = "AccessDeniedException"
+        self.assertEqual("READ_FAILED", json.loads(page.read_failure(Failure())["body"])["code"])
+
     def test_market_analysis_denies_non_owner_before_database_access(self):
         request = {**event(owner=False), "rawPath": "/market-analysis"}
         request["requestContext"]["authorizer"]["jwt"]["claims"] = {

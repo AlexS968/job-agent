@@ -1,5 +1,6 @@
 """Read-only, owner-gated vacancy projection for API Gateway HTTP API."""
 
+import logging
 import json
 import os
 from pathlib import Path
@@ -622,6 +623,19 @@ LEFT JOIN geography_counts g USING (month) LEFT JOIN source_counts s USING (mont
 """
 
 
+def read_failure(error):
+    metadata = getattr(error, "response", {})
+    category = metadata.get("Error", {}).get("Code") if isinstance(metadata, dict) else None
+    waking = category == "DatabaseResumingException"
+    terminal = category in {"AccessDeniedException", "ForbiddenException", "BadRequestException",
+                            "DatabaseErrorException", "InvalidSecretException", "SecretsErrorException"}
+
+    logging.getLogger(__name__).warning("Page read failed category=%s",
+                                        "DATABASE_RESUMING" if waking else "READ_UNAVAILABLE")
+    return response(500 if terminal else 503, {"error": "Read temporarily unavailable",
+                          "code": "DATABASE_RESUMING" if waking else "READ_FAILED" if terminal else "READ_UNAVAILABLE"})
+
+
 def response(status, body, content_type="application/json"):
     payload = body if isinstance(body, str) else json.dumps(body, separators=(",", ":"))
     auth_origin = os.environ.get("COGNITO_DOMAIN", "")
@@ -696,8 +710,8 @@ def read_source_report(event, client):
         for employer in report["employers"]:
             employer["label"] = f"{employer.pop('employer_name')} ({employer.pop('namespace')})"
         return response(200, report)
-    except Exception:  # Avoid exposing Data API diagnostics or database contents.
-        return response(503, {"error": "Source report is temporarily unavailable"})
+    except Exception as error:
+        return read_failure(error)
 
 
 def read_market_analysis(event, client):
@@ -722,8 +736,8 @@ def read_market_analysis(event, client):
                 {"geography": key, "label": label, "vacancies": month["geographies"].get(key, 0)}
                 for key, label in MARKET_GEOGRAPHIES.items()]
         return response(200, report)
-    except Exception:  # Avoid exposing database diagnostics or vacancy data.
-        return response(503, {"error": "Market analysis is temporarily unavailable"})
+    except Exception as error:
+        return read_failure(error)
 
 
 
@@ -753,8 +767,8 @@ def read_page(event, client):
         if len(json.dumps(body).encode("utf-8")) > MAX_BODY:
             return response(502, {"error": "Page is too large; choose fewer entries"})
         return response(200, body)
-    except Exception:  # Do not log SQL, credentials, token or vacancy data.
-        return response(503, {"error": "Vacancies are temporarily unavailable"})
+    except Exception as error:
+        return read_failure(error)
 
 
 def read_linkedin(event, client):
@@ -798,8 +812,8 @@ def read_linkedin(event, client):
         if len(json.dumps(body).encode("utf-8")) > MAX_BODY:
             return response(502, {"error": "Page is too large; choose fewer entries"})
         return response(200, body)
-    except Exception:  # No source text, SQL, credentials or token in logs.
-        return response(503, {"error": "LinkedIn observations are temporarily unavailable"})
+    except Exception as error:
+        return read_failure(error)
 
 
 def read_yield(event, client):
@@ -837,8 +851,8 @@ def read_yield(event, client):
         if len(json.dumps(body).encode("utf-8")) > MAX_BODY:
             return response(502, {"error": "Diagnostic page is too large"})
         return response(200, body)
-    except Exception:  # Never log SQL, tokens, credentials or source data.
-        return response(503, {"error": "Diagnostics are temporarily unavailable"})
+    except Exception as error:
+        return read_failure(error)
 
 
 def read_quality(event, client):
@@ -897,8 +911,8 @@ def read_quality(event, client):
         if len(json.dumps(body).encode("utf-8")) > MAX_BODY:
             return response(502, {"error": "Diagnostic response is too large"})
         return response(200, body)
-    except Exception:  # Never log SQL, tokens, credentials or source data.
-        return response(503, {"error": "Diagnostics are temporarily unavailable"})
+    except Exception as error:
+        return read_failure(error)
 
 
 def feedback_input(event):
@@ -986,6 +1000,8 @@ def handler(event, _context):
     path = event.get("rawPath", "/")
     if path == "/":
         return response(200, Path(__file__).with_name("index.html").read_text(), "text/html; charset=utf-8")
+    if path == "/read-recovery.js":
+        return response(200, Path(__file__).with_name("read-recovery.js").read_text(), "text/javascript; charset=utf-8")
     if path == "/app.js":
         return response(200, Path(__file__).with_name("app.js").read_text(), "text/javascript; charset=utf-8")
     if path == "/style.css":

@@ -11,6 +11,10 @@ data "archive_file" "vacancy_page" {
     filename = "index.html"
   }
   source {
+    content  = file("${path.module}/../page/lambda/read-recovery.js")
+    filename = "read-recovery.js"
+  }
+  source {
     content  = file("${path.module}/../page/lambda/app.js")
     filename = "app.js"
   }
@@ -157,7 +161,7 @@ resource "aws_apigatewayv2_authorizer" "page" {
 }
 
 resource "aws_apigatewayv2_route" "page_assets" {
-  for_each  = var.enable_vacancy_page ? toset(["/", "/app.js", "/style.css", "/config"]) : toset([])
+  for_each  = var.enable_vacancy_page ? toset(["/", "/app.js", "/read-recovery.js", "/style.css", "/config"]) : toset([])
   api_id    = aws_apigatewayv2_api.page[0].id
   route_key = "GET ${each.value}"
   target    = "integrations/${aws_apigatewayv2_integration.page[0].id}"
