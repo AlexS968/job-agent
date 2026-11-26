@@ -70,6 +70,17 @@ public class GmailAlertRepository {
                 """, rs -> rs.next() ? rs.getTimestamp(1).toInstant() : null, id);
     }
 
+    public boolean geographyRepairEligible(String id) {
+        return jdbc.queryForObject("SELECT EXISTS (SELECT FROM gmail_alert_messages WHERE message_id = ? "
+                + "AND status IN ('COMPLETE','NEEDS_REVIEW'))", Boolean.class, id);
+    }
+
+    public Instant lockGeographyRepairCandidate(String id) {
+        return jdbc.query("SELECT observed_at FROM gmail_alert_messages WHERE message_id = ? "
+                + "AND status IN ('COMPLETE','NEEDS_REVIEW') FOR UPDATE",
+                rs -> rs.next() ? rs.getTimestamp(1).toInstant() : null, id);
+    }
+
     public List<String> cardIds(String id) {
         return jdbc.queryForList("SELECT linkedin_job_id FROM gmail_alert_cards WHERE message_id = ?", String.class, id);
     }
@@ -82,6 +93,12 @@ public class GmailAlertRepository {
                 WHERE message_id = ? AND linkedin_job_id = ?
                 """, title, card.advertisedEmployer(), card.directionEvidence(), card.advertisedDirection(),
                 id, card.jobId());
+    }
+
+    public void storeCardGeography(String id, LinkedInAlertDTO.CardDTO card) {
+        jdbc.update("UPDATE gmail_alert_cards SET advertised_location = ?, parsed_direction = ? "
+                + "WHERE message_id = ? AND linkedin_job_id = ?", card.directionEvidence(),
+                card.advertisedDirection(), id, card.jobId());
     }
 
     public void recordRepair(String id, int unsupportedLinks) {

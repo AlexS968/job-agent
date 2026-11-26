@@ -496,6 +496,31 @@ class LinkedInIntakeIT {
     }
 
     @Test
+    void geographyRepairIncludesCompletedMessagesWithoutMailboxActionsOrRevisionChanges() {
+        long observed = 1_795_000_000_000L;
+        mailbox.ids = List.of("geography");
+        mailbox.messages = Map.of("geography", message("geography", observed, """
+                <a href='https://www.linkedin.com/jobs/view/765432/'>
+                  <h3>Java Engineer</h3><div class='job-company'>Synthetic Works</div>
+                  <span class='job-location'>Deutschland (Remote)</span>
+                </a>
+                """));
+        assertEquals(1, intake.run(1).created());
+        jdbc.update("UPDATE gmail_alert_cards SET parsed_direction='UNKNOWN'");
+        var source = jdbc.queryForMap("SELECT id,raw_payload::text,fetched_at FROM source_items");
+        var vacancy = jdbc.queryForMap("SELECT id,title,content_digest FROM vacancies");
+        int events = count("outbox_events");
+        assertEquals(1, repair.repairGeography(List.of("geography")).repairedCards());
+        assertEquals(1, repair.repairGeography(List.of("geography")).repairedCards());
+        assertEquals("GERMANY", jdbc.queryForObject("SELECT parsed_direction FROM gmail_alert_cards", String.class));
+        assertEquals("COMPLETE", jdbc.queryForObject("SELECT status FROM gmail_alert_messages", String.class));
+        assertEquals(source, jdbc.queryForMap("SELECT id,raw_payload::text,fetched_at FROM source_items"));
+        assertEquals(vacancy, jdbc.queryForMap("SELECT id,title,content_digest FROM vacancies"));
+        assertEquals(events, count("outbox_events"));
+        assertEquals(0, count("gmail_mailbox_actions"));
+    }
+
+    @Test
     void repairsLegacyReviewWithoutReplacingProvenanceOrReplayingEffects() {
         long observed = 1_795_000_000_000L;
         String legacyTitle = "Backend Engineer Example Works Belgium (Hybrid) View job";

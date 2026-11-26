@@ -289,21 +289,21 @@ public class LinkedInAlertParser {
 
     private record CardFields(String title, String employer, String location) { }
 
-    private static String direction(String evidence) {
+    static String direction(String evidence) {
         if (evidence == null) {
             return "UNKNOWN";
         }
-        String normalized = evidence.toLowerCase(Locale.ROOT).replaceAll("\\s+", " ");
+        String normalized = evidence.toLowerCase(Locale.ROOT).strip().replaceAll("\\s+", " ");
         if (normalized.matches("(?:remote[- ]*)?(?:worldwide|anywhere|global)")) {
             return "REMOTE_WORLDWIDE";
         }
-        if (normalized.matches("remote[- ]*europe")) {
+        if (normalized.matches("(?:remote[- ]*europe|europe(?:an)?(?: union)?[ ,()-]+remote\\)?|remote[ ,()-]+(?:europe|european union)\\)?)")) {
             return "REMOTE_EUROPE";
         }
-        if (normalized.matches("(?:berlin|munich|münchen|hamburg|germany|deutschland)(?:,? germany)?")) {
+        if (normalized.matches("(?:berlin|munich|münchen|hamburg|germany|deutschland)(?:,? germany)?(?: \\(remote\\))?")) {
             return "GERMANY";
         }
-        if (normalized.matches("(?:vienna|wien|graz|austria|österreich)(?:,? austria)?")) {
+        if (normalized.matches("(?:vienna|wien|graz|austria|österreich)(?:,? austria)?(?: \\(remote\\))?")) {
             return "AUSTRIA";
         }
         return "UNKNOWN";

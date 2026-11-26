@@ -24,7 +24,14 @@ SOURCE_REPORT_GRANTS = {
     "vacancies": ("location",),
     "verified_source_registry": ("employer_name",),
 }
+EVALUATION_INPUT_GRANTS = {
+    "vacancy_evaluation_inputs": ("vacancy_id", "source_item_id", "input_fingerprint", "original_url",
+                                  "application_url", "expires_at"),
+}
+EVALUATION_INPUT_COLUMNS = {f"{table}.{column}" for table, columns in EVALUATION_INPUT_GRANTS.items()
+                            for column in columns}
 TABLE_COLUMNS = {
+    **EVALUATION_INPUT_GRANTS,
     "source_items": ("id", "source_namespace", "listing_id", "content_digest", "input_version", "fetched_at"),
     "vacancy_sources": ("vacancy_id", "source_item_id"),
     "vacancies": ("id", "employer_id", "source_namespace", "title", "content_digest"),

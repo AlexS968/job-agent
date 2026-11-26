@@ -27,6 +27,19 @@ feedback = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(feedback)
 
 
+# These fixtures predate Java-backed input projections. Their synthetic revision hashes
+# stand for Java output; RuleEvaluationIT verifies the real serialization/hash contract.
+FIXTURE_INPUTS = """
+INSERT INTO vacancy_evaluation_inputs(vacancy_id, source_item_id, input_fingerprint, original_url)
+SELECT DISTINCT ON (v.id) v.id, si.id, e.vacancy_revision, e.original_url
+FROM vacancies v JOIN vacancy_sources vs ON vs.vacancy_id=v.id
+JOIN source_items si ON si.id=vs.source_item_id
+JOIN vacancy_evaluations e ON e.vacancy_id=v.id AND e.source_item_id=si.id
+WHERE si.content_digest IS NOT DISTINCT FROM v.content_digest
+  AND e.vacancy_revision=v.content_digest
+ORDER BY v.id,si.id DESC,e.id DESC ON CONFLICT (vacancy_id) DO NOTHING;
+"""
+
 def safe_error(stderr):
     excerpt = re.sub(r"[\x00-\x1f\x7f]", " ", stderr or "")[:800]
     return re.sub(r"(?i)(password|secret|token)\s*[:=]\s*\S+", r"\1=<redacted>", excerpt)
@@ -139,6 +152,76 @@ class SqlIntegrationTest(unittest.TestCase):
             raise AssertionError(result.stderr[:1000])
         return result.stdout.strip().splitlines()
 
+    def test_unified_list_uses_exact_input_identity_and_matching_source_status_counts(self):
+        fixture = """
+BEGIN;
+TRUNCATE vacancies, source_items, employers, evaluation_profiles RESTART IDENTITY CASCADE;
+INSERT INTO employers(id,source_namespace,external_id,name) OVERRIDING SYSTEM VALUE
+VALUES (701,'synthetic-fixture','owner','Synthetic Employer');
+INSERT INTO vacancies(id,employer_id,source_namespace,listing_id,title,location,content_digest)
+OVERRIDING SYSTEM VALUE VALUES
+ (701,701,'linkedin','7001','Backend Engineer',NULL,repeat('a',64)),
+ (702,701,'himalayas','7002','Java Engineer','Deutschland (Remote)',repeat('a',64)),
+ (703,701,'greenhouse:fixture','7003','Java Developer','Österreich (Remote)',repeat('a',64));
+INSERT INTO source_items(id,source_namespace,source_item_id,listing_namespace,listing_id,original_url,
+ fetched_at,raw_payload,input_version,normalization_version,input_digest,content_digest)
+OVERRIDING SYSTEM VALUE
+SELECT id,namespace,id::text,namespace,id::text,'https://example.test/job/'||id,now(),'{}',version,'v1',repeat('a',64),repeat('a',64)
+FROM (VALUES (701,'linkedin:gmail','linkedin-alert-v1'),(702,'himalayas','himalayas-search-v1'),
+ (703,'greenhouse:fixture','greenhouse-board-v1')) fixture(id,namespace,version);
+INSERT INTO vacancy_sources(vacancy_id,source_item_id) VALUES (701,701),(702,702),(703,703);
+INSERT INTO evaluation_profiles(profile_id,profile_version,criteria_hash)
+VALUES ('alex-de','v1',repeat('e',64)),('alex-at','v1',repeat('f',64));
+INSERT INTO vacancy_candidate_assessments(vacancy_id,source_item_id,policy_version,decision,reason)
+SELECT id,id,'java-backend-candidate-v2','CANDIDATE','JAVA_BACKEND_TITLE' FROM vacancies;
+INSERT INTO vacancy_evaluation_inputs(vacancy_id,source_item_id,input_fingerprint,original_url,expires_at)
+VALUES (701,701,repeat('b',64),'https://www.linkedin.com/jobs/view/7001/',NULL),
+ (702,702,repeat('c',64),'https://himalayas.app/jobs/fixture',now()-interval '1 day'),
+ (703,703,repeat('d',64),'https://example.test/job/7003',NULL);
+INSERT INTO vacancy_evaluations(vacancy_id,source_item_id,vacancy_revision,profile_id,profile_version,
+ criteria_hash,policy_version,decision,preference_rank,role_classification,reasons,unknowns,evidence,original_url,
+ country_eligibility)
+VALUES (701,701,repeat('b',64),'alex-de','v1',repeat('e',64),'rules-v2','NEEDS_REVIEW',1,'PREFERRED',
+ '["ROLE_PREFERRED"]','["SALARY_UNKNOWN","WORK_ELIGIBILITY_UNCONFIRMED"]','[]','https://example.test/job/701','UNKNOWN'),
+ (701,701,repeat('a',64),'alex-de','v1',repeat('e',64),'rules-v2','SUITABLE',1,'PREFERRED',
+ '[]','[]','[]','https://example.test/job/701','CONFIRMED'),
+ (703,703,repeat('a',64),'alex-de','v1',repeat('e',64),'rules-v2','SUITABLE',1,'PREFERRED',
+ '[]','[]','[]','https://example.test/job/703','CONFIRMED');
+"""
+        def query(profile="alex-de", source="ALL", status="ALL", limit=20, offset=0):
+            sql = page.SQL
+            for key, value in {"profile": profile, "source": source, "status": status,
+                               "limit": limit, "offset": offset}.items():
+                sql = sql.replace(":" + key, str(value) if isinstance(value, int) else "'" + value + "'")
+            return "SET LOCAL ROLE job_agent_page_reader; " + sql + "; RESET ROLE;\n"
+
+        grants = ";\n".join(reader.GRANTS)
+        statements = [query(), query(status="SHORTLIST"), query(source="LINKEDIN"),
+                      query(source="HIMALAYAS"), query(limit=1), query(limit=1, offset=1),
+                      query(profile="alex-at", source="LINKEDIN")]
+        results = self.sql(fixture + grants + ";\n" + "".join(statements) +
+            "UPDATE vacancies SET title='Senior Backend Engineer' WHERE id=701;\n" + query(source="LINKEDIN") +
+            "SELECT has_table_privilege('job_agent_page_reader','vacancy_evaluation_inputs','UPDATE'), "
+            "has_column_privilege('job_agent_page_reader','source_items','raw_payload','SELECT'); ROLLBACK;")
+        rows = [row.split("|") for row in results]
+        self.assertEqual(["703", "701"], [r[1] for r in rows[:2]])
+        self.assertEqual(["2", "2"], [r[-1] for r in rows[:2]])
+        self.assertEqual("CURRENT", rows[1][16])
+        self.assertEqual("NEEDS_REVIEW", rows[1][5])  # Not the later stale SUITABLE result.
+        self.assertEqual("STALE", rows[0][16])
+        self.assertEqual("", rows[0][5])
+        self.assertEqual("AUSTRIA", rows[0][22])
+        self.assertEqual("0", rows[2][-1])
+        self.assertEqual("1", rows[3][-1])
+        self.assertEqual("0", rows[4][-1])
+        self.assertEqual("2", rows[5][-1])
+        self.assertEqual("701", rows[6][1])
+        self.assertEqual("NOT_EVALUATED", rows[7][16])
+        self.assertEqual("", rows[7][5])
+        self.assertEqual("INPUT_REFRESH_REQUIRED", rows[8][16])
+        self.assertEqual("", rows[8][5])
+        self.assertEqual(["f", "f"], rows[9])
+
     def test_current_profiles_sources_pagination_and_reader_permissions(self):
         self.sql("""
 INSERT INTO employers(source_namespace,external_id,name) VALUES
@@ -195,10 +278,13 @@ CREATE ROLE job_agent_page_reader LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NORE
         self.sql("SET ROLE job_agent_migrator; GRANT SELECT "
                  "(id, vacancy_id, profile_id, evaluation_id, owner_decision, owner_reason, recorded_at) "
                  "ON public.review_feedback TO job_agent_page_reader;")
+        self.sql(FIXTURE_INPUTS)
         def query(profile, limit, offset):
-            statement = page.SQL.replace(":profile", f"'{profile}'").replace(":limit", str(limit))
+            statement = (page.SQL.replace(":profile", f"'{profile}'").replace(":limit", str(limit))
+                         .replace(":source", "'ALL'").replace(":status", "'SHORTLIST'"))
             statement = statement.replace(":offset", str(offset))
-            return self.sql("SET ROLE job_agent_page_reader; " + statement + ";")
+            return [row for row in self.sql("SET ROLE job_agent_page_reader; " + statement + ";")
+                    if row.split("|")[1]]
         def quality(profile):
             statement = page.QUALITY_SQL.replace(":profile", f"'{profile}'")
             return self.sql("SET ROLE job_agent_page_reader; " + statement + ";")[0].split("|")
@@ -292,11 +378,24 @@ UPDATE gmail_alert_cards SET advertised_title='Backend Developer', advertised_em
                  "GRANT CONNECT ON DATABASE job_agent TO job_agent_feedback_writer; "
                  "GRANT USAGE ON SCHEMA public TO job_agent_feedback_writer;")
         for table, columns in feedback.WRITER_SELECT.items():
+            if table == "vacancy_evaluation_inputs":
+                continue  # Reproduce the existing production writer before its column-only upgrade.
             self.sql("SET ROLE job_agent_migrator; GRANT SELECT (" + ", ".join(columns) +
                      f") ON public.{table} TO job_agent_feedback_writer;")
         self.sql("SET ROLE job_agent_migrator; GRANT INSERT (" + ", ".join(feedback.WRITER_INSERT) +
                  ") ON public.review_feedback TO job_agent_feedback_writer; "
                  "GRANT USAGE ON SEQUENCE public.review_feedback_id_seq TO job_agent_feedback_writer;")
+        before_writer_upgrade = json.loads(self.sql(feedback.WRITER_STATE_SQL + ";")[0])
+        feedback.validate_writer(before_writer_upgrade, complete=False)
+        with self.assertRaisesRegex(RuntimeError, "SELECT grants"):
+            feedback.validate_writer(before_writer_upgrade)
+        self.sql("SET ROLE job_agent_migrator; " + feedback.FINGERPRINT_GRANT + ";")
+        feedback.validate_writer(json.loads(self.sql(feedback.WRITER_STATE_SQL + ";")[0]))
+        self.assertEqual(["t|t|t|t|f|f|f"], self.sql("SELECT " + ", ".join(
+            f"has_column_privilege('job_agent_feedback_writer','public.vacancy_evaluation_inputs','{column}','SELECT')"
+            for column in (*feedback.FINGERPRINT_COLUMNS, "original_url", "application_url", "refreshed_at")) + ";"))
+        self.sql("SET ROLE job_agent_feedback_writer; SELECT vacancy_id, source_item_id, input_fingerprint, "
+                 "expires_at FROM public.vacancy_evaluation_inputs WHERE false;")
 
         def submit(evaluation, vacancy, profile, decision, reason, request_id=None, version="v1"):
             identity = request_id or str(uuid.uuid4())
@@ -378,6 +477,9 @@ INSERT INTO vacancy_evaluations(vacancy_id,source_item_id,vacancy_revision,profi
  VALUES (1,4,repeat('d',64),'alex-at','v1',repeat('e',64),'rules-v2','EXCLUDED',9,
  'PREFERRED','["EXPLICIT_COUNTRY_EXCLUSION"]','["SALARY_UNKNOWN"]','[]',
  'https://jobs.example.test/4');
+-- Simulate the Java-refreshed projection after this new linked evidence invalidates it.
+INSERT INTO vacancy_evaluation_inputs(vacancy_id,source_item_id,input_fingerprint,original_url)
+VALUES (1,4,repeat('d',64),'https://jobs.example.test/4');
 """)
         shared = self.sql("SET ROLE job_agent_page_reader; " +
                           page.YIELD_SQL.replace(":profile", "'alex-de'")
@@ -456,6 +558,11 @@ CROSS JOIN (VALUES ('v1',repeat('d',64),'EXCLUDED'),
                    ('v2',repeat('f',64),'SUITABLE'))
   version(profile_version,criteria_hash,decision)
 WHERE v.listing_id LIKE 'cmp-%';
+-- Both profile versions deliberately share the same current source and synthetic Java-output revision.
+INSERT INTO vacancy_evaluation_inputs(vacancy_id,source_item_id,input_fingerprint,original_url)
+SELECT DISTINCT e.vacancy_id,e.source_item_id,e.vacancy_revision,e.original_url
+FROM vacancy_evaluations e JOIN vacancies v ON v.id=e.vacancy_id
+WHERE v.listing_id LIKE 'cmp-%';
 INSERT INTO review_feedback(request_id,vacancy_id,evaluation_id,profile_id,profile_version,
  vacancy_revision,owner_decision,owner_reason)
 SELECT gen_random_uuid(),e.vacancy_id,e.id,'alex-de',e.profile_version,e.vacancy_revision,
@@ -467,6 +574,18 @@ WHERE v.listing_id LIKE 'cmp-%';
         comparable = quality("alex-de")
         self.assertEqual(["10", "10", "10"], comparable[17:20])
         self.assertEqual(["0", "10", "0"], comparable[20:23])
+        comparison_sql = page.QUALITY_SQL.replace(":profile", "'alex-de'")
+        invalidated = self.sql("BEGIN; UPDATE vacancy_evaluation_inputs SET input_fingerprint=repeat('a',64) "
+            "WHERE vacancy_id=(SELECT id FROM vacancies WHERE listing_id='cmp-1'); "
+            "SET LOCAL ROLE job_agent_page_reader; " + comparison_sql + "; RESET ROLE; "
+            "DELETE FROM vacancy_evaluation_inputs WHERE vacancy_id="
+            "(SELECT id FROM vacancies WHERE listing_id='cmp-2'); "
+            "SET LOCAL ROLE job_agent_page_reader; " + comparison_sql + "; ROLLBACK;")
+        mismatched, missing = (row.split("|") for row in invalidated)
+        self.assertEqual(["9", "9", "9"], mismatched[17:20])
+        self.assertEqual(["0", "9", "0"], mismatched[20:23])
+        self.assertEqual(["8", "8", "8"], missing[17:20])
+        self.assertEqual(["0", "8", "0"], missing[20:23])
         with self.assertRaises(AssertionError):
             self.sql("SET ROLE job_agent_page_reader; SELECT raw_payload FROM source_items;")
         with self.assertRaises(AssertionError):
@@ -547,7 +666,7 @@ VALUES (10,2,repeat('a',64),'alex-de','v1',repeat('d',64),'rules-v2','SUITABLE',
         statements = [query(7, "ALL"), query(30, "ALL"), query(7, "UNKNOWN"),
                       query(7, "AUSTRIA"), query(7, "ALL", 1)]
         grants = ";\n".join(reader.GRANTS)
-        results = self.sql(fixture + grants + "; SET LOCAL ROLE job_agent_page_reader;\n"
+        results = self.sql(fixture + FIXTURE_INPUTS + grants + "; SET LOCAL ROLE job_agent_page_reader;\n"
                            + "\n".join(statements) + "ROLLBACK;")
         seven, thirty, unknown, austria, too_large = map(json.loads, results)
         self.assertEqual((4, 1), (seven["total"], seven["overlap"]))
@@ -626,7 +745,7 @@ VALUES ('market-1','1000',1,10,'CREATED','AUSTRIA'),('market-7','4000',7,40,'CRE
                     .replace(":observation_limit", str(limit)).replace(":board_limit", "50") + ";")
 
         grants = ";\n".join(reader.GRANTS)
-        results = self.sql(fixture + grants + "; SET LOCAL ROLE job_agent_page_reader;\n"
+        results = self.sql(fixture + FIXTURE_INPUTS + grants + "; SET LOCAL ROLE job_agent_page_reader;\n"
                            + query("2026-10-31T23:00:00Z")
                            + query("2026-10-31T23:00:00Z", 1)
                            + query("2026-08-01T00:00:00Z") + "ROLLBACK;")

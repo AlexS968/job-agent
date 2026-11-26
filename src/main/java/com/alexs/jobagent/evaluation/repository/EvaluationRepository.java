@@ -20,6 +20,18 @@ public class EvaluationRepository {
         this.json = json;
     }
 
+    /** Called only while the service holds the vacancy lock, using Java's actual evaluation revision. */
+    public void recordInput(long vacancyId, long sourceItemId, String revision, String originalUrl,
+                            String applicationUrl, java.time.Instant expiresAt) {
+        jdbc.update("INSERT INTO vacancy_evaluation_inputs(vacancy_id, source_item_id, input_fingerprint, "
+                        + "original_url, application_url, expires_at) VALUES (?, ?, ?, ?, ?, ?) "
+                        + "ON CONFLICT (vacancy_id) DO UPDATE SET source_item_id = EXCLUDED.source_item_id, "
+                        + "input_fingerprint = EXCLUDED.input_fingerprint, original_url = EXCLUDED.original_url, "
+                        + "application_url = EXCLUDED.application_url, expires_at = EXCLUDED.expires_at, refreshed_at = now()",
+                vacancyId, sourceItemId, revision, originalUrl, applicationUrl,
+                expiresAt == null ? null : java.sql.Timestamp.from(expiresAt));
+    }
+
     public void registerProfile(LoadedProfileDTO loaded) {
         jdbc.update("INSERT INTO evaluation_profiles(profile_id, profile_version, criteria_hash) "
                         + "VALUES (?, ?, ?) ON CONFLICT (profile_id, profile_version) DO NOTHING",

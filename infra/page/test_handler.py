@@ -159,12 +159,11 @@ class PageTest(unittest.TestCase):
         self.assertEqual("REMOTE_EUROPE", result["items"][0]["advertisedDirection"])
         self.assertEqual("Remote Europe", result["items"][0]["directionEvidence"])
         self.assertEqual("alex-at", db.calls[0]["parameters"][0]["value"]["stringValue"])
-        self.assertNotIn("linkedin", page.SQL)  # The confirmed recommendation query stays separate.
         pending = list(row_values)
         pending[4:8] = [{"isNull": True}] * 4
         db.records = [pending]
         pending_result = json.loads(page.read_linkedin(request, db)["body"])
-        self.assertEqual("PENDING_EVALUATION", pending_result["items"][0]["decision"])
+        self.assertEqual("UNASSESSED", pending_result["items"][0]["decision"])
         self.assertIn("SALARY_UNKNOWN", pending_result["items"][0]["unknowns"])
 
     def test_profiles_are_parameterized_and_separate(self):
@@ -183,9 +182,12 @@ class PageTest(unittest.TestCase):
         result = json.loads(page.read_page(event(limit="2", offset="4"), db)["body"])
         self.assertEqual(2, len(result["items"]))
         self.assertEqual(6, result["nextOffset"])
-        self.assertEqual(3, db.calls[0]["parameters"][1]["value"]["longValue"])
+        parameters = {parameter["name"]: parameter["value"] for parameter in db.calls[0]["parameters"]}
+        self.assertEqual(3, parameters["limit"]["longValue"])
+        self.assertEqual(4, parameters["offset"]["longValue"])
         db.records = []
-        self.assertEqual({"profile": "alex-de", "items": [], "nextOffset": None},
+        self.assertEqual({"profile": "alex-de", "source": "ALL", "status": "CANDIDATES",
+                          "total": 0, "items": [], "nextOffset": None},
                          json.loads(page.read_page(event(), db)["body"]))
         for bad in ("0", "21", "-1", "1e2"):
             self.assertEqual(400, page.read_page(event(limit=bad), db)["statusCode"])
@@ -197,8 +199,29 @@ class PageTest(unittest.TestCase):
         self.assertEqual(["WORK_ELIGIBILITY_UNCONFIRMED", "SALARY_UNKNOWN"],
                          result["items"][0]["unknowns"])
         self.assertEqual(1, len(result["items"]))
-        self.assertIn("source_rank = 1", page.SQL)
-        self.assertIn("role_classification IN ('PREFERRED', 'RESERVE')", page.SQL)
+        parameters = {p["name"]: p["value"] for p in db.calls[0]["parameters"]}
+        self.assertEqual({"stringValue": "ALL"}, parameters["source"])
+        self.assertEqual({"stringValue": "CANDIDATES"}, parameters["status"])
+
+    def test_filters_and_explanations_do_not_relabel_unknowns_or_history_as_current(self):
+        request = event()
+        request["queryStringParameters"].update(source="LINKEDIN", status="UNASSESSED")
+        base = row()
+        extra = ["LINKEDIN", "STALE", None, "CANDIDATE", False, None, None, "UNKNOWN", None, 1]
+        base.extend({"isNull": True} if v is None else {"booleanValue": v} if isinstance(v, bool)
+                    else {"longValue": v} if isinstance(v, int) else {"stringValue": v} for v in extra)
+        db = FakeDataApi([base])
+        body = json.loads(page.read_page(request, db)["body"])
+        self.assertEqual(1, body["total"])
+        explanation = body["items"][0]["explanation"]
+        self.assertIn("earlier assessment", explanation["assessment"])
+        self.assertIn("Java/backend evidence", explanation["relevance"])
+        self.assertTrue(any("employer" in q for q in explanation["questions"]))
+        self.assertIn("unavailable", explanation["failureEvidence"])
+        self.assertNotIn("SALARY_UNKNOWN", json.dumps(explanation))
+        request["queryStringParameters"]["source"] = "arbitrary SQL"
+        self.assertEqual(400, page.read_page(request, db)["statusCode"])
+        self.assertEqual(1, len(db.calls))
 
     def test_database_failure_is_safe_and_non_successful(self):
         result = page.read_page(event(), FakeDataApi(fail=True))

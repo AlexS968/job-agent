@@ -95,8 +95,105 @@ class RuleEvaluationIT {
     }
 
     @Test
+    void inputProjectionUsesJavaRevisionAndInvalidatesWithoutRewritingHistory() throws Exception {
+        long id = insert("Backend Engineer", COUNTRY_REMOTE);
+        var profile = profile("v1", "Backend Engineer");
+        evaluation.evaluate(profile, 0, 10, RuleEvaluationPolicy.VERSION);
+        String revision = jdbc.queryForObject("SELECT vacancy_revision FROM vacancy_evaluations WHERE vacancy_id = ?",
+                String.class, id);
+        assertEquals(revision, jdbc.queryForObject("SELECT input_fingerprint FROM vacancy_evaluation_inputs WHERE vacancy_id = ?",
+                String.class, id));
+        assertEquals(1, evaluation.refreshInputs(0, 1).refreshed());
+        assertEquals(1, count("vacancy_evaluations"));
+        assertEquals(revision, jdbc.queryForObject("SELECT input_fingerprint FROM vacancy_evaluation_inputs WHERE vacancy_id = ?",
+                String.class, id));
+        jdbc.update("UPDATE vacancies SET title = 'Senior Backend Engineer' WHERE id = ?", id);
+        assertEquals(0, count("vacancy_evaluation_inputs"));
+        var refreshed = evaluation.refreshInputs(0, 1);
+        assertEquals(1, refreshed.refreshed());
+        String changed = jdbc.queryForObject("SELECT input_fingerprint FROM vacancy_evaluation_inputs WHERE vacancy_id = ?",
+                String.class, id);
+        assertNotEquals(revision, changed);
+        assertEquals(revision, jdbc.queryForObject("SELECT vacancy_revision FROM vacancy_evaluations WHERE vacancy_id = ?",
+                String.class, id));
+        evaluation.evaluate(profile, 0, 10, RuleEvaluationPolicy.VERSION);
+        assertEquals(2, count("vacancy_evaluations"));
+    }
+
+    @Test
+    void inputRefreshIsBoundedAndNewSourceLinksFenceTheProjection() {
+        long first = insert("Backend Engineer", COUNTRY_REMOTE);
+        long second = insert("Java Engineer", COUNTRY_REMOTE);
+        var firstBatch = evaluation.refreshInputs(0, 1);
+        assertEquals(1, firstBatch.examined());
+        assertTrue(firstBatch.moreAvailable());
+        assertEquals(first, firstBatch.lastVacancyId());
+        var secondBatch = evaluation.refreshInputs(firstBatch.lastVacancyId(), 1);
+        assertEquals(second, secondBatch.lastVacancyId());
+        assertFalse(secondBatch.moreAvailable());
+        assertEquals(0, count("vacancy_evaluations"));
+        // Invalidate a raw-input revision even when its normalized vacancy digest is null.
+        jdbc.update("UPDATE source_items SET original_url = 'https://jobs.example/changed' WHERE id = "
+                + "(SELECT source_item_id FROM vacancy_sources WHERE vacancy_id = ?)", first);
+        assertEquals(1, count("vacancy_evaluation_inputs"));
+        evaluation.refreshInputs(0, 1);
+        Long replacement = jdbc.queryForObject("INSERT INTO source_items(source_namespace, source_item_id, "
+                + "listing_namespace, listing_id, original_url, fetched_at, raw_payload, input_version, "
+                + "normalization_version, input_digest) SELECT source_namespace, 'replacement-' || id, "
+                + "listing_namespace, listing_id, original_url, now(), raw_payload, input_version, "
+                + "normalization_version, input_digest FROM source_items WHERE id = "
+                + "(SELECT source_item_id FROM vacancy_sources WHERE vacancy_id = ?) RETURNING id", Long.class, first);
+        jdbc.update("INSERT INTO vacancy_sources(vacancy_id, source_item_id) VALUES (?, ?)", first, replacement);
+        assertEquals(1, count("vacancy_evaluation_inputs"));
+        evaluation.refreshInputs(0, 1);
+        assertEquals(jdbc.queryForObject("SELECT max(source_item_id) FROM vacancy_sources WHERE vacancy_id = ?", Long.class, first),
+                jdbc.queryForObject("SELECT source_item_id FROM vacancy_evaluation_inputs WHERE vacancy_id = ?", Long.class, first));
+        assertThrows(IllegalArgumentException.class, () -> evaluation.refreshInputs(0, 501));
+    }
+
+    @Test
+    void missingProvenanceIsCountedUnavailableWithoutInventingAnInputOrEvaluation() {
+        long id = insert("Backend Engineer", COUNTRY_REMOTE);
+        evaluation.refreshInputs(0, 1);
+        jdbc.update("DELETE FROM vacancy_sources WHERE vacancy_id = ?", id);
+        assertEquals(0, count("vacancy_evaluation_inputs"));
+        var result = evaluation.refreshInputs(0, 1);
+        assertEquals(1, result.examined());
+        assertEquals(0, result.refreshed());
+        assertEquals(1, result.unavailable());
+        assertEquals(0, count("vacancy_evaluations"));
+    }
+
+    @Test
+    void inputRefreshWaitsForConcurrentVacancyUpdate() throws Exception {
+        long id = insert("Backend Engineer", COUNTRY_REMOTE);
+        evaluation.refreshInputs(0, 1);
+        CountDownLatch started = new CountDownLatch(1);
+        var transaction = new org.springframework.transaction.support.TransactionTemplate(manager);
+        CompletableFuture<?> future = transaction.execute(status -> {
+            jdbc.queryForObject("SELECT id FROM vacancies WHERE id = ? FOR UPDATE", Long.class, id);
+            var waiting = CompletableFuture.runAsync(() -> {
+                started.countDown();
+                evaluation.refreshInputs(0, 1);
+            });
+            try {
+                assertTrue(started.await(5, TimeUnit.SECONDS));
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(interrupted);
+            }
+            jdbc.update("UPDATE vacancies SET title = 'Senior Backend Engineer' WHERE id = ?", id);
+            return waiting;
+        });
+        future.get(10, TimeUnit.SECONDS);
+        String input = jdbc.queryForObject("SELECT input_fingerprint FROM vacancy_evaluation_inputs WHERE vacancy_id = ?", String.class, id);
+        evaluation.refreshInputs(0, 1);
+        assertEquals(input, jdbc.queryForObject("SELECT input_fingerprint FROM vacancy_evaluation_inputs WHERE vacancy_id = ?", String.class, id));
+    }
+
+    @Test
     void migrationReplayVersionsAndStaleEvaluations() throws Exception {
-        assertEquals(28, jdbc.queryForObject("SELECT count(*) FROM flyway_schema_history", Integer.class));
+        assertEquals(29, jdbc.queryForObject("SELECT count(*) FROM flyway_schema_history", Integer.class));
         long vacancy = insert("Backend Engineer", COUNTRY_REMOTE);
         LoadedProfileDTO v1 = profile("v1", "Backend Engineer");
         assertEquals(1, evaluation.evaluate(v1, 0, 100, RuleEvaluationPolicy.VERSION).created());

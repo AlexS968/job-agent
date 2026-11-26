@@ -32,6 +32,14 @@ public class LinkedInRepairService {
     public record Result(int selected, int completed, int reviewRequired, int skipped, int repairedCards) {}
 
     public Result repair(List<String> ids) {
+        return repair(ids, false);
+    }
+
+    public Result repairGeography(List<String> ids) {
+        return repair(ids, true);
+    }
+
+    private Result repair(List<String> ids, boolean geographyOnly) {
         validate(ids);
         int skipped = 0;
         int completed = 0;
@@ -39,7 +47,7 @@ public class LinkedInRepairService {
         int cards = 0;
         for (String id : ids) {
             checkInterrupted();
-            if (!messages.repairEligible(id)) {
+            if (!(geographyOnly ? messages.geographyRepairEligible(id) : messages.repairEligible(id))) {
                 skipped++;
                 continue;
             }
@@ -51,7 +59,7 @@ public class LinkedInRepairService {
                     throw new IllegalStateException("LinkedIn repair card limit reached; earlier repairs remain committed");
                 }
                 checkInterrupted();
-                RepairOutcome outcome = transaction.execute(status -> apply(id, alert));
+                RepairOutcome outcome = transaction.execute(status -> apply(id, alert, geographyOnly));
                 switch (outcome) {
                     case COMPLETE -> {
                         completed++;
@@ -78,8 +86,8 @@ public class LinkedInRepairService {
         }
     }
 
-    private RepairOutcome apply(String id, LinkedInAlertDTO alert) {
-        var originalTime = messages.lockRepairCandidate(id);
+    private RepairOutcome apply(String id, LinkedInAlertDTO alert, boolean geographyOnly) {
+        var originalTime = geographyOnly ? messages.lockGeographyRepairCandidate(id) : messages.lockRepairCandidate(id);
         if (originalTime == null) {
             return RepairOutcome.SKIPPED;
         }
@@ -90,10 +98,16 @@ public class LinkedInRepairService {
         }
         for (var card : alert.cards()) {
             checkInterrupted();
-            messages.storeCardFields(id, card);
+            if (geographyOnly) {
+                messages.storeCardGeography(id, card);
+            } else {
+                messages.storeCardFields(id, card);
+            }
         }
         checkInterrupted();
-        messages.recordRepair(id, alert.unsupportedLinks());
+        if (!geographyOnly) {
+            messages.recordRepair(id, alert.unsupportedLinks());
+        }
         return alert.unsupportedLinks() == 0 ? RepairOutcome.COMPLETE : RepairOutcome.REVIEW_UPDATED;
     }
 

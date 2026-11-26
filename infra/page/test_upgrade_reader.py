@@ -57,7 +57,7 @@ class UpgradeReaderTest(unittest.TestCase):
     def test_source_report_grants_only_approved_columns_and_probes_existing_reader(self):
         secret = "arn:aws:secretsmanager:us-east-1:123456789012:secret:synthetic-reader"
         self.secrets.describe_secret.return_value = {"ARN": secret}
-        columns = upgrade.reader.EXPECTED_COLUMNS | upgrade.FEEDBACK_READ_COLUMNS
+        columns = (upgrade.reader.EXPECTED_COLUMNS - upgrade.reader.EVALUATION_INPUT_COLUMNS) | upgrade.FEEDBACK_READ_COLUMNS
         before = reader_state(columns - upgrade.reader.SOURCE_REPORT_COLUMNS)
         after = reader_state(columns)
         with patch.object(upgrade.reader, "inspect_role", side_effect=[before, after, after]), \
@@ -76,7 +76,7 @@ class UpgradeReaderTest(unittest.TestCase):
     def test_source_report_preflight_rejects_unapproved_feedback_privileges(self):
         secret = "arn:aws:secretsmanager:us-east-1:123456789012:secret:synthetic-reader"
         self.secrets.describe_secret.return_value = {"ARN": secret}
-        columns = upgrade.reader.EXPECTED_COLUMNS | upgrade.FEEDBACK_READ_COLUMNS
+        columns = (upgrade.reader.EXPECTED_COLUMNS - upgrade.reader.EVALUATION_INPUT_COLUMNS) | upgrade.FEEDBACK_READ_COLUMNS
         cases = {
             "extra column": (reader_state(columns | {"review_feedback.request_id"}), "unexpected SELECT"),
             "partial projection": (reader_state(columns - {"review_feedback.recorded_at"}), "reviewed baseline"),
@@ -91,6 +91,26 @@ class UpgradeReaderTest(unittest.TestCase):
                         self.run_upgrade(secret)
                 self.assertEqual(1, self.rds.execute_statement.call_count)
                 probe.assert_not_called()
+
+    def test_evaluation_input_upgrade_is_column_only_and_keeps_feedback_projection(self):
+        secret = "arn:aws:secretsmanager:us-east-1:123456789012:secret:synthetic-reader"
+        self.secrets.describe_secret.return_value = {"ARN": secret}
+        columns = upgrade.reader.EXPECTED_COLUMNS | upgrade.FEEDBACK_READ_COLUMNS
+        before = reader_state(columns - upgrade.reader.EVALUATION_INPUT_COLUMNS)
+        after = reader_state(columns)
+        self.rds.execute_statement.side_effect = lambda **kwargs: {"records": [[{"stringValue":
+            "job_agent_migrator" if kwargs["secretArn"] == self.migrator else upgrade.reader.ROLE}]]}
+        with patch.object(upgrade.reader, "inspect_role", side_effect=[before, after, after]):
+            for _ in range(2):
+                upgrade.upgrade(self.sts, self.clusters, self.rds, self.secrets, "123456789012",
+                                self.cluster, self.migrator, input_reader=secret)
+        grants = [c.kwargs["sql"] for c in self.rds.execute_statement.call_args_list
+                  if c.kwargs["sql"].startswith("GRANT")]
+        self.assertEqual(1, len(grants))
+        self.assertIn("ON public.vacancy_evaluation_inputs TO job_agent_page_reader", grants[0])
+        self.assertNotIn("raw_payload", grants[0])
+        self.assertNotIn("review_feedback", grants[0])
+        self.assertNotIn("UPDATE", grants[0])
 
     def test_unexpected_privilege_state_stops_before_grants(self):
         invalid = {"connect": True, "schemaUsage": True,

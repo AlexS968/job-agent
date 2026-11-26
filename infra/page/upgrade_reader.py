@@ -11,7 +11,7 @@ import prepare_reader as reader
 
 PHASE7_COLUMNS = {f"gmail_alert_cards.{column}"
                   for column in reader.TABLE_COLUMNS["gmail_alert_cards"]} | {"source_items.fetched_at"}
-EXPECTED_COLUMNS = reader.EXPECTED_COLUMNS - PHASE7_COLUMNS - reader.SOURCE_REPORT_COLUMNS
+EXPECTED_COLUMNS = reader.EXPECTED_COLUMNS - PHASE7_COLUMNS - reader.SOURCE_REPORT_COLUMNS - reader.EVALUATION_INPUT_COLUMNS
 
 LEGACY_REGISTRY_COLUMNS = tuple(column for column in reader.TABLE_COLUMNS["verified_source_registry"]
                                 if column not in reader.SOURCE_REPORT_GRANTS["verified_source_registry"])
@@ -34,7 +34,7 @@ REPORT_GRANTS = tuple(f"GRANT SELECT ({', '.join(columns)}) ON public.{table} TO
 FEEDBACK_READ_COLUMNS = frozenset(f"review_feedback.{column}" for column in READ_COLUMNS)
 
 
-def upgrade(sts, clusters, rds, secrets, account, cluster, migrator, report_reader=None):
+def upgrade(sts, clusters, rds, secrets, account, cluster, migrator, report_reader=None, input_reader=None):
     if not account or sts.get_caller_identity().get("Account") != account:
         raise RuntimeError("Unexpected account")
     if not cluster.startswith(f"arn:aws:rds:{reader.REGION}:{account}:cluster:"):
@@ -56,20 +56,35 @@ def upgrade(sts, clusters, rds, secrets, account, cluster, migrator, report_read
     if actor != reader.MIGRATOR:
         raise RuntimeError("Grant actor is not the table-owning migrator")
     state = reader.inspect_role(rds, cluster, migrator)
-    approved_feedback = FEEDBACK_READ_COLUMNS if report_reader else frozenset()
+    approved_feedback = FEEDBACK_READ_COLUMNS if report_reader or input_reader else frozenset()
     reader.validate_role(state, additional_select_columns=approved_feedback)
     if state is None or not state["connect"] or not state["schemaUsage"]:
         raise RuntimeError("Reader bootstrap is incomplete")
     columns = set(state["selectedColumns"])
-    baseline = (reader.EXPECTED_COLUMNS - reader.SOURCE_REPORT_COLUMNS) if report_reader else OLD_COLUMNS
-    expected = reader.EXPECTED_COLUMNS if report_reader else EXPECTED_COLUMNS
+    previous = reader.EXPECTED_COLUMNS - reader.EVALUATION_INPUT_COLUMNS
+    baseline = (previous - reader.SOURCE_REPORT_COLUMNS) if report_reader else OLD_COLUMNS
+    expected = previous if report_reader else EXPECTED_COLUMNS
+    if input_reader:
+        if (metadata.get("ARN") != input_reader or not input_reader.startswith(
+                f"arn:aws:secretsmanager:{reader.REGION}:{account}:secret:")):
+            raise RuntimeError("Unexpected evaluation input reader secret")
+        baseline = previous
+        expected = reader.EXPECTED_COLUMNS
+    if not input_reader and columns & reader.EVALUATION_INPUT_COLUMNS:
+        if not reader.EVALUATION_INPUT_COLUMNS <= columns:
+            raise RuntimeError("Reader grants differ from reviewed baseline")
+        baseline = baseline | reader.EVALUATION_INPUT_COLUMNS
+        expected = expected | reader.EVALUATION_INPUT_COLUMNS
     if columns & approved_feedback:
         baseline = baseline | approved_feedback
         expected = expected | approved_feedback
     if not baseline <= columns <= expected:
         raise RuntimeError("Reader grants differ from reviewed baseline")
     if columns != expected:
-        for statement in REPORT_GRANTS if report_reader else ADDITIONAL_GRANTS:
+        grants = tuple(f"GRANT SELECT ({', '.join(columns)}) ON public.{table} TO {reader.ROLE}"
+                       for table, columns in reader.EVALUATION_INPUT_GRANTS.items()) if input_reader else (
+                           REPORT_GRANTS if report_reader else ADDITIONAL_GRANTS)
+        for statement in grants:
             rds.execute_statement(resourceArn=cluster, secretArn=migrator,
                                   database=reader.DATABASE, sql=statement)
         updated = reader.inspect_role(rds, cluster, migrator)
@@ -78,6 +93,16 @@ def upgrade(sts, clusters, rds, secrets, account, cluster, migrator, report_read
             raise RuntimeError("Reader grant upgrade is incomplete")
     if report_reader:
         verify_source_report(rds, cluster, report_reader)
+    if input_reader:
+        handler = runpy.run_path(str(Path(__file__).parent / "lambda" / "handler.py"))
+        actor = reader.one_text(rds.execute_statement(resourceArn=cluster, secretArn=input_reader,
+                    database=reader.DATABASE, sql="SELECT current_user::text"))
+        if actor != reader.ROLE:
+            raise RuntimeError("Evaluation input read did not use the existing reader")
+        for profile in ("alex-de", "alex-at"):
+            rds.execute_statement(resourceArn=cluster, secretArn=input_reader, database=reader.DATABASE,
+                sql=handler["SQL"], parameters=[handler["parameter"](name, value) for name, value in
+                {"profile": profile, "source": "ALL", "status": "ALL", "limit": 1, "offset": 0}.items()])
 
 
 def verify_source_report(rds, cluster, secret):
@@ -97,11 +122,12 @@ def verify_source_report(rds, cluster, secret):
 
 
 def main():
-    if sys.argv[1:] not in ([], ["--source-report"]):
-        print("Expected no arguments or --source-report.", file=sys.stderr)
+    if sys.argv[1:] not in ([], ["--source-report"], ["--evaluation-inputs"]):
+        print("Expected no arguments, --source-report or --evaluation-inputs.", file=sys.stderr)
         return 2
-    report_reader = os.environ.get("PAGE_READER_SECRET_ARN") if sys.argv[1:] else None
-    if sys.argv[1:] and not report_reader:
+    report_reader = os.environ.get("PAGE_READER_SECRET_ARN") if sys.argv[1:] == ["--source-report"] else None
+    input_reader = os.environ.get("PAGE_READER_SECRET_ARN") if sys.argv[1:] == ["--evaluation-inputs"] else None
+    if sys.argv[1:] and not (report_reader or input_reader):
         print("Set PAGE_READER_SECRET_ARN to the reviewed existing reader secret ARN.", file=sys.stderr)
         return 2
     account = os.environ.get("PAGE_EXPECTED_ACCOUNT_ID")
@@ -113,14 +139,15 @@ def main():
     try:
         session = reader.credential_session()
         upgrade(session.client("sts"), session.client("rds"), session.client("rds-data"),
-                session.client("secretsmanager"), account, cluster, migrator, report_reader)
+                session.client("secretsmanager"), account, cluster, migrator, report_reader, input_reader)
     except KeyboardInterrupt:
         print("Interrupted; inspect reader grants before retry.", file=sys.stderr)
         return 130
     except Exception:
         print("Reader grant upgrade stopped; inspect role metadata before retry.", file=sys.stderr)
         return 1
-    print("Source Report verified as page reader for both periods." if report_reader
+    print("Evaluation inputs verified as page reader for both profiles." if input_reader else
+          "Source Report verified as page reader for both periods." if report_reader
           else "Phase 6A.2 reader columns verified; no credentials changed.")
     return 0
 
