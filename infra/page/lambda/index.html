@@ -10,6 +10,9 @@
     <a id="show-market-analysis" href="#market-analysis">Market Analysis</a></nav>
   <button id="signin">Sign in</button>
   <button id="signout" hidden>Sign out</button>
+  <div id="read-loading" role="status" aria-live="polite" hidden>
+    <span class="loading-spinner" aria-hidden="true"></span><span id="read-loading-text">Loading data…</span>
+  </div>
   <p id="auth-state" role="status"></p>
   <div id="vacancy-view">
     <h1>Job Agent vacancies</h1>
@@ -102,5 +105,6 @@
     </div>
   </section>
 </main>
+<script src="/read-recovery.js"></script>
 <script src="/app.js" defer></script>
 </html>

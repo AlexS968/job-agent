@@ -12,3 +12,7 @@ nav a[aria-current="page"]{font-weight:700}
 .report-table caption{text-align:left;margin-bottom:.5rem}
 .report-table th,.report-table td{border-bottom:1px solid #ccd6df;padding:.5rem;text-align:left}
 #source-report-boards th{padding-left:1.25rem;font-weight:normal}
+
+.loading-spinner{display:inline-block;width:1rem;height:1rem;margin-right:.5rem;border:2px solid #ccd6df;border-top-color:#153e75;border-radius:50%;animation:loading-spin 1s linear infinite}
+@keyframes loading-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.loading-spinner{animation:none}}

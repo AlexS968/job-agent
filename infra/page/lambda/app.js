@@ -1,3 +1,10 @@
+const loadingIndicator = document.querySelector("#read-loading");
+const loadingText = document.querySelector("#read-loading-text");
+const readRecovery = createReadRecovery({status: (active, waking) => {
+  loadingIndicator.hidden = !active;
+  loadingText.textContent = waking ? "The database is waking up…" : "Loading data…";
+}});
+const readFetch = (url, options) => readRecovery.read(url, options);
 let config, token, profile = "alex-de", offset = 0;
 const state = document.querySelector("#state");
 const items = document.querySelector("#items");
@@ -66,7 +73,7 @@ async function loadLinkedIn() {
   retryButton.hidden = true; moreButton.hidden = true;
   try {
     const query = new URLSearchParams({profile:selectedProfile,offset:String(requestedOffset),limit:"20"});
-    const response = await fetch("/linkedin?" + query,
+    const response = await readFetch("/linkedin?" + query,
       {headers:{Authorization:"Bearer " + token},cache:"no-store"});
     if (!response.ok) throw Error("Stored LinkedIn observations are temporarily unavailable.");
     const page = await response.json();
@@ -100,6 +107,7 @@ async function loadLinkedIn() {
       `No stored LinkedIn observations in this sample. Selected evaluation profile: ${country}.`;
     if (page.nextOffset !== null) { linkedinOffset = page.nextOffset; moreButton.hidden = false; }
   } catch (error) {
+    if (error.name === "AbortError") return;
     if (selectedProfile !== profile) return;
     status.textContent = error.message; retryButton.hidden = false;
   }
@@ -187,7 +195,7 @@ async function load() {
   retry.hidden = true;
   try {
     const query = new URLSearchParams({profile:selectedProfile,offset:String(requestedOffset),limit:"20"});
-    const response = await fetch("/vacancies?" + query, {headers:{Authorization:"Bearer " + token},cache:"no-store"});
+    const response = await readFetch("/vacancies?" + query, {headers:{Authorization:"Bearer " + token},cache:"no-store"});
     if (response.status === 401 || response.status === 403) throw Error("Access expired or denied. Sign in again.");
     if (!response.ok) throw Error("Vacancies could not be loaded. Please retry later.");
     const page = await response.json();
@@ -208,6 +216,7 @@ async function load() {
       "No currently confirmed recommendations in this stored sample. See source counts and unknown conditions below.";
     if (page.nextOffset !== null) { offset = page.nextOffset; more.hidden = false; }
   } catch (error) {
+    if (error.name === "AbortError") return;
     if (selectedProfile !== profile) return;
     state.textContent = `${country} vacancies could not be loaded. ${error.message}`;
     retry.hidden = false;
@@ -223,7 +232,7 @@ async function loadQuality() {
   qualityState.textContent = `Loading ${country} explanation…`;
   qualityDetails.replaceChildren(); qualityRetry.hidden = true;
   try {
-    const result = await fetch("/quality?" + new URLSearchParams({profile:selectedProfile}),
+    const result = await readFetch("/quality?" + new URLSearchParams({profile:selectedProfile}),
       {headers:{Authorization:"Bearer " + token},cache:"no-store"});
     if (!result.ok) throw Error("Explanation is temporarily unavailable.");
     const data = await result.json();
@@ -270,6 +279,7 @@ async function loadQuality() {
       qualityDetails.append(heading, list);
     }
   } catch (error) {
+    if (error.name === "AbortError") return;
     if (selectedProfile !== profile) return;
     qualityState.textContent = `${country} explanation could not be loaded. ${error.message}`;
     qualityRetry.hidden = false;
@@ -282,7 +292,7 @@ async function loadYield() {
   yieldRetry.hidden = true;
   try {
     const query = new URLSearchParams({profile:selectedProfile,offset:String(yieldOffset),limit:"20"});
-    const result = await fetch("/yield?" + query, {headers:{Authorization:"Bearer " + token},cache:"no-store"});
+    const result = await readFetch("/yield?" + query, {headers:{Authorization:"Bearer " + token},cache:"no-store"});
     if (!result.ok) throw Error("Source counts are temporarily unavailable. Use Retry source counts.");
     const data = await result.json();
     if (selectedProfile !== profile) return;
@@ -304,6 +314,7 @@ async function loadYield() {
       "No active sources or registered country profiles in this view. Zero here does not describe all vacancies on a platform or in a country.";
     if (data.nextOffset !== null) { yieldOffset = data.nextOffset; yieldMore.hidden = false; }
   } catch (error) {
+    if (error.name === "AbortError") return;
     if (selectedProfile !== profile) return;
     yieldState.textContent = error.message; yieldRetry.hidden = false;
   }
@@ -314,7 +325,6 @@ const reportState = document.querySelector("#source-report-state");
 const reportRetry = document.querySelector("#source-report-retry");
 const authState = document.querySelector("#auth-state");
 let reportRequest = 0;
-let vacancyViewLoaded = false;
 
 const pageViews = ["vacancies", "source-report", "market-analysis"];
 const marketState = document.querySelector("#market-analysis-state");
@@ -327,6 +337,7 @@ function selectedView() {
 }
 
 function selectView() {
+  readRecovery.cancel();
   const view = selectedView();
   document.querySelector("#vacancy-view").hidden = view !== "vacancies";
   document.querySelector("#source-report-view").hidden = view !== "source-report";
@@ -339,8 +350,7 @@ function selectView() {
   if (!token) return;
   if (view === "source-report") return loadSourceReport();
   if (view === "market-analysis") return loadMarketAnalysis();
-  if (!vacancyViewLoaded) {
-    vacancyViewLoaded = true;
+  {
     load(); loadLinkedIn(); loadQuality(); loadYield();
   }
 }
@@ -396,7 +406,7 @@ async function loadSourceReport() {
   reportRetry.hidden = true;
   try {
     const query = new URLSearchParams({days: reportDays.value, geography: reportGeography.value});
-    const result = await fetch("/source-report?" + query,
+    const result = await readFetch("/source-report?" + query,
       {headers: {Authorization: "Bearer " + token}, cache: "no-store"});
     if (request !== reportRequest || selectedView() !== "source-report") return;
     if (result.status === 401 || result.status === 403) {
@@ -420,7 +430,8 @@ async function loadSourceReport() {
     }
     notes.hidden = false;
     results.hidden = false;
-  } catch {
+  } catch (error) {
+    if (error.name === "AbortError") return;
     if (request !== reportRequest || selectedView() !== "source-report") return;
     reportState.textContent = "The source report is temporarily unavailable.";
     reportRetry.hidden = false;
@@ -498,7 +509,7 @@ async function loadMarketAnalysis() {
   marketRetry.hidden = true;
   marketState.textContent = "Loading market analysis…";
   try {
-    const result = await fetch("/market-analysis", {
+    const result = await readFetch("/market-analysis", {
       headers: {Authorization: "Bearer " + token}, cache: "no-store"
     });
     if (request !== marketRequest || selectedView() !== "market-analysis") return;
@@ -519,7 +530,8 @@ async function loadMarketAnalysis() {
     document.querySelector("#market-analysis-limits").textContent =
       "Coverage is unknown. These counts describe the stored sample. Trend conclusions are withheld because comparable source collection could not be established.";
     results.hidden = false;
-  } catch {
+  } catch (error) {
+    if (error.name === "AbortError") return;
     if (request !== marketRequest || selectedView() !== "market-analysis") return;
     marketState.textContent = "Market analysis is temporarily unavailable.";
     marketRetry.hidden = false;
@@ -528,18 +540,20 @@ async function loadMarketAnalysis() {
 
 marketRetry.addEventListener("click", loadMarketAnalysis);
 window.addEventListener("hashchange", selectView);
-reportDays.addEventListener("change", loadSourceReport);
-reportGeography.addEventListener("change", loadSourceReport);
+reportDays.addEventListener("change", () => { readRecovery.cancel(); loadSourceReport(); });
+reportGeography.addEventListener("change", () => { readRecovery.cancel(); loadSourceReport(); });
 reportRetry.addEventListener("click", loadSourceReport);
 selectView();
 document.querySelector("#signin").addEventListener("click", () => signIn().catch(() => authState.textContent = "Sign-in unavailable."));
 document.querySelector("#signout").addEventListener("click", () => {
+  readRecovery.cancel();
   token = undefined;
   const url = new URL(config.domain + "/logout");
   url.search = new URLSearchParams({client_id:config.clientId,logout_uri:config.redirect});
   location.assign(url);
 });
 document.querySelectorAll("[data-profile]").forEach(button => button.addEventListener("click", () => {
+  readRecovery.cancel();
   profile = button.dataset.profile; offset = 0; yieldOffset = 0; linkedinOffset = 0;
   load(); loadLinkedIn(); loadQuality(); loadYield();
 }));
