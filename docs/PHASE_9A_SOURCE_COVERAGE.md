@@ -111,7 +111,9 @@ The employer breakdown uses the verified registry board identity. Separate board
 
 The query caps recent observations at 5,000 and returns a capacity error instead of partial totals. The employer breakdown returns up to 50 rows and flags truncation. Historical matching can still require reading older linked observations. The report reads structured fields only and returns aggregate counts.
 
-During rollout of PR #72, the merged query timed out on warm Aurora under the page reader role. A read-only probe that materialized the shortlist CTE completed in 0.57 s for 7 days and 0.78 s for 30 days. These are probe timings. The updated Lambda and authenticated browser smoke still need verification.
+During rollout of PR #72, the merged query timed out on warm Aurora under the page reader role. A read-only probe that materialized the shortlist CTE completed in 0.57 s for 7 days and 0.78 s for 30 days. PR #73 incorporated that SQL change and aligned the reader preflight with the existing feedback grants. These timings measure the database probes.
+
+On 2026-11-25, the production reader passed both report periods. The reviewed AWS rollout added the JWT-protected route and updated the two existing Lambda packages. The API returned HTTP 401 without authentication. In an owner session, the 30-day view showed 219 stored vacancy identities, the 7-day view showed 197, and the 7-day Germany filter showed 15. The 30-day view showed zero confirmed cross-channel matches and displayed the Solaris board when expanded. Navigation between Vacancies and Source Report kept the owner session. These counts describe the observed sample and identity links on that date.
 
 ### Release and acceptance
 
@@ -123,14 +125,14 @@ During rollout of PR #72, the merged query timed out on warm Aurora under the pa
 
    The report SELECT grants on `source_items.created_at`, `vacancies.location`, `verified_source_registry.employer_name`, and `vacancy_candidate_assessments(source_item_id, policy_version, decision)` are already applied and verified in AWS. With those grants present, the preflight checks metadata and runs both report periods under `job_agent_page_reader` without printing data. It accepts the exact seven Phase 6B `review_feedback` SELECT columns from `prepare_feedback.READ_COLUMNS`, leaves those grants intact, and rejects unexpected columns or write access. Stop before Terraform if the preflight fails.
 2. Review one fresh Terraform plan and apply it. Expect the protected `GET /source-report` route and refreshed existing page package. The feedback Lambda may also pick up the shared package hash. Confirm there is no new service, schedule change, migration or Java image publication.
-3. Run one AWS smoke session. Verify an unauthenticated data request returns 401, then sign in as the owner. Navigate from vacancies to Source Report and back without a second sign-in. Switch periods and advertised geography, expand company career boards, and check the unique, overlap and current DE/AT counts against the reader results. Confirm that empty and temporary read errors are distinguishable if observed. The deployment and smoke remain pending.
+3. Run one AWS smoke session. Verify an unauthenticated data request returns 401, then sign in as the owner. Navigate from vacancies to Source Report and back without a second sign-in. Switch periods and advertised geography, expand company career boards, and check the unique, overlap and current DE/AT counts against the reader results. Confirm that empty and temporary read errors are distinguishable if observed.
 
 To roll back, restore the prior page package and route configuration through a fresh reviewed Terraform plan. The additive reader grants can be reviewed for removal separately after rollback, once no deployed report query uses them. Existing page and vacancy data remain intact.
 
 
 ## Phase 9B market analysis
 
-Market Analysis is prepared locally as a separate protected view linked from Source Report. It uses the two most recent completed calendar months in Europe/Berlin. Each month includes its local start and excludes the next month's local start, including across daylight-saving transitions. The measure is first storage in a tracked channel. Publication and original email dates do not set the month. Archived alerts can enter a later month when imported.
+Market Analysis is deployed as a separate protected view linked from Source Report. It uses the two most recent completed calendar months in Europe/Berlin. Each month includes its local start and excludes the next month's local start, including across daylight-saving transitions. The measure is first storage in a tracked channel. Publication and original email dates do not set the month. Archived alerts can enter a later month when imported.
 
 Vacancy totals count distinct stored IDs each month. Confirmed overlap counts IDs first stored in multiple channels in the same month. Incomplete identity links make this a lower bound. A vacancy can also count in two different months when a later channel first stores it. Channel counts can overlap. The board breakdown uses currently verified registry identities, including verified inactive boards. Separate boards with the same employer name stay separate. The report caps input at 5,000 in-period observations across both months and returns an explicit capacity error above that limit. It shows up to 50 boards per month and flags a truncated breakdown.
 
@@ -139,6 +141,10 @@ Advertised geography uses recorded LinkedIn direction or supported normalized lo
 All channel coverage is marked unknown. An empty group means there are no stored observations for that source and month. The existing database cannot establish whether collection yielded zero, failed, or was skipped. A channel appearing in one month does not establish its activation date or comparable coverage. The report withholds trend conclusions and labels skill trends unavailable. The legacy Sheet is outside the comparable collection cohort. Durable per-source collection records are a separate follow-up.
 
 ### Phase 9B release and rollback
+
+On 2026-11-25, the AWS rollout of PR #74 added the protected route and updated the two existing Lambda packages. The production reader query completed in 0.38 seconds and returned no tracked observations for September or October 2026. The deployed route returned HTTP 401 without authentication. A signed-in browser displayed both completed months, the empty observation state and unknown collection coverage. Navigating to Source Report and back retained the session. This smoke verified the empty production state. Non-zero aggregations and overlap were verified with synthetic PostgreSQL fixtures.
+
+The owner closed Phase 9B on 2026-11-25 with this observed-counts release. Durable per-source collection records and comparable skill evidence remain follow-up work for trend reporting.
 
 After focused verification and PR CI, review one Terraform plan for JWT-protected \`GET /market-analysis\` and the existing shared page package. Apply the reviewed plan and run one smoke session. Verify an unauthenticated API request returns 401. Sign in as the owner and navigate from Source Report to Market Analysis without a second sign-in. Check the completed-month labels, source coverage, geography, totals and overlap against the stored sample, then return to Source Report. The rollout uses the existing read-only role, with no migration, Java image publication or scheduled work. Incremental cost comes from on-demand Lambda and database reads.
 
